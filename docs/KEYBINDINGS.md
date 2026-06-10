@@ -175,6 +175,7 @@ unresolved conflicts are written back with their original markers.
 | `t` | Take theirs |
 | `b` | Take both (ours first) |
 | `u` | Reset the focused conflict to unresolved |
+| `e` | Write current picks, then open the file in `$EDITOR` at the focused conflict; on exit the view re-parses the file |
 | `w` | Write the file; stages it once fully resolved |
 | `Esc` | Back (press twice to discard unsaved picks) |
 | `q` | Quit |

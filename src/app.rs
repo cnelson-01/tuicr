@@ -8833,6 +8833,113 @@ impl App {
         Ok(())
     }
 
+    /// Hand the current conflicted file to `$EDITOR`: write the picks made
+    /// so far (unresolved conflicts keep their markers), then queue the
+    /// editor at the focused conflict's line. The main loop performs the
+    /// terminal hand-off and calls [`Self::merge_reload_current_file`]
+    /// when the editor exits.
+    pub fn merge_edit_current_file(&mut self) {
+        enum Outcome {
+            Queue(EditorTarget),
+            WriteFailed(String),
+            NotEditable,
+        }
+
+        let root = self.vcs_info.root_path.clone();
+        let outcome = {
+            let Some(view) = self.merge_view.as_mut() else {
+                return;
+            };
+            let current_conflict = view.current_conflict;
+            let Some(file) = view.files.get_mut(view.current_file) else {
+                return;
+            };
+            if file.load_error.is_some() {
+                Outcome::NotEditable
+            } else {
+                let content = crate::vcs::apply_resolutions(&file.file, &file.resolutions);
+                match std::fs::write(root.join(&file.path), content) {
+                    Ok(()) => {
+                        file.dirty = false;
+                        file.staged = false;
+                        let line = crate::vcs::conflict::conflict_output_line(
+                            &file.file,
+                            &file.resolutions,
+                            current_conflict,
+                        );
+                        Outcome::Queue(EditorTarget {
+                            path: root.join(&file.path),
+                            line: line.map(|l| l as u32),
+                        })
+                    }
+                    Err(err) => Outcome::WriteFailed(format!("{}: {err}", file.path.display())),
+                }
+            }
+        };
+        match outcome {
+            Outcome::Queue(target) => self.pending_editor_target = Some(target),
+            Outcome::WriteFailed(err) => self.set_error(format!("Cannot write {err}")),
+            Outcome::NotEditable => self.set_error("Cannot edit this file"),
+        }
+    }
+
+    /// Re-parse the current file after an external edit: markers still
+    /// present become unresolved conflicts again; everything else is
+    /// settled content.
+    pub fn merge_reload_current_file(&mut self) {
+        let root = self.vcs_info.root_path.clone();
+        let path = self
+            .merge_view
+            .as_ref()
+            .and_then(MergeView::current_file_state)
+            .map(|f| f.path.clone());
+        let Some(path) = path else {
+            return;
+        };
+        match std::fs::read_to_string(root.join(&path)) {
+            Ok(content) => {
+                self.merge_apply_reloaded_content(&content);
+                let remaining = self
+                    .merge_view
+                    .as_ref()
+                    .and_then(MergeView::current_file_state)
+                    .map(|f| f.file.conflict_count())
+                    .unwrap_or(0);
+                if remaining == 0 {
+                    self.set_message(format!(
+                        "Reloaded {} \u{00b7} no conflicts remain \u{00b7} press w to stage",
+                        path.display()
+                    ));
+                } else {
+                    self.set_message(format!(
+                        "Reloaded {} \u{00b7} {remaining} conflict{} remaining",
+                        path.display(),
+                        if remaining == 1 { "" } else { "s" }
+                    ));
+                }
+            }
+            Err(err) => self.set_error(format!("Reload failed: {err}")),
+        }
+    }
+
+    /// Pure half of [`Self::merge_reload_current_file`], split for tests.
+    fn merge_apply_reloaded_content(&mut self, content: &str) {
+        let Some(view) = self.merge_view.as_mut() else {
+            return;
+        };
+        let Some(file) = view.files.get_mut(view.current_file) else {
+            return;
+        };
+        file.file = crate::vcs::parse_conflict_file(content);
+        file.resolutions = vec![ConflictResolution::Unresolved; file.file.conflict_count()];
+        file.dirty = false;
+        file.staged = false;
+        view.current_conflict = view
+            .current_conflict
+            .min(file.resolutions.len().saturating_sub(1));
+        view.scroll_to_current_conflict();
+    }
+
     /// True once every file in the merge view is conflict-free, written,
     /// and staged — confirmed against the VCS, which is authoritative
     /// (paths conflicted outside this view would still block).
@@ -10970,6 +11077,50 @@ mod commit_selection_tests {
         assert_eq!(app.input_mode, InputMode::MergeConflict);
         assert!(app.merge_view.is_some());
         assert!(app.message.is_some(), "an error message should be shown");
+    }
+
+    #[test]
+    fn merge_reload_resets_resolutions_from_new_content() {
+        // given a merge view with picks already made
+        let mut app = build_app(vec![]);
+        install_merge_view(&mut app);
+        app.merge_resolve_current(ConflictResolution::Ours);
+
+        // when the file is reloaded with one conflict hand-resolved
+        let edited = "top\nhand resolved\nmid\n<<<<<<< HEAD\nours2\n=======\ntheirs2\n>>>>>>> x\n";
+        app.merge_apply_reloaded_content(edited);
+
+        // then only the remaining marker is a conflict, unresolved again
+        let view = app.merge_view.as_ref().unwrap();
+        let file = view.current_file_state().unwrap();
+        assert_eq!(file.file.conflict_count(), 1);
+        assert_eq!(file.resolutions, vec![ConflictResolution::Unresolved]);
+        assert!(!file.dirty);
+        assert!(!file.staged);
+        assert_eq!(view.current_conflict, 0);
+    }
+
+    #[test]
+    fn merge_edit_queues_editor_at_focused_conflict() {
+        // given a merge view whose file lives in a real directory
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = build_app(vec![]);
+        app.vcs_info.root_path = dir.path().to_path_buf();
+        install_merge_view(&mut app);
+
+        // when the user asks to edit
+        app.merge_edit_current_file();
+
+        // then current picks are written and the editor targets the
+        // first conflict's marker line
+        let target = app.take_pending_editor_target().expect("editor target");
+        assert_eq!(target.path, dir.path().join("a.txt"));
+        assert_eq!(target.line, Some(2));
+        let written = std::fs::read_to_string(dir.path().join("a.txt")).expect("written file");
+        assert!(
+            written.starts_with("top\n<<<<<<< HEAD\n"),
+            "got: {written:?}"
+        );
     }
 
     #[test]

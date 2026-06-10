@@ -398,7 +398,7 @@ fn side_span<'a>(
 
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
-    let hints = " j/k scroll \u{00b7} n/N conflict \u{00b7} }/{ file \u{00b7} o ours \u{00b7} t theirs \u{00b7} b both \u{00b7} u undo \u{00b7} w write \u{00b7} esc back \u{00b7} q quit";
+    let hints = " j/k scroll \u{00b7} n/N conflict \u{00b7} }/{ file \u{00b7} o ours \u{00b7} t theirs \u{00b7} b both \u{00b7} u undo \u{00b7} e edit \u{00b7} w write \u{00b7} esc back \u{00b7} q quit";
     let left = vec![Span::styled(hints, Style::default().fg(theme.fg_secondary))];
     let (message_span, message_width) = status_bar::build_message_span(app.message.as_ref(), theme);
     let spans = status_bar::build_right_aligned_spans(

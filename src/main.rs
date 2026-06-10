@@ -603,7 +603,12 @@ fn main() -> anyhow::Result<()> {
                     if let Some(target) = app.take_pending_editor_target() {
                         match run_editor_from_tui(&mut terminal, &target) {
                             Ok(Ok(())) => {
-                                if app.diff_source.includes_worktree_changes() {
+                                if app.input_mode == InputMode::MergeConflict {
+                                    // Merge-view edit: re-parse the file so
+                                    // hand-resolved markers disappear and
+                                    // remaining ones become conflicts again.
+                                    app.merge_reload_current_file();
+                                } else if app.diff_source.includes_worktree_changes() {
                                     match app.reload_diff_files() {
                                         Ok((count, invalidated)) => {
                                             let invalidated_suffix = if invalidated > 0 {

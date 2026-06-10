@@ -275,6 +275,40 @@ pub fn apply_resolutions(file: &ConflictFile, resolutions: &[ConflictResolution]
     content
 }
 
+/// One-based line, in the [`apply_resolutions`] output, where conflict
+/// `idx`'s region begins: its `<<<<<<<` marker while unresolved, or the
+/// first line of its resolved content. Used to open `$EDITOR` at the
+/// focused conflict. `None` when `idx` is out of range.
+pub fn conflict_output_line(
+    file: &ConflictFile,
+    resolutions: &[ConflictResolution],
+    idx: usize,
+) -> Option<usize> {
+    let mut line = 0usize;
+    let mut conflict_idx = 0usize;
+    for segment in &file.segments {
+        match segment {
+            ConflictSegment::Common(lines) => line += lines.len(),
+            ConflictSegment::Conflict(block) => {
+                let resolution = resolutions.get(conflict_idx).copied().unwrap_or_default();
+                if conflict_idx == idx {
+                    return Some(line + 1);
+                }
+                line += match block.resolved_lines(resolution) {
+                    Some(lines) => lines.len(),
+                    None => {
+                        // markers: <<<<<<< ours [||||||| base] ======= theirs >>>>>>>
+                        let base = block.base.as_ref().map(|b| b.len() + 1).unwrap_or(0);
+                        3 + block.ours.len() + base + block.theirs.len()
+                    }
+                };
+                conflict_idx += 1;
+            }
+        }
+    }
+    None
+}
+
 fn marker_line(marker: &str, label: Option<&str>) -> String {
     match label {
         Some(label) => format!("{marker} {label}"),
@@ -385,6 +419,38 @@ theirs
             apply_resolutions(&file, &[ConflictResolution::Both]),
             "line 1\nours line\ntheirs line\nline 2\n"
         );
+    }
+
+    #[test]
+    fn should_locate_conflict_lines_in_resolved_output() {
+        // given two conflicts separated by a common line
+        let content = "\
+top
+<<<<<<< HEAD
+a1
+=======
+b1
+>>>>>>> x
+mid
+<<<<<<< HEAD
+a2
+=======
+b2
+>>>>>>> x
+";
+        let file = parse_conflict_file(content);
+        let unresolved = vec![ConflictResolution::Unresolved; 2];
+
+        // when both are unresolved, markers sit at their literal lines
+        assert_eq!(conflict_output_line(&file, &unresolved, 0), Some(2));
+        assert_eq!(conflict_output_line(&file, &unresolved, 1), Some(8));
+        assert_eq!(conflict_output_line(&file, &unresolved, 2), None);
+
+        // and resolving the first (5 marker lines -> 1 content line)
+        // shifts the second conflict up accordingly
+        let first_ours = vec![ConflictResolution::Ours, ConflictResolution::Unresolved];
+        assert_eq!(conflict_output_line(&file, &first_ours, 0), Some(2));
+        assert_eq!(conflict_output_line(&file, &first_ours, 1), Some(4));
     }
 
     #[test]

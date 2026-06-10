@@ -320,6 +320,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  e         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Hand-edit in $EDITOR (writes picks, reloads on exit)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  w         ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),

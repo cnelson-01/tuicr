@@ -149,6 +149,8 @@ pub enum Action {
     MergePrevFile,
     /// Write the current file's resolutions; stages when fully resolved (`w`).
     MergeSaveFile,
+    /// Write current picks and open the file in `$EDITOR` (`e`).
+    MergeEditFile,
 
     // Commit selector history operations
     /// Cherry-pick the selected commits onto the current branch (`p`).
@@ -464,6 +466,7 @@ fn map_merge_conflict_mode(key: KeyEvent) -> Action {
         (KeyCode::Char('b'), KeyModifiers::NONE) => Action::MergeTakeBoth,
         (KeyCode::Char('u'), KeyModifiers::NONE) => Action::MergeUnresolve,
         (KeyCode::Char('w'), KeyModifiers::NONE) => Action::MergeSaveFile,
+        (KeyCode::Char('e'), KeyModifiers::NONE) => Action::MergeEditFile,
         (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
         (KeyCode::Char('q'), KeyModifiers::NONE) => Action::Quit,
         _ => Action::None,

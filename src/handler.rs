@@ -1272,6 +1272,7 @@ pub fn handle_merge_conflict_action(app: &mut App, action: Action) {
                 app.set_error(format!("Failed to write file: {e}"));
             }
         }
+        Action::MergeEditFile => app.merge_edit_current_file(),
         Action::ExitMode => app.close_merge_view(),
         Action::Quit => app.should_quit = true,
         _ => {}
