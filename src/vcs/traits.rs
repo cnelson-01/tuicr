@@ -338,6 +338,15 @@ pub trait VcsBackend: Send {
             "Continuing a merge is not supported for this VCS".into(),
         ))
     }
+
+    /// Squash the given commits (oldest first) into one commit, combining
+    /// their messages. Backends may restrict which ranges are legal (Git:
+    /// a contiguous first-parent chain ending at HEAD).
+    fn squash_commits(&self, _commit_ids: &[String]) -> Result<()> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Squashing is not supported for this VCS".into(),
+        ))
+    }
 }
 
 #[cfg(test)]

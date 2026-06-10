@@ -125,7 +125,8 @@ fn alloc_lane(lanes: &mut Vec<Option<Lane>>, next_color: &mut usize, id: String)
 /// Compute the lane layout for a selector commit list.
 ///
 /// Requires children to appear before their parents (the backends emit
-/// topo-ordered logs). Lists with no parent information at all (hg/jj,
+/// date-ordered logs with that topological guarantee, like `git log
+/// --date-order`). Lists with no parent information at all (hg/jj,
 /// PR commit subsets) produce an empty graph so the gutter collapses.
 pub fn compute_commit_graph(commits: &[CommitInfo]) -> CommitGraph {
     if commits.iter().all(|c| c.parent_ids.is_empty()) {

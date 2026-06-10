@@ -105,7 +105,8 @@ Repository-managed agent integrations:
 
 **VcsBackend** (`src/vcs/traits.rs`):
 - Trait abstracting VCS operations
-- Methods: `info()`, `get_working_tree_diff()`, `fetch_context_lines()`, `get_recent_commits()`, `get_commit_range_diff()`, `get_merge_conflicts()`, `cherry_pick()`, `rebase_onto()` (history ops shell out to the git CLI on both backends; selector keys `p`/`b`)
+- Methods: `info()`, `get_working_tree_diff()`, `fetch_context_lines()`, `get_recent_commits()`, `get_commit_range_diff()`, `get_merge_conflicts()`, `cherry_pick()`, `rebase_onto()`, `squash_commits()`, `continue_merge_operation()` (history ops shell out to the git CLI on both backends; selector keys `p`/`b`/`s`)
+- `get_recent_commits()` returns `git log --date-order --branches HEAD` semantics: newest first by commit date, children always before parents
 - `get_recent_commits()` walks **all local branches** in topo order (children before parents) and populates `CommitInfo.parent_ids`; the selector's commit graph (`src/ui/commit_graph.rs`) relies on both. Backends without parent data (hg/jj) return empty `parent_ids`, which collapses the graph gutter.
 - Capability hooks: `supports_sparse_checkout()` advertises whether the selected backend can operate on Git sparse-checkout repos
 - Implementations: `GitBackend`, `HgBackend`, `JjBackend` (all always compiled)

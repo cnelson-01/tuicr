@@ -432,7 +432,7 @@ fn render_target_selector_footer(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         match app.target_tab {
             TargetTab::Local => {
-                "   j/k navigate \u{00b7} space range \u{00b7} \u{21b5} confirm \u{00b7} p pick \u{00b7} b rebase \u{00b7} q quit"
+                "   j/k navigate \u{00b7} space range \u{00b7} \u{21b5} confirm \u{00b7} p pick \u{00b7} b rebase \u{00b7} s squash \u{00b7} q quit"
                     .to_string()
             }
             TargetTab::PullRequests => {

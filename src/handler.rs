@@ -1170,6 +1170,9 @@ fn handle_local_target_action(app: &mut App, action: Action) {
         Action::SelectorRebase if !app.is_on_expand_row() => {
             app.selector_rebase_onto_cursor();
         }
+        Action::SelectorSquash if !app.is_on_expand_row() => {
+            app.selector_squash();
+        }
         _ => {}
     }
 }

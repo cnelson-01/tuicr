@@ -405,6 +405,80 @@ impl VcsBackend for GitBackend {
         run_git_command(&self.info().root_path, &["rebase", commit_id]).map(|_| ())
     }
 
+    fn squash_commits(&self, commit_ids: &[String]) -> Result<()> {
+        if commit_ids.len() < 2 {
+            return Err(TuicrError::VcsCommand(
+                "Select at least two commits to squash".into(),
+            ));
+        }
+        let root = &self.info().root_path;
+
+        // Refuse when the index already has staged changes: `reset --soft`
+        // would silently fold them into the squash commit.
+        if run_git_command(root, &["diff", "--cached", "--quiet"]).is_err() {
+            return Err(TuicrError::VcsCommand(
+                "The index has staged changes; commit or unstage them first".into(),
+            ));
+        }
+
+        // The selection must be exactly HEAD's first-parent chain so the
+        // rewrite is a plain soft-reset + commit (no history surgery on
+        // commits below unrelated work).
+        let chain = run_git_command(
+            root,
+            &[
+                "rev-list",
+                "--first-parent",
+                &format!("--max-count={}", commit_ids.len()),
+                "HEAD",
+            ],
+        )?;
+        let chain: Vec<&str> = chain.split_whitespace().collect();
+        let newest_first: Vec<&str> = commit_ids.iter().rev().map(String::as_str).collect();
+        if chain != newest_first {
+            return Err(TuicrError::VcsCommand(
+                "Squash needs a contiguous range of commits ending at HEAD".into(),
+            ));
+        }
+
+        let oldest = &commit_ids[0];
+        if run_git_command(
+            root,
+            &["rev-parse", "--verify", "--quiet", &format!("{oldest}^")],
+        )
+        .is_err()
+        {
+            return Err(TuicrError::VcsCommand(
+                "Cannot squash through the root commit".into(),
+            ));
+        }
+
+        // Combined message: every selected message, oldest first, the way
+        // an interactive-rebase squash would assemble it.
+        let mut message = String::new();
+        for id in commit_ids {
+            let body = run_git_command(root, &["log", "-1", "--format=%B", id])?;
+            if !message.is_empty() {
+                message.push('\n');
+            }
+            message.push_str(body.trim_end());
+            message.push('\n');
+        }
+
+        let original_head = run_git_command(root, &["rev-parse", "HEAD"])?
+            .trim()
+            .to_string();
+        run_git_command(root, &["reset", "--soft", &format!("{oldest}^")])?;
+        if let Err(err) =
+            run_git_command(root, &["commit", "--allow-empty", "-m", message.trim_end()])
+        {
+            // Put the branch back where it was; the tree is untouched.
+            let _ = run_git_command(root, &["reset", "--soft", &original_head]);
+            return Err(err);
+        }
+        Ok(())
+    }
+
     fn continue_merge_operation(&self) -> Result<String> {
         let root = &self.info().root_path;
         let in_progress = |head: &str| {
@@ -720,6 +794,101 @@ mod tests {
         .expect("failed to discover backend");
         // when / then
         assert!(backend.continue_merge_operation().is_err());
+    }
+
+    #[test]
+    fn squash_combines_head_range_into_one_commit() {
+        // given three commits on the current branch
+        let temp_dir = tempdir().expect("failed to create temp dir");
+        let root = temp_dir.path();
+        setup_standard_repo(root);
+        fs::write(root.join("src/file.txt"), "two\n").expect("failed to write");
+        run_git_command(root, &["commit", "-am", "second"]).expect("failed to commit");
+        fs::write(root.join("src/file.txt"), "three\n").expect("failed to write");
+        run_git_command(root, &["commit", "-am", "third"]).expect("failed to commit");
+
+        let backend = GitBackend::discover_from(
+            root,
+            GitBackendPreference::Libgit2,
+            DiffWhitespaceMode::Normal,
+        )
+        .expect("failed to discover backend");
+        let second = git_id(root, "HEAD~1");
+        let third = git_id(root, "HEAD");
+
+        // when squashing the top two (oldest first)
+        backend
+            .squash_commits(&[second, third])
+            .expect("squash should succeed");
+
+        // then one commit replaces them, content intact, messages combined
+        let count = run_git_command(root, &["rev-list", "--count", "HEAD"])
+            .expect("failed to count")
+            .trim()
+            .to_string();
+        assert_eq!(count, "2");
+        let message =
+            run_git_command(root, &["log", "-1", "--format=%B"]).expect("failed to read message");
+        assert!(message.contains("second"), "got: {message:?}");
+        assert!(message.contains("third"), "got: {message:?}");
+        assert_eq!(
+            fs::read_to_string(root.join("src/file.txt")).expect("read"),
+            "three\n"
+        );
+    }
+
+    #[test]
+    fn squash_rejects_ranges_not_ending_at_head() {
+        // given three commits
+        let temp_dir = tempdir().expect("failed to create temp dir");
+        let root = temp_dir.path();
+        setup_standard_repo(root);
+        fs::write(root.join("src/file.txt"), "two\n").expect("failed to write");
+        run_git_command(root, &["commit", "-am", "second"]).expect("failed to commit");
+        fs::write(root.join("src/file.txt"), "three\n").expect("failed to write");
+        run_git_command(root, &["commit", "-am", "third"]).expect("failed to commit");
+
+        let backend = GitBackend::discover_from(
+            root,
+            GitBackendPreference::Libgit2,
+            DiffWhitespaceMode::Normal,
+        )
+        .expect("failed to discover backend");
+        let first = git_id(root, "HEAD~2");
+        let second = git_id(root, "HEAD~1");
+
+        // when / then: a mid-history range is refused, history untouched
+        assert!(backend.squash_commits(&[first, second]).is_err());
+        let count = run_git_command(root, &["rev-list", "--count", "HEAD"])
+            .expect("failed to count")
+            .trim()
+            .to_string();
+        assert_eq!(count, "3");
+    }
+
+    #[test]
+    fn squash_rejects_dirty_index() {
+        // given two commits and a staged change
+        let temp_dir = tempdir().expect("failed to create temp dir");
+        let root = temp_dir.path();
+        setup_standard_repo(root);
+        fs::write(root.join("src/file.txt"), "two\n").expect("failed to write");
+        run_git_command(root, &["commit", "-am", "second"]).expect("failed to commit");
+        fs::write(root.join("src/file.txt"), "staged\n").expect("failed to write");
+        run_git_command(root, &["add", "src/file.txt"]).expect("failed to stage");
+
+        let backend = GitBackend::discover_from(
+            root,
+            GitBackendPreference::Libgit2,
+            DiffWhitespaceMode::Normal,
+        )
+        .expect("failed to discover backend");
+        let first = git_id(root, "HEAD~1");
+        let second = git_id(root, "HEAD");
+
+        // when / then
+        let err = backend.squash_commits(&[first, second]);
+        assert!(err.is_err(), "staged changes must block squash");
     }
 
     fn setup_standard_repo(root: &Path) {

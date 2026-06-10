@@ -8478,6 +8478,26 @@ impl App {
         }
     }
 
+    /// Squash the selected commits (space-selected range) into one commit.
+    pub fn selector_squash(&mut self) {
+        let ids = self.selector_action_commit_ids();
+        if ids.len() < 2 {
+            self.set_message("Select at least two commits to squash (space, then s)");
+            return;
+        }
+        match self.vcs.squash_commits(&ids) {
+            Ok(()) => {
+                let count = ids.len();
+                self.refresh_commit_selector_rows();
+                self.set_message(format!("Squashed {count} commits into one"));
+            }
+            Err(err) => {
+                let err = err.to_string();
+                self.set_error(format!("Squash failed: {}", err.trim()));
+            }
+        }
+    }
+
     /// A failed history operation either stopped on conflicts (open the
     /// merge view so the user can resolve, then `--continue` from a shell)
     /// or genuinely failed (surface the VCS error).

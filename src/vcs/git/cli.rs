@@ -308,15 +308,16 @@ impl VcsBackend for GitCliBackend {
         }
         let branch_tip_names = get_branch_tip_names(&self.root_path);
         // Walk every local branch, not just HEAD, so the selector can show
-        // branch tracks. `--topo-order` keeps children above parents, which
-        // the commit-graph lane layout relies on.
+        // branch tracks. `--date-order` sorts rows by commit date while
+        // still keeping children above parents, which the commit-graph
+        // lane layout relies on.
         let output = run_git_command_args(
             &self.root_path,
             [
                 OsStr::new("log"),
                 OsStr::new(&format!("--skip={offset}")),
                 OsStr::new(&format!("--max-count={limit}")),
-                OsStr::new("--topo-order"),
+                OsStr::new("--date-order"),
                 OsStr::new("--branches"),
                 OsStr::new(COMMIT_FORMAT),
                 OsStr::new("HEAD"),

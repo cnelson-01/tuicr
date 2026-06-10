@@ -85,10 +85,11 @@ pub fn get_recent_commits(
     revwalk.push_head()?;
     let branch_tip_names = get_branch_tip_names(repo);
     // Walk every local branch, not just HEAD, so the selector can show
-    // branch tracks. Topological sorting keeps children above parents,
-    // which the commit-graph lane layout relies on (matches `git log
-    // --topo-order`). Tips are pushed in sorted order — HashMap iteration
-    // is randomized per process and would reshuffle rows on every launch.
+    // branch tracks. TOPOLOGICAL | TIME matches `git log --date-order`:
+    // rows sort by commit date while children stay above parents, which
+    // the commit-graph lane layout relies on. Tips are pushed in sorted
+    // order — HashMap iteration is randomized per process and would
+    // reshuffle equal-date rows on every launch.
     let mut tips: Vec<_> = branch_tip_names.keys().copied().collect();
     tips.sort_unstable_by_key(|oid| {
         branch_tip_names
@@ -100,7 +101,7 @@ pub fn get_recent_commits(
     for tip in tips {
         let _ = revwalk.push(tip);
     }
-    revwalk.set_sorting(git2::Sort::TOPOLOGICAL)?;
+    revwalk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)?;
 
     let mut commits = Vec::new();
     for oid in revwalk.skip(offset).take(limit) {

@@ -265,6 +265,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  s         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Squash selected range (ending at HEAD) into one commit"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  /         ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),

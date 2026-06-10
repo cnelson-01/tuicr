@@ -137,10 +137,15 @@ merge conflicts, a `· conflicts ·` row appears at the top — `Enter` on it op
 the merge conflict view.
 
 History operations run on the current branch: `p` cherry-picks the selected
-commits (or the cursor commit) onto it, `b` rebases it onto the cursor commit.
-If the operation stops on conflicts the merge conflict view opens
-automatically; resolve and write, then run `git cherry-pick --continue` /
+commits (or the cursor commit) onto it, `b` rebases it onto the cursor commit,
+and `s` squashes a space-selected range into one commit (the range must be a
+contiguous run ending at HEAD; messages are combined oldest-first). If an
+operation stops on conflicts the merge conflict view opens automatically;
+resolve and write, then run `git cherry-pick --continue` /
 `git rebase --continue` from your shell.
+
+The Local tab lists commits in date order (`git log --date-order`): newest
+first, with children always above their parents so the graph stays coherent.
 
 | Key | Action |
 |-----|--------|
@@ -150,6 +155,7 @@ automatically; resolve and write, then run `git cherry-pick --continue` /
 | `Enter` | Confirm local commit range, open PR, load more PRs, or open merge conflicts |
 | `p` | Cherry-pick selected/cursor commits onto the current branch |
 | `b` | Rebase the current branch onto the cursor commit |
+| `s` | Squash the selected range (must end at HEAD) into one commit |
 | `/` | Filter currently loaded PR rows locally |
 | `r` | In Pull Requests tab, toggle all open PRs / PRs requesting your review |
 | `q` / `Esc` | Quit / return |

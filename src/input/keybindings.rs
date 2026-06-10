@@ -157,6 +157,8 @@ pub enum Action {
     SelectorCherryPick,
     /// Rebase the current branch onto the cursor commit (`b`).
     SelectorRebase,
+    /// Squash the selected commits into one (`s`).
+    SelectorSquash,
 
     // No-op
     None,
@@ -417,6 +419,7 @@ fn map_commit_select_mode(key: KeyEvent) -> Action {
         (KeyCode::Enter, KeyModifiers::NONE) => Action::ConfirmCommitSelect,
         (KeyCode::Char('p'), KeyModifiers::NONE) => Action::SelectorCherryPick,
         (KeyCode::Char('b'), KeyModifiers::NONE) => Action::SelectorRebase,
+        (KeyCode::Char('s'), KeyModifiers::NONE) => Action::SelectorSquash,
         (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
         (KeyCode::Char('q'), KeyModifiers::NONE) => Action::Quit,
         (KeyCode::Tab, KeyModifiers::NONE) => Action::TargetSelectorTabNext,
