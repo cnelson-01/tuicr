@@ -11,7 +11,7 @@ use crate::forge::selector::{PrTabStatus, PrTabView};
 use crate::forge::traits::PullRequestListScope;
 use crate::ui::commit_graph::{compute_commit_graph, graph_row_spans};
 use crate::ui::commit_row::{
-    CURSOR_GLYPH, CommitRowSpec, format_relative_short, render_commit_row,
+    CURSOR_GLYPH, CommitRowLayout, CommitRowSpec, format_relative_short, render_commit_row,
 };
 use crate::ui::status_bar;
 use crate::ui::styles;
@@ -188,6 +188,7 @@ fn render_local_target_tab(frame: &mut Frame, app: &mut App, area: Rect) {
     // paging; the gutter collapses when no commit reports parents.
     let graph = compute_commit_graph(&app.commit_list);
     let gutter_lanes = graph.gutter_lanes();
+    let layout = CommitRowLayout::fit(area.width as usize, gutter_lanes * 2);
 
     let mut items: Vec<Line> = app
         .commit_list
@@ -202,6 +203,7 @@ fn render_local_target_tab(frame: &mut Frame, app: &mut App, area: Rect) {
                 is_selected: app.is_commit_selected(i),
                 theme: &app.theme,
                 graph: (gutter_lanes > 0).then(|| graph_row_spans(&row, gutter_lanes, &app.theme)),
+                layout,
             })
         })
         .collect();

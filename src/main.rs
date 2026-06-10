@@ -637,6 +637,11 @@ fn main() -> anyhow::Result<()> {
                     }
                 }
                 Event::Mouse(mouse_event) => handle_mouse_event(&mut app, mouse_event),
+                Event::Resize(_, rows) => {
+                    // Growing the window (e.g. full-screening the terminal)
+                    // should reveal more history, not dead space.
+                    app.fill_commit_viewport(rows as usize);
+                }
                 Event::Paste(text) => {
                     // Bracketed-paste payload — route to whichever handler is
                     // currently accepting text input. Other modes ignore.

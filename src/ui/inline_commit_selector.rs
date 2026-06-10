@@ -6,7 +6,7 @@ use ratatui::{
 };
 
 use crate::app::{App, FocusedPanel};
-use crate::ui::commit_row::{CommitRowSpec, render_commit_row};
+use crate::ui::commit_row::{CommitRowLayout, CommitRowSpec, render_commit_row};
 use crate::ui::styles;
 
 pub(super) fn render_inline_commit_selector(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -25,6 +25,7 @@ pub(super) fn render_inline_commit_selector(frame: &mut Frame, app: &mut App, ar
     app.commit_list_viewport_height = inner.height as usize;
     app.commit_list_inner_area = Some(inner);
 
+    let layout = CommitRowLayout::fit(inner.width as usize, 0);
     let items: Vec<Line> = app
         .review_commits
         .iter()
@@ -36,6 +37,7 @@ pub(super) fn render_inline_commit_selector(frame: &mut Frame, app: &mut App, ar
                 is_selected: app.is_commit_selected(i),
                 theme,
                 graph: None,
+                layout,
             })
         })
         .collect();

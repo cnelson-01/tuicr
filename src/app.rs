@@ -30,6 +30,25 @@ use crate::vcs::{
 
 const VISIBLE_COMMIT_COUNT: usize = 10;
 const COMMIT_PAGE_SIZE: usize = 10;
+/// Upper bound for the terminal-height-derived initial commit fetch.
+const MAX_INITIAL_COMMITS: usize = 200;
+
+/// How many commits to load for a selector of `terminal_rows` total height:
+/// enough to fill the body (top bar, borders, footer, and a couple of
+/// pseudo rows subtracted), floored at the historical page size.
+fn commit_limit_for_rows(terminal_rows: usize) -> usize {
+    terminal_rows
+        .saturating_sub(6)
+        .clamp(VISIBLE_COMMIT_COUNT, MAX_INITIAL_COMMITS)
+}
+
+/// Terminal-aware initial fetch size; falls back to the historical page
+/// size when the terminal size is unknown (tests, pipes).
+fn initial_commit_limit() -> usize {
+    crossterm::terminal::size()
+        .map(|(_, rows)| commit_limit_for_rows(rows as usize))
+        .unwrap_or(VISIBLE_COMMIT_COUNT)
+}
 pub const DEFAULT_REVIEW_WATCH_INTERVAL_MS: u64 = 1000;
 pub const STAGED_SELECTION_ID: &str = "__tuicr_staged__";
 pub const UNSTAGED_SELECTION_ID: &str = "__tuicr_unstaged__";
@@ -1764,9 +1783,10 @@ impl App {
             // diff loads when the user picks one (load_staged_selection /
             // load_unstaged_selection / load_staged_and_unstaged_selection).
 
+            let commit_limit = initial_commit_limit();
             let commits = crate::profile::time_with(
                 "startup.recent_commits",
-                || vcs.get_recent_commits(0, VISIBLE_COMMIT_COUNT),
+                || vcs.get_recent_commits(0, commit_limit),
                 profile_commit_result,
             )?;
             let merge_conflicts = vcs.get_merge_conflicts().ok().flatten();
@@ -1826,7 +1846,7 @@ impl App {
                 options.repo_url_override.clone(),
             )?;
 
-            app.has_more_commit = commits.len() >= VISIBLE_COMMIT_COUNT;
+            app.has_more_commit = commits.len() >= commit_limit;
             app.visible_commit_count = app.commit_list.len();
             Ok(app)
         }
@@ -7636,7 +7656,8 @@ impl App {
         let has_staged_changes = change_status.staged;
         let has_unstaged_changes = change_status.unstaged;
 
-        let commits = self.vcs.get_recent_commits(0, VISIBLE_COMMIT_COUNT)?;
+        let commit_limit = initial_commit_limit();
+        let commits = self.vcs.get_recent_commits(0, commit_limit)?;
         let no_local_targets = commits.is_empty() && !has_staged_changes && !has_unstaged_changes;
         // Allow opening the selector on the Pull Requests tab even when there
         // are no local commits or changes — the PR tab is the user's reason
@@ -7647,7 +7668,7 @@ impl App {
         }
 
         // Check if there might be more commits
-        self.has_more_commit = commits.len() >= VISIBLE_COMMIT_COUNT;
+        self.has_more_commit = commits.len() >= commit_limit;
         self.commit_list = commits;
         if has_staged_changes {
             self.commit_list.insert(0, Self::staged_commit_entry());
@@ -8521,9 +8542,10 @@ impl App {
     /// included). Used after history operations and when leaving the merge
     /// view, where HEAD or the conflict state may have changed.
     fn refresh_commit_selector_rows(&mut self) {
+        let commit_limit = initial_commit_limit();
         let commits = self
             .vcs
-            .get_recent_commits(0, VISIBLE_COMMIT_COUNT)
+            .get_recent_commits(0, commit_limit)
             .unwrap_or_default();
         let highlighter = self.theme.syntax_highlighter();
         let change_status = Self::get_change_status_with_ignore(
@@ -8535,7 +8557,7 @@ impl App {
         .unwrap_or_default();
         let merge_conflicts = self.vcs.get_merge_conflicts().ok().flatten();
 
-        self.has_more_commit = commits.len() >= VISIBLE_COMMIT_COUNT;
+        self.has_more_commit = commits.len() >= commit_limit;
         let mut commit_list = commits;
         if change_status.staged {
             commit_list.insert(0, Self::staged_commit_entry());
@@ -8999,15 +9021,23 @@ impl App {
 
     // Expand the commit list to show more commits
     pub fn expand_commit(&mut self) -> Result<()> {
+        if !self.grow_commit_list()? {
+            self.set_message("No more commits");
+        }
+        Ok(())
+    }
+
+    /// Silent page-grow shared by the expand row and viewport filling.
+    /// Returns whether anything new became visible.
+    fn grow_commit_list(&mut self) -> Result<bool> {
         if self.visible_commit_count < self.commit_list.len() {
             self.visible_commit_count =
                 (self.visible_commit_count + self.commit_page_size).min(self.commit_list.len());
-            return Ok(());
+            return Ok(true);
         }
 
         if !self.has_more_commit {
-            self.set_message("No more commits");
-            return Ok(());
+            return Ok(false);
         }
 
         let offset = self.loaded_history_commit_count();
@@ -9015,21 +9045,36 @@ impl App {
 
         let new_commits = self.vcs.get_recent_commits(offset, limit)?;
 
-        if new_commits.is_empty() {
-            self.has_more_commit = false;
-            self.set_message("No more commits");
-            return Ok(());
-        }
-
         if new_commits.len() < limit {
             self.has_more_commit = false;
-            self.set_message("No more commits");
+        }
+        if new_commits.is_empty() {
+            return Ok(false);
         }
 
         self.commit_list.extend(new_commits);
         self.visible_commit_count = self.commit_list.len();
+        Ok(true)
+    }
 
-        Ok(())
+    /// Load enough commits to fill a selector body of `terminal_rows`
+    /// total height. Called on terminal resize so growing the window
+    /// (e.g. full-screening) reveals more history instead of dead space.
+    pub fn fill_commit_viewport(&mut self, terminal_rows: usize) {
+        if self.input_mode != InputMode::CommitSelect {
+            return;
+        }
+        let capacity = commit_limit_for_rows(terminal_rows);
+        let mut guard = 0usize;
+        while self.visible_commit_count < capacity
+            && self.can_show_more_commits()
+            && guard < MAX_INITIAL_COMMITS
+        {
+            match self.grow_commit_list() {
+                Ok(true) => guard += 1,
+                _ => break,
+            }
+        }
     }
 
     pub fn toggle_commit_selection(&mut self) {
@@ -10965,6 +11010,43 @@ mod commit_selection_tests {
             theirs_commit: None,
         });
         app.input_mode = InputMode::MergeConflict;
+    }
+
+    #[test]
+    fn commit_limit_scales_with_terminal_rows_within_bounds() {
+        // small/unknown terminals keep the historical page size
+        assert_eq!(commit_limit_for_rows(0), VISIBLE_COMMIT_COUNT);
+        assert_eq!(commit_limit_for_rows(12), VISIBLE_COMMIT_COUNT);
+        // a fullscreen terminal fills its body
+        assert_eq!(commit_limit_for_rows(40), 34);
+        assert_eq!(commit_limit_for_rows(60), 54);
+        // bounded above
+        assert_eq!(commit_limit_for_rows(10_000), MAX_INITIAL_COMMITS);
+    }
+
+    #[test]
+    fn fill_commit_viewport_reveals_loaded_commits_up_to_capacity() {
+        // given 30 loaded commits with only 10 visible
+        let commits: Vec<CommitInfo> = (0..30).map(|i| normal_commit(&format!("c{i}"))).collect();
+        let mut app = build_app(commits);
+        app.visible_commit_count = 10;
+
+        // when the terminal grows to fit ~24 rows of body
+        app.fill_commit_viewport(30);
+
+        // then visibility grows toward capacity (page-at-a-time)
+        assert!(
+            app.visible_commit_count >= 24,
+            "got {}",
+            app.visible_commit_count
+        );
+        assert!(app.visible_commit_count <= 30);
+
+        // and a huge resize reveals everything that exists (DummyVcs has
+        // no further pages)
+        app.fill_commit_viewport(200);
+        assert_eq!(app.visible_commit_count, 30);
+        assert!(!app.has_more_commit);
     }
 
     #[test]
