@@ -30,13 +30,39 @@ const CTRL_C_EXIT_TIMEOUT: Duration = Duration::from_secs(2);
 /// Hide the file list by default on narrow terminals.
 const MIN_WIDTH_FOR_FILE_LIST: u16 = 100;
 
+/// Where panics are persisted: the tuicr data dir (`~/.local/share/tuicr`
+/// on Unix), since the on-screen message is often unreadable.
+fn panic_log_path() -> Option<std::path::PathBuf> {
+    directories::ProjectDirs::from("", "", "tuicr").map(|dirs| dirs.data_dir().join("panic.log"))
+}
+
 fn main() -> anyhow::Result<()> {
     profile::init_from_env();
 
-    // Setup panic hook to restore terminal on panic
+    // Setup panic hook to restore terminal on panic. Also persist the
+    // panic to a log file: a panic mid-draw can be invisible in the
+    // terminal (alternate screen teardown races the message), and the log
+    // is then the only evidence of what happened.
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
         tuicr::terminal_state::restore_stdio_best_effort();
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        if let Some(path) = panic_log_path() {
+            let _ = std::fs::create_dir_all(path.parent().unwrap_or(&path));
+            if let Ok(mut log) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+            {
+                use std::io::Write as _;
+                let _ = writeln!(
+                    log,
+                    "==== tuicr v{} panic ====\n{panic_info}\n{backtrace}\n",
+                    env!("CARGO_PKG_VERSION")
+                );
+            }
+            eprintln!("tuicr panicked; details logged to {}", path.display());
+        }
         original_hook(panic_info);
     }));
 
