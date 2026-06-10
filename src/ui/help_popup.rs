@@ -240,7 +240,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  Space     ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Toggle local commit selection (no-op on PR tab)"),
+            Span::raw("Toggle pick \u{00b7} non-contiguous picks OK (no-op on PR tab)"),
         ]),
         Line::from(vec![
             Span::styled(

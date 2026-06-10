@@ -1065,6 +1065,11 @@ pub struct App {
     pub commit_list: Vec<CommitInfo>,
     /// Fullscreen merge conflict screen state; `Some` while it is open.
     pub merge_view: Option<MergeView>,
+    /// Individually picked rows in the fullscreen selector. Unlike the
+    /// contiguous `commit_selection_range` (which the inline selector and
+    /// PR subsets still use), picks may skip rows — e.g. cherry-picking
+    /// single commits from interleaved branches.
+    pub commit_picks: std::collections::BTreeSet<usize>,
     pub commit_list_cursor: usize,
     pub commit_list_scroll_offset: usize,
     pub commit_list_viewport_height: usize,
@@ -1934,6 +1939,7 @@ impl App {
             comment_line_range: None,
             commit_list,
             merge_view: None,
+            commit_picks: std::collections::BTreeSet::new(),
             commit_list_cursor: 0,
             commit_list_scroll_offset: 0,
             commit_list_viewport_height: 0,
@@ -7679,6 +7685,7 @@ impl App {
         self.commit_list_cursor = 0;
         self.commit_list_scroll_offset = 0;
         self.commit_selection_range = None;
+        self.commit_picks.clear();
         self.visible_commit_count = self.commit_list.len();
         self.input_mode = InputMode::CommitSelect;
 
@@ -8407,16 +8414,26 @@ impl App {
         }
     }
 
-    /// Toggle the cursor commit's membership in the selection range, then
-    /// (only if the cursor commit was newly added to the selection) move the
-    /// cursor past the end of the range. Lets the user press Enter/Space
-    /// repeatedly to sweep a contiguous run of commits.
-    ///
-    /// Other toggle outcomes leave the cursor in place: edge presses
-    /// (deselect the cursor commit), middle presses (truncate the range
-    /// without unselecting the cursor commit), and clearing the last
-    /// selection. Those aren't "sweep" actions, so advancing would surprise.
+    /// Space in a selector. The fullscreen selector toggles the cursor row
+    /// in the pick set — picks may be non-contiguous, so single commits
+    /// from other branches can be pulled in without dragging their
+    /// neighbours along. Newly picking a row advances the cursor so
+    /// repeated Space still sweeps a run. The inline selector keeps the
+    /// contiguous-range behavior (PR subsets need contiguity).
     pub fn toggle_commit_selection_and_advance(&mut self) {
+        if self.input_mode == InputMode::CommitSelect {
+            let cursor = self.commit_list_cursor;
+            if cursor >= self.commit_list.len() {
+                return;
+            }
+            if !self.commit_picks.insert(cursor) {
+                self.commit_picks.remove(&cursor);
+                return;
+            }
+            self.commit_select_down();
+            return;
+        }
+
         let cursor = self.commit_list_cursor;
         let was_selected = self.is_commit_selected(cursor);
         self.toggle_commit_selection();
@@ -8437,15 +8454,17 @@ impl App {
 
     // Selector history operations (cherry-pick / rebase)
 
-    /// Commits the selector action applies to: the selection range when one
-    /// exists, else the cursor row — pseudo rows excluded, oldest first.
+    /// Commits the selector action applies to: the picked rows when any
+    /// exist, else the cursor row — pseudo rows excluded, oldest first
+    /// (picks iterate descending index; larger index = older commit).
     fn selector_action_commit_ids(&self) -> Vec<String> {
-        let (start, end) = match self.commit_selection_range {
-            Some(range) => range,
-            None => (self.commit_list_cursor, self.commit_list_cursor),
+        let indices: Vec<usize> = if self.commit_picks.is_empty() {
+            vec![self.commit_list_cursor]
+        } else {
+            self.commit_picks.iter().rev().copied().collect()
         };
-        (start..=end)
-            .rev()
+        indices
+            .into_iter()
             .filter_map(|i| self.commit_list.get(i))
             .filter(|c| !Self::is_special_commit(c))
             .map(|c| c.id.clone())
@@ -8572,6 +8591,7 @@ impl App {
         self.commit_list_cursor = 0;
         self.commit_list_scroll_offset = 0;
         self.commit_selection_range = None;
+        self.commit_picks.clear();
         self.visible_commit_count = self.commit_list.len();
     }
 
@@ -9121,8 +9141,13 @@ impl App {
         }
     }
 
-    /// Check if a commit at the given index is selected
+    /// Check if a commit at the given index is selected. The fullscreen
+    /// selector renders the pick set; the inline selector keeps the
+    /// contiguous range.
     pub fn is_commit_selected(&self, index: usize) -> bool {
+        if self.input_mode == InputMode::CommitSelect {
+            return self.commit_picks.contains(&index);
+        }
         match self.commit_selection_range {
             Some((start, end)) => index >= start && index <= end,
             None => false,
@@ -9215,25 +9240,44 @@ impl App {
     }
 
     fn confirm_commit_selection_inner(&mut self) -> Result<()> {
-        let Some((start, end)) = self.commit_selection_range else {
-            self.set_message("Select at least one commit");
+        if self.commit_picks.is_empty() {
+            self.set_message("Select at least one commit (space)");
             return Ok(());
-        };
+        }
 
-        // Collect selected entries in order from oldest to newest (end..start).
-        let selected_commits: Vec<CommitInfo> = (start..=end)
+        // Collect picked entries in order from oldest to newest (picks
+        // iterate ascending index = newest first, so reverse).
+        let selected_commits: Vec<CommitInfo> = self
+            .commit_picks
+            .iter()
             .rev()
-            .filter_map(|i| self.commit_list.get(i))
+            .filter_map(|i| self.commit_list.get(*i))
             .cloned()
             .collect();
 
         if selected_commits.is_empty() {
-            self.set_message("Select at least one commit");
+            self.set_message("Select at least one commit (space)");
             return Ok(());
         }
 
         if selected_commits.iter().any(Self::is_merge_conflicts_commit) {
             return self.open_merge_view(InputMode::CommitSelect);
+        }
+
+        // Reviewing materializes one diff from the oldest pick's parent to
+        // the newest pick, so gaps would silently include unpicked commits.
+        // History ops have no such constraint (`p` cherry-picks any set).
+        let min = *self.commit_picks.iter().next().expect("picks not empty");
+        let max = *self
+            .commit_picks
+            .iter()
+            .next_back()
+            .expect("picks not empty");
+        if max - min + 1 != self.commit_picks.len() {
+            self.set_message(
+                "Review needs a contiguous selection \u{2014} p cherry-picks the exact set",
+            );
+            return Ok(());
         }
 
         let selected_staged = selected_commits.iter().any(Self::is_staged_commit);
@@ -9336,6 +9380,7 @@ impl App {
         self.show_commit_selector = self.review_commits.len() > 1;
         self.commit_diff_cache.clear();
         self.saved_inline_selection = None;
+        self.commit_picks.clear();
 
         self.sort_files_by_directory(true);
         self.expand_all_dirs();
@@ -11050,26 +11095,70 @@ mod commit_selection_tests {
     }
 
     #[test]
-    fn selector_action_ids_use_selection_range_oldest_first() {
-        // given a selector list with a pseudo row and two commits selected
+    fn selector_action_ids_use_picks_oldest_first() {
+        // given a selector list with a pseudo row and all rows picked
         let mut app = build_app(vec![
             App::staged_commit_entry(),
             normal_commit("aaa"),
             normal_commit("bbb"),
         ]);
-        app.commit_selection_range = Some((0, 2));
+        app.commit_picks.extend([0, 1, 2]);
         // when / then: pseudo rows drop out, order flips to oldest-first
         assert_eq!(
             app.selector_action_commit_ids(),
             vec!["bbb".to_string(), "aaa".to_string()]
         );
-        // and without a selection the cursor row is used
-        app.commit_selection_range = None;
+        // and without picks the cursor row is used
+        app.commit_picks.clear();
         app.commit_list_cursor = 1;
         assert_eq!(app.selector_action_commit_ids(), vec!["aaa".to_string()]);
         // pseudo cursor rows produce no ids
         app.commit_list_cursor = 0;
         assert!(app.selector_action_commit_ids().is_empty());
+    }
+
+    #[test]
+    fn selector_picks_support_non_contiguous_commits() {
+        // given commits interleaved across branches
+        let mut app = build_app(vec![
+            normal_commit("newest"),
+            normal_commit("other-branch"),
+            normal_commit("mine"),
+        ]);
+
+        // when picking rows 0 and 2 with space (skipping row 1)
+        app.toggle_commit_selection_and_advance(); // picks 0, cursor -> 1
+        app.commit_list_cursor = 2;
+        app.toggle_commit_selection_and_advance(); // picks 2
+
+        // then the action set is exactly those two, oldest first
+        assert_eq!(
+            app.selector_action_commit_ids(),
+            vec!["mine".to_string(), "newest".to_string()]
+        );
+
+        // and space on a picked row unpicks it
+        app.commit_list_cursor = 0;
+        app.toggle_commit_selection_and_advance();
+        assert_eq!(app.selector_action_commit_ids(), vec!["mine".to_string()]);
+    }
+
+    #[test]
+    fn confirm_refuses_non_contiguous_picks_for_review() {
+        // given a gap in the picks
+        let mut app = build_app(vec![
+            normal_commit("a"),
+            normal_commit("b"),
+            normal_commit("c"),
+        ]);
+        app.commit_picks.extend([0, 2]);
+        // when confirming
+        app.confirm_commit_selection()
+            .expect("confirm should not error");
+        // then we stay in the selector with a hint instead of reviewing a
+        // range that would silently include the unpicked middle commit
+        assert_eq!(app.input_mode, InputMode::CommitSelect);
+        assert!(app.message.is_some());
     }
 
     #[test]

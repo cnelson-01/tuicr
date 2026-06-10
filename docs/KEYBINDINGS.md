@@ -151,9 +151,9 @@ first, with children always above their parents so the graph stays coherent.
 |-----|--------|
 | `Tab` / `Shift-Tab` | Switch between Local and Pull Requests tabs |
 | `j` / `k` | Move selection |
-| `Space` | Toggle local commit selection |
-| `Enter` | Confirm local commit range, open PR, load more PRs, or open merge conflicts |
-| `p` | Cherry-pick selected/cursor commits onto the current branch |
+| `Space` | Toggle the commit under the cursor in the pick set (non-contiguous picks allowed — pull in single commits from other branches; consecutive presses still sweep a run) |
+| `Enter` | Review the picked commits (must be a contiguous run), open PR, load more PRs, or open merge conflicts |
+| `p` | Cherry-pick the picked (or cursor) commits onto the current branch — works with non-contiguous picks |
 | `b` | Rebase the current branch onto the cursor commit |
 | `s` | Squash the selected range (must end at HEAD) into one commit |
 | `/` | Filter currently loaded PR rows locally |

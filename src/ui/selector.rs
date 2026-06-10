@@ -448,9 +448,10 @@ fn render_target_selector_footer(frame: &mut Frame, app: &App, area: Rect) {
     };
     let hints_span = Span::styled(hints, Style::default().fg(theme.fg_secondary));
 
-    let selected_count = match app.commit_selection_range {
-        Some((start, end)) if app.target_tab == TargetTab::Local => end - start + 1,
-        _ => 0,
+    let selected_count = if app.target_tab == TargetTab::Local {
+        app.commit_picks.len()
+    } else {
+        0
     };
 
     let (right_span, right_width) = if let (Some(_), _) = (&app.message, ()) {
