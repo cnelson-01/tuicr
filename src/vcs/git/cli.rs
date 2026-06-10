@@ -12,9 +12,10 @@ use crate::error::{Result, TuicrError};
 use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin, LineSide};
 use crate::syntax::SyntaxHighlighter;
 use crate::vcs::diff_parser::{self, DiffFormat};
+use crate::vcs::traits::ConflictCommit;
 use crate::vcs::{
-    ChangeKind, CommitInfo, DiffWhitespaceMode, ResolvedRevisionRange, RevisionDiffTarget,
-    VcsBackend, VcsChangeStatus, VcsInfo,
+    ChangeKind, CommitInfo, DiffWhitespaceMode, MergeConflictInfo, ResolvedRevisionRange,
+    RevisionDiffTarget, VcsBackend, VcsChangeStatus, VcsInfo,
 };
 use crate::vcs::{container_file_paths, enhance_with_full_file_highlight, tabify};
 
@@ -27,7 +28,7 @@ use super::{
 // content is not parsed: they are likely logs, dumps, or build artefacts.
 const MAX_UNTRACKED_FILE_SIZE: u64 = 10 * 1_024 * 1_024;
 const EMPTY_TREE_OID: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
-const COMMIT_FORMAT: &str = "--format=%H%x00%h%x00%an%x00%ct%x00%B%x1e";
+const COMMIT_FORMAT: &str = "--format=%H%x00%h%x00%an%x00%ct%x00%P%x00%B%x1e";
 
 #[derive(Debug)]
 pub struct GitCliBackend {
@@ -306,13 +307,19 @@ impl VcsBackend for GitCliBackend {
             return Ok(Vec::new());
         }
         let branch_tip_names = get_branch_tip_names(&self.root_path);
+        // Walk every local branch, not just HEAD, so the selector can show
+        // branch tracks. `--topo-order` keeps children above parents, which
+        // the commit-graph lane layout relies on.
         let output = run_git_command_args(
             &self.root_path,
             [
                 OsStr::new("log"),
                 OsStr::new(&format!("--skip={offset}")),
                 OsStr::new(&format!("--max-count={limit}")),
+                OsStr::new("--topo-order"),
+                OsStr::new("--branches"),
                 OsStr::new(COMMIT_FORMAT),
+                OsStr::new("HEAD"),
             ],
         )?;
 
@@ -416,6 +423,39 @@ impl VcsBackend for GitCliBackend {
         }
 
         Ok(())
+    }
+
+    fn get_merge_conflicts(&self) -> Result<Option<MergeConflictInfo>> {
+        // `ls-files -u` lists unmerged index entries (one per stage); -z
+        // avoids quoting of unusual paths.
+        let output = run_git_command(&self.root_path, &["ls-files", "-u", "-z"])?;
+        let mut paths: Vec<PathBuf> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for entry in output.split('\0') {
+            let Some((_, path)) = entry.split_once('\t') else {
+                continue;
+            };
+            if seen.insert(path.to_string()) {
+                paths.push(PathBuf::from(path));
+            }
+        }
+        if paths.is_empty() {
+            return Ok(None);
+        }
+
+        let ours_label = self
+            .info
+            .branch_name
+            .clone()
+            .unwrap_or_else(|| "HEAD".to_string());
+        let (theirs_label, theirs_commit) = incoming_head_info(&self.root_path);
+        Ok(Some(MergeConflictInfo {
+            ours_label,
+            theirs_label,
+            ours_commit: commit_brief(&self.root_path, "HEAD"),
+            theirs_commit,
+            paths,
+        }))
     }
 }
 
@@ -1024,7 +1064,7 @@ fn parse_commit_record(
         return None;
     }
 
-    let mut fields = record.splitn(5, '\0');
+    let mut fields = record.splitn(6, '\0');
     let id = fields.next()?.to_string();
     let short_id = fields.next()?.to_string();
     let author = fields.next().unwrap_or("Unknown").to_string();
@@ -1032,6 +1072,12 @@ fn parse_commit_record(
         .next()
         .and_then(|value| value.parse::<i64>().ok())
         .unwrap_or_default();
+    let parent_ids: Vec<String> = fields
+        .next()
+        .unwrap_or_default()
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
     let full_message = fields.next().unwrap_or("(no message)");
     let (summary, body) = parse_commit_message(full_message);
     let branch_name = branch_tip_names
@@ -1046,6 +1092,7 @@ fn parse_commit_record(
         id,
         short_id,
         branch_name,
+        parent_ids,
         summary,
         body,
         author,
@@ -1066,6 +1113,48 @@ fn parse_commit_message(message: &str) -> (String, Option<String>) {
         Some(body_text)
     };
     (summary, body)
+}
+
+/// Short id + summary for a revision, used to attribute merge-view panes.
+fn commit_brief(workdir: &Path, rev: &str) -> Option<ConflictCommit> {
+    let output = run_git_command(workdir, &["log", "-1", "--format=%h%x00%s", rev]).ok()?;
+    let (short_id, summary) = output.trim().split_once('\0')?;
+    Some(ConflictCommit {
+        short_id: short_id.to_string(),
+        summary: summary.to_string(),
+    })
+}
+
+/// Friendly label and commit identity for the incoming side of an
+/// in-progress merge, cherry-pick, rebase, or revert: a ref name when one
+/// resolves, else the short commit id, else "incoming".
+fn incoming_head_info(workdir: &Path) -> (String, Option<ConflictCommit>) {
+    for head in [
+        "MERGE_HEAD",
+        "CHERRY_PICK_HEAD",
+        "REBASE_HEAD",
+        "REVERT_HEAD",
+    ] {
+        let Ok(oid) = run_git_command(workdir, &["rev-parse", "--verify", "--quiet", head]) else {
+            continue;
+        };
+        let oid = oid.trim().to_string();
+        if oid.is_empty() {
+            continue;
+        }
+        let commit = commit_brief(workdir, &oid);
+        if let Ok(name) = run_git_command(
+            workdir,
+            &["name-rev", "--name-only", "--exclude=tags/*", &oid],
+        ) {
+            let name = name.trim();
+            if !name.is_empty() && name != "undefined" {
+                return (name.to_string(), commit);
+            }
+        }
+        return (oid[..7.min(oid.len())].to_string(), commit);
+    }
+    ("incoming".to_string(), None)
 }
 
 fn parent_rev_or_empty(workdir: &Path, commit_id: &str) -> String {
@@ -1695,5 +1784,143 @@ mod tests {
             .get_working_tree_diff(&SyntaxHighlighter::default())
             .expect("non-whitespace edit should still produce a diff");
         assert_eq!(files.len(), 1);
+    }
+
+    #[test]
+    fn lists_commits_from_all_local_branches_with_parents() {
+        // given a repo where a feature branch diverged from main
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let workdir = temp_dir.path();
+        git(workdir, &["init", "-b", "main"]);
+        git(workdir, &["config", "user.email", "test@example.com"]);
+        git(workdir, &["config", "user.name", "Test User"]);
+        write_file(workdir, "f.txt", "base\n");
+        git(workdir, &["add", "."]);
+        git(workdir, &["commit", "-m", "base"]);
+        git(workdir, &["checkout", "-b", "feature"]);
+        write_file(workdir, "f.txt", "feature\n");
+        git(workdir, &["commit", "-am", "feature change"]);
+        git(workdir, &["checkout", "main"]);
+        write_file(workdir, "f.txt", "main\n");
+        git(workdir, &["commit", "-am", "main change"]);
+
+        let backend = GitCliBackend::discover_from(workdir, DiffWhitespaceMode::Normal)
+            .expect("failed to discover backend");
+
+        // when
+        let commits = backend
+            .get_recent_commits(0, 10)
+            .expect("failed to list commits");
+
+        // then commits from the non-HEAD branch are included
+        let summaries: Vec<&str> = commits.iter().map(|c| c.summary.as_str()).collect();
+        assert!(summaries.contains(&"feature change"), "got: {summaries:?}");
+        assert!(summaries.contains(&"main change"), "got: {summaries:?}");
+        // topo order keeps the shared root last, with parents populated
+        assert_eq!(summaries.last(), Some(&"base"), "got: {summaries:?}");
+        for commit in &commits {
+            if commit.summary == "base" {
+                assert!(commit.parent_ids.is_empty());
+            } else {
+                assert_eq!(commit.parent_ids.len(), 1, "{}", commit.summary);
+            }
+        }
+        // both tips carry their branch chip
+        let tip = |s: &str| commits.iter().find(|c| c.summary == s).unwrap();
+        assert_eq!(tip("main change").branch_name.as_deref(), Some("main"));
+        assert_eq!(
+            tip("feature change").branch_name.as_deref(),
+            Some("feature")
+        );
+
+        // and the libgit2 backend walks the same commit set
+        let repo = git2::Repository::open(workdir).expect("failed to open repo");
+        let libgit2_commits =
+            repository::get_recent_commits(&repo, 0, 10).expect("failed to list via libgit2");
+        let mut cli_ids: Vec<&String> = commits.iter().map(|c| &c.id).collect();
+        let mut libgit2_ids: Vec<&String> = libgit2_commits.iter().map(|c| &c.id).collect();
+        cli_ids.sort_unstable();
+        libgit2_ids.sort_unstable();
+        assert_eq!(cli_ids, libgit2_ids);
+    }
+
+    #[test]
+    fn detects_merge_conflicts_with_paths_and_labels() {
+        // given a merge of feature into main stopped on two conflicted files
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let workdir = temp_dir.path();
+        git(workdir, &["init", "-b", "main"]);
+        git(workdir, &["config", "user.email", "test@example.com"]);
+        git(workdir, &["config", "user.name", "Test User"]);
+        write_file(workdir, "a.txt", "base\n");
+        write_file(workdir, "b.txt", "base\n");
+        git(workdir, &["add", "."]);
+        git(workdir, &["commit", "-m", "base"]);
+        git(workdir, &["checkout", "-b", "feature"]);
+        write_file(workdir, "a.txt", "feature\n");
+        write_file(workdir, "b.txt", "feature\n");
+        git(workdir, &["commit", "-am", "feature change"]);
+        git(workdir, &["checkout", "main"]);
+        write_file(workdir, "a.txt", "main\n");
+        write_file(workdir, "b.txt", "main\n");
+        git(workdir, &["commit", "-am", "main change"]);
+        // `git merge` exits non-zero on conflict, so bypass the asserting helper
+        let merge = Command::new("git")
+            .current_dir(workdir)
+            .args(["merge", "feature"])
+            .output()
+            .expect("failed to run git merge");
+        assert!(!merge.status.success(), "merge should stop on conflicts");
+
+        let backend = GitCliBackend::discover_from(workdir, DiffWhitespaceMode::Normal)
+            .expect("failed to discover backend");
+
+        // when
+        let info = backend
+            .get_merge_conflicts()
+            .expect("conflict probe failed")
+            .expect("conflicts should be detected");
+
+        // then
+        assert_eq!(
+            info.paths,
+            vec![PathBuf::from("a.txt"), PathBuf::from("b.txt")]
+        );
+        assert_eq!(info.ours_label, "main");
+        assert_eq!(info.theirs_label, "feature");
+        // panes are attributed to the concrete commits on each side
+        assert_eq!(
+            info.ours_commit.as_ref().map(|c| c.summary.as_str()),
+            Some("main change")
+        );
+        assert_eq!(
+            info.theirs_commit.as_ref().map(|c| c.summary.as_str()),
+            Some("feature change")
+        );
+
+        // and the libgit2 backend agrees
+        let libgit2_backend =
+            crate::vcs::git::Libgit2Backend::discover_from(workdir, DiffWhitespaceMode::Normal)
+                .expect("failed to discover libgit2 backend");
+        let libgit2_info = libgit2_backend
+            .get_merge_conflicts()
+            .expect("conflict probe failed")
+            .expect("conflicts should be detected");
+        assert_eq!(libgit2_info.paths, info.paths);
+        assert_eq!(libgit2_info.ours_label, "main");
+        assert_eq!(libgit2_info.theirs_label, "feature");
+        assert_eq!(libgit2_info.ours_commit, info.ours_commit);
+        assert_eq!(libgit2_info.theirs_commit, info.theirs_commit);
+
+        // and resolving + staging both files clears the report
+        write_file(workdir, "a.txt", "resolved\n");
+        write_file(workdir, "b.txt", "resolved\n");
+        git(workdir, &["add", "."]);
+        assert!(
+            backend
+                .get_merge_conflicts()
+                .expect("conflict probe failed")
+                .is_none()
+        );
     }
 }

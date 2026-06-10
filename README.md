@@ -19,6 +19,13 @@
 - Review tracking at file or hunk granularity, persisted across sessions.
 - Three export targets: push a real PR review to GitHub, copy structured markdown to your
   clipboard, or pipe to stdout.
+- Commit selector with a JetBrains-style branch graph: colored tracks across all local
+  branches, with branch chips on tips.
+- Three-pane merge conflict resolution (ours | result | theirs), with each pane attributed
+  to its branch and commit: pick ours/theirs/both per conflict, preview the result live,
+  write, and stage — straight from the commit selector or `:merge`.
+- Cherry-pick or rebase from the commit selector (`p` / `b`); conflicts drop you straight
+  into the resolution view.
 - Works with git, jj, and mercurial. Reviews uncommitted changes, commit ranges, or any GitHub PR.
 
 ## Install

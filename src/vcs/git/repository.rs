@@ -12,6 +12,7 @@ pub struct CommitInfo {
     pub id: String,
     pub short_id: String,
     pub branch_name: Option<String>,
+    pub parent_ids: Vec<String>,
     pub summary: String,
     pub body: Option<String>,
     pub author: String,
@@ -83,6 +84,23 @@ pub fn get_recent_commits(
     let mut revwalk = repo.revwalk()?;
     revwalk.push_head()?;
     let branch_tip_names = get_branch_tip_names(repo);
+    // Walk every local branch, not just HEAD, so the selector can show
+    // branch tracks. Topological sorting keeps children above parents,
+    // which the commit-graph lane layout relies on (matches `git log
+    // --topo-order`). Tips are pushed in sorted order — HashMap iteration
+    // is randomized per process and would reshuffle rows on every launch.
+    let mut tips: Vec<_> = branch_tip_names.keys().copied().collect();
+    tips.sort_unstable_by_key(|oid| {
+        branch_tip_names
+            .get(oid)
+            .and_then(|names| names.first())
+            .cloned()
+            .unwrap_or_default()
+    });
+    for tip in tips {
+        let _ = revwalk.push(tip);
+    }
+    revwalk.set_sorting(git2::Sort::TOPOLOGICAL)?;
 
     let mut commits = Vec::new();
     for oid in revwalk.skip(offset).take(limit) {
@@ -97,6 +115,7 @@ pub fn get_recent_commits(
         let branch_name = branch_tip_names
             .get(&oid)
             .and_then(|names| names.first().cloned());
+        let parent_ids = commit.parent_ids().map(|p| p.to_string()).collect();
         let time = Utc
             .timestamp_opt(commit.time().seconds(), 0)
             .single()
@@ -106,6 +125,7 @@ pub fn get_recent_commits(
             id,
             short_id,
             branch_name,
+            parent_ids,
             summary,
             body,
             author,
@@ -137,6 +157,7 @@ pub fn get_commits_info(repo: &Repository, ids: &[String]) -> Result<Vec<CommitI
         let branch_name = branch_tip_names
             .get(&oid)
             .and_then(|names| names.first().cloned());
+        let parent_ids = commit.parent_ids().map(|p| p.to_string()).collect();
         let time = Utc
             .timestamp_opt(commit.time().seconds(), 0)
             .single()
@@ -146,6 +167,7 @@ pub fn get_commits_info(repo: &Repository, ids: &[String]) -> Result<Vec<CommitI
             id,
             short_id,
             branch_name,
+            parent_ids,
             summary,
             body,
             author,

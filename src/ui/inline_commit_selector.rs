@@ -35,6 +35,7 @@ pub(super) fn render_inline_commit_selector(frame: &mut Frame, app: &mut App, ar
                 is_cursor: i == app.commit_list_cursor,
                 is_selected: app.is_commit_selected(i),
                 theme,
+                graph: None,
             })
         })
         .collect();

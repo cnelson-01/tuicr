@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
-use crate::app::{STAGED_SELECTION_ID, UNSTAGED_SELECTION_ID};
+use crate::app::{MERGE_SELECTION_ID, STAGED_SELECTION_ID, UNSTAGED_SELECTION_ID};
 use crate::theme::Theme;
 use crate::ui::styles;
 use crate::ui::text_utils::{truncate_or_pad, truncate_str};
@@ -30,6 +30,10 @@ pub struct CommitRowSpec<'a> {
     pub is_cursor: bool,
     pub is_selected: bool,
     pub theme: &'a Theme,
+    /// Pre-rendered commit-graph gutter cells (two chars per lane), shared
+    /// width across all rows of a list. `None` hides the gutter (inline
+    /// selector, lists without parent data).
+    pub graph: Option<Vec<Span<'static>>>,
 }
 
 pub fn render_commit_row<'a>(spec: &CommitRowSpec<'a>) -> Line<'a> {
@@ -72,6 +76,21 @@ pub fn render_commit_row<'a>(spec: &CommitRowSpec<'a>) -> Line<'a> {
             styles::pending_style(theme)
         },
     ));
+
+    // Graph gutter sits between the checkbox and the hash so the track
+    // column lines up across every row (pseudo rows get blank cells).
+    if let Some(graph) = &spec.graph {
+        spans.extend(graph.iter().cloned());
+    }
+
+    if spec.commit.id == MERGE_SELECTION_ID {
+        spans.push(Span::styled(
+            " \u{00b7} conflicts \u{00b7} ",
+            styles::error_inline_style(theme),
+        ));
+        spans.push(Span::styled(spec.commit.summary.clone(), row_text_style));
+        return Line::from(spans);
+    }
 
     if spec.commit.id == STAGED_SELECTION_ID || spec.commit.id == UNSTAGED_SELECTION_ID {
         let tag = if spec.commit.id == STAGED_SELECTION_ID {
@@ -160,6 +179,7 @@ mod tests {
             id: id.to_string(),
             short_id: id[..7.min(id.len())].to_string(),
             branch_name: branch.map(|s| s.to_string()),
+            parent_ids: Vec::new(),
             summary: summary.to_string(),
             body: None,
             author: "alice".to_string(),
@@ -185,6 +205,7 @@ mod tests {
             is_cursor: true,
             is_selected: false,
             theme: &theme,
+            graph: None,
         });
         // then
         let text = line_text(&line);
@@ -202,6 +223,7 @@ mod tests {
             is_cursor: false,
             is_selected: true,
             theme: &theme,
+            graph: None,
         });
         // then
         let text = line_text(&line);
@@ -220,6 +242,7 @@ mod tests {
             is_cursor: false,
             is_selected: false,
             theme: &theme,
+            graph: None,
         });
         // then
         let text = line_text(&line);
@@ -238,6 +261,7 @@ mod tests {
             is_cursor: false,
             is_selected: false,
             theme: &theme,
+            graph: None,
         });
         // then
         let text = line_text(&line);
@@ -257,10 +281,29 @@ mod tests {
             is_cursor: false,
             is_selected: false,
             theme: &theme,
+            graph: None,
         });
         // then
         let text = line_text(&line);
         assert!(text.contains("[feat/foo]"), "got: {text:?}");
+    }
+
+    #[test]
+    fn should_render_graph_gutter_between_checkbox_and_hash() {
+        // given
+        let theme = Theme::dark();
+        let c = commit("abc1234", "Add feature", None);
+        // when
+        let line = render_commit_row(&CommitRowSpec {
+            commit: &c,
+            is_cursor: false,
+            is_selected: false,
+            theme: &theme,
+            graph: Some(vec![Span::raw("\u{25cf} ")]),
+        });
+        // then the node glyph lands immediately before the hash
+        let text = line_text(&line);
+        assert!(text.contains("\u{25cf} abc1234"), "got: {text:?}");
     }
 
     #[test]

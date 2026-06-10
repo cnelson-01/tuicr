@@ -21,10 +21,11 @@ use crate::syntax::SyntaxHighlighter;
 use crate::theme::Theme;
 use crate::update::UpdateInfo;
 use crate::vcs::git::calculate_gap;
-use crate::vcs::traits::VcsType;
+use crate::vcs::traits::{ConflictCommit, VcsType};
 use crate::vcs::{
-    ChangeKind, CommitInfo, DiffWhitespaceMode, FileBackend, GitBackendPreference, PrNoopVcs,
-    ResolvedRevisionRange, RevisionDiffTarget, VcsBackend, VcsChangeStatus, VcsInfo, detect_vcs,
+    ChangeKind, CommitInfo, ConflictFile, ConflictResolution, DiffWhitespaceMode, FileBackend,
+    GitBackendPreference, MergeConflictInfo, PrNoopVcs, ResolvedRevisionRange, RevisionDiffTarget,
+    VcsBackend, VcsChangeStatus, VcsInfo, apply_resolutions, detect_vcs,
 };
 
 const VISIBLE_COMMIT_COUNT: usize = 10;
@@ -32,6 +33,7 @@ const COMMIT_PAGE_SIZE: usize = 10;
 pub const DEFAULT_REVIEW_WATCH_INTERVAL_MS: u64 = 1000;
 pub const STAGED_SELECTION_ID: &str = "__tuicr_staged__";
 pub const UNSTAGED_SELECTION_ID: &str = "__tuicr_unstaged__";
+pub const MERGE_SELECTION_ID: &str = "__tuicr_merge__";
 pub const GAP_EXPAND_BATCH: usize = 20;
 
 /// Create a forge backend for the given repository.
@@ -372,6 +374,7 @@ pub fn pr_commit_to_commit_info(commit: &crate::forge::traits::PullRequestCommit
         id: commit.oid.clone(),
         short_id: commit.short_oid.clone(),
         branch_name: None,
+        parent_ids: Vec::new(),
         summary: commit.summary.clone(),
         body: None,
         author: commit.author.clone(),
@@ -467,6 +470,8 @@ pub enum InputMode {
     Confirm,
     CommitSelect,
     VisualSelect,
+    /// Fullscreen side-by-side merge conflict resolution screen.
+    MergeConflict,
     /// Modal listing comments that cannot be mapped to GitHub inline review
     /// comments. The user toggles between "move to summary" / "omit" for
     /// each row, then `s` advances to `SubmitConfirm`.
@@ -478,6 +483,88 @@ pub enum InputMode {
     /// no `SubmitConfirm` follows (resolver still runs if any comment is
     /// unmappable).
     SubmitActionPicker,
+}
+
+/// State for the fullscreen side-by-side merge conflict screen.
+#[derive(Debug)]
+pub struct MergeView {
+    pub files: Vec<MergeFileState>,
+    pub current_file: usize,
+    /// Index of the focused conflict within the current file.
+    pub current_conflict: usize,
+    pub scroll_offset: usize,
+    /// Body rows available, refreshed each render.
+    pub viewport_height: usize,
+    /// Mode restored when the user leaves with Esc.
+    pub return_mode: InputMode,
+    /// First Esc with unsaved resolutions arms a discard warning; the
+    /// second Esc (with nothing else pressed in between) leaves anyway.
+    pub discard_armed: bool,
+    pub ours_label: String,
+    pub theirs_label: String,
+    /// Commit behind the "ours" pane (HEAD), for pane attribution.
+    pub ours_commit: Option<ConflictCommit>,
+    /// Commit behind the "theirs" pane (incoming), for pane attribution.
+    pub theirs_commit: Option<ConflictCommit>,
+}
+
+impl MergeView {
+    pub fn current_file_state(&self) -> Option<&MergeFileState> {
+        self.files.get(self.current_file)
+    }
+
+    fn max_scroll(&self) -> usize {
+        let total = self
+            .current_file_state()
+            .map(MergeFileState::display_row_count)
+            .unwrap_or(0);
+        total.saturating_sub(self.viewport_height.max(1))
+    }
+
+    fn scroll_to_current_conflict(&mut self) {
+        let Some(file) = self.files.get(self.current_file) else {
+            return;
+        };
+        let headers = file.conflict_header_rows();
+        let Some(&row) = headers.get(self.current_conflict) else {
+            return;
+        };
+        // Before the first render the viewport height is unknown; assume a
+        // small screen so opening a file still leaves leading context.
+        let lead = self.viewport_height.max(12) / 4;
+        self.scroll_offset = row.saturating_sub(lead).min(self.max_scroll());
+    }
+}
+
+/// One conflicted file inside the merge view.
+#[derive(Debug)]
+pub struct MergeFileState {
+    pub path: PathBuf,
+    pub file: ConflictFile,
+    /// One entry per conflict block, in file order.
+    pub resolutions: Vec<ConflictResolution>,
+    /// Resolution edits not yet written to disk.
+    pub dirty: bool,
+    /// Written to disk and staged with every conflict resolved.
+    pub staged: bool,
+    pub load_error: Option<String>,
+}
+
+impl MergeFileState {
+    pub fn unresolved_count(&self) -> usize {
+        self.resolutions
+            .iter()
+            .filter(|r| matches!(r, ConflictResolution::Unresolved))
+            .count()
+    }
+
+    pub fn display_row_count(&self) -> usize {
+        self.file.display_row_count(&self.resolutions)
+    }
+
+    pub fn conflict_header_rows(&self) -> Vec<usize> {
+        self.file.conflict_header_rows(&self.resolutions)
+    }
 }
 
 /// CommandCompletionState keeps one Tab-completion run anchored to the text
@@ -598,6 +685,9 @@ impl PullRequestDiffSource {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfirmAction {
     CopyAndQuit,
+    /// Every conflict is resolved and staged — commit/continue the
+    /// in-progress merge operation?
+    ContinueMergeOperation,
 }
 
 /// Push a `MappedComment` onto the appropriate bucket. Free function so the
@@ -954,6 +1044,8 @@ pub struct App {
 
     // Commit selection state
     pub commit_list: Vec<CommitInfo>,
+    /// Fullscreen merge conflict screen state; `Some` while it is open.
+    pub merge_view: Option<MergeView>,
     pub commit_list_cursor: usize,
     pub commit_list_scroll_offset: usize,
     pub commit_list_viewport_height: usize,
@@ -1677,7 +1769,12 @@ impl App {
                 || vcs.get_recent_commits(0, VISIBLE_COMMIT_COUNT),
                 profile_commit_result,
             )?;
-            if !has_staged_changes && !has_unstaged_changes && commits.is_empty() {
+            let merge_conflicts = vcs.get_merge_conflicts().ok().flatten();
+            if !has_staged_changes
+                && !has_unstaged_changes
+                && commits.is_empty()
+                && merge_conflicts.is_none()
+            {
                 return Err(TuicrError::NoChanges);
             }
 
@@ -1687,6 +1784,9 @@ impl App {
             }
             if has_unstaged_changes {
                 commit_list.insert(0, Self::unstaged_commit_entry());
+            }
+            if let Some(info) = &merge_conflicts {
+                commit_list.insert(0, Self::merge_commit_entry(info));
             }
 
             let diff_source = if has_staged_changes && has_unstaged_changes {
@@ -1813,6 +1913,7 @@ impl App {
             mouse_drag_active: false,
             comment_line_range: None,
             commit_list,
+            merge_view: None,
             commit_list_cursor: 0,
             commit_list_scroll_offset: 0,
             commit_list_viewport_height: 0,
@@ -3377,6 +3478,7 @@ impl App {
             id: STAGED_SELECTION_ID.to_string(),
             short_id: "STAGED".to_string(),
             branch_name: None,
+            parent_ids: Vec::new(),
             summary: "Staged changes".to_string(),
             body: None,
             author: String::new(),
@@ -3389,6 +3491,7 @@ impl App {
             id: UNSTAGED_SELECTION_ID.to_string(),
             short_id: "UNSTAGED".to_string(),
             branch_name: None,
+            parent_ids: Vec::new(),
             summary: "Unstaged changes".to_string(),
             body: None,
             author: String::new(),
@@ -3467,6 +3570,36 @@ impl App {
         self.session.add_diff_file(&self.diff_files[0]);
     }
 
+    fn merge_commit_entry(info: &MergeConflictInfo) -> CommitInfo {
+        let n = info.paths.len();
+        CommitInfo {
+            id: MERGE_SELECTION_ID.to_string(),
+            short_id: "MERGE".to_string(),
+            branch_name: None,
+            parent_ids: Vec::new(),
+            summary: format!(
+                "Resolve merge conflicts \u{00b7} {n} file{} ({} \u{2192} {})",
+                if n == 1 { "" } else { "s" },
+                info.theirs_label,
+                info.ours_label
+            ),
+            body: None,
+            author: String::new(),
+            time: Utc::now(),
+        }
+    }
+
+    fn is_merge_conflicts_commit(commit: &CommitInfo) -> bool {
+        commit.id == MERGE_SELECTION_ID
+    }
+
+    /// Whether the selector cursor sits on the merge conflicts pseudo row.
+    pub fn cursor_on_merge_row(&self) -> bool {
+        self.commit_list
+            .get(self.commit_list_cursor)
+            .is_some_and(Self::is_merge_conflicts_commit)
+    }
+
     fn is_staged_commit(commit: &CommitInfo) -> bool {
         commit.id == STAGED_SELECTION_ID
     }
@@ -3476,7 +3609,9 @@ impl App {
     }
 
     fn is_special_commit(commit: &CommitInfo) -> bool {
-        Self::is_staged_commit(commit) || Self::is_unstaged_commit(commit)
+        Self::is_staged_commit(commit)
+            || Self::is_unstaged_commit(commit)
+            || Self::is_merge_conflicts_commit(commit)
     }
 
     fn special_commit_count(&self) -> usize {
@@ -8279,6 +8414,453 @@ impl App {
         }
     }
 
+    // Selector history operations (cherry-pick / rebase)
+
+    /// Commits the selector action applies to: the selection range when one
+    /// exists, else the cursor row — pseudo rows excluded, oldest first.
+    fn selector_action_commit_ids(&self) -> Vec<String> {
+        let (start, end) = match self.commit_selection_range {
+            Some(range) => range,
+            None => (self.commit_list_cursor, self.commit_list_cursor),
+        };
+        (start..=end)
+            .rev()
+            .filter_map(|i| self.commit_list.get(i))
+            .filter(|c| !Self::is_special_commit(c))
+            .map(|c| c.id.clone())
+            .collect()
+    }
+
+    /// Cherry-pick the selected commits (or the cursor commit) onto the
+    /// current branch. Conflicts open the merge view automatically.
+    pub fn selector_cherry_pick(&mut self) {
+        let ids = self.selector_action_commit_ids();
+        if ids.is_empty() {
+            self.set_message("Move the cursor onto a commit to cherry-pick");
+            return;
+        }
+        match self.vcs.cherry_pick(&ids) {
+            Ok(()) => {
+                self.refresh_commit_selector_rows();
+                self.set_message(format!(
+                    "Cherry-picked {} commit{} onto {}",
+                    ids.len(),
+                    if ids.len() == 1 { "" } else { "s" },
+                    self.vcs_info.branch_name.as_deref().unwrap_or("HEAD"),
+                ));
+            }
+            Err(err) => self.handle_history_op_failure("cherry-pick", err),
+        }
+    }
+
+    /// Rebase the current branch onto the commit under the cursor.
+    /// Conflicts open the merge view automatically.
+    pub fn selector_rebase_onto_cursor(&mut self) {
+        let commit_id = self
+            .commit_list
+            .get(self.commit_list_cursor)
+            .filter(|c| !Self::is_special_commit(c))
+            .map(|c| c.id.clone());
+        let Some(commit_id) = commit_id else {
+            self.set_message("Move the cursor onto a commit to rebase onto");
+            return;
+        };
+        match self.vcs.rebase_onto(&commit_id) {
+            Ok(()) => {
+                self.refresh_commit_selector_rows();
+                self.set_message(format!(
+                    "Rebased {} onto {}",
+                    self.vcs_info.branch_name.as_deref().unwrap_or("HEAD"),
+                    &commit_id[..7.min(commit_id.len())],
+                ));
+            }
+            Err(err) => self.handle_history_op_failure("rebase", err),
+        }
+    }
+
+    /// A failed history operation either stopped on conflicts (open the
+    /// merge view so the user can resolve, then `--continue` from a shell)
+    /// or genuinely failed (surface the VCS error).
+    fn handle_history_op_failure(&mut self, op: &str, err: TuicrError) {
+        if let Ok(Some(_)) = self.vcs.get_merge_conflicts() {
+            if let Err(open_err) = self.open_merge_view(InputMode::CommitSelect) {
+                self.set_error(format!("{op} stopped on conflicts: {open_err}"));
+                return;
+            }
+            self.set_message(format!(
+                "{op} stopped on conflicts \u{2014} resolve + w, then `git {op} --continue`"
+            ));
+        } else {
+            let err = err.to_string();
+            let err = err.trim();
+            self.set_error(format!("{op} failed: {err}"));
+        }
+    }
+
+    /// Re-probe the repository and rebuild the selector rows (pseudo rows
+    /// included). Used after history operations and when leaving the merge
+    /// view, where HEAD or the conflict state may have changed.
+    fn refresh_commit_selector_rows(&mut self) {
+        let commits = self
+            .vcs
+            .get_recent_commits(0, VISIBLE_COMMIT_COUNT)
+            .unwrap_or_default();
+        let highlighter = self.theme.syntax_highlighter();
+        let change_status = Self::get_change_status_with_ignore(
+            self.vcs.as_ref(),
+            &self.vcs_info.root_path,
+            highlighter,
+            self.path_filter.as_deref(),
+        )
+        .unwrap_or_default();
+        let merge_conflicts = self.vcs.get_merge_conflicts().ok().flatten();
+
+        self.has_more_commit = commits.len() >= VISIBLE_COMMIT_COUNT;
+        let mut commit_list = commits;
+        if change_status.staged {
+            commit_list.insert(0, Self::staged_commit_entry());
+        }
+        if change_status.unstaged {
+            commit_list.insert(0, Self::unstaged_commit_entry());
+        }
+        if let Some(info) = &merge_conflicts {
+            commit_list.insert(0, Self::merge_commit_entry(info));
+        }
+        self.commit_list = commit_list;
+        self.commit_list_cursor = 0;
+        self.commit_list_scroll_offset = 0;
+        self.commit_selection_range = None;
+        self.visible_commit_count = self.commit_list.len();
+    }
+
+    // Merge conflict view methods
+
+    /// Open the fullscreen merge conflict screen. Shows a message and stays
+    /// in the current mode when the repository has no conflicted paths.
+    pub fn open_merge_view(&mut self, return_mode: InputMode) -> Result<()> {
+        let Some(info) = self.vcs.get_merge_conflicts()? else {
+            self.set_message("No merge conflicts detected");
+            return Ok(());
+        };
+
+        let root = self.vcs_info.root_path.clone();
+        let files: Vec<MergeFileState> = info
+            .paths
+            .iter()
+            .map(|path| match std::fs::read_to_string(root.join(path)) {
+                Ok(content) => {
+                    let file = crate::vcs::parse_conflict_file(&content);
+                    let resolutions = vec![ConflictResolution::Unresolved; file.conflict_count()];
+                    MergeFileState {
+                        path: path.clone(),
+                        file,
+                        resolutions,
+                        dirty: false,
+                        staged: false,
+                        load_error: None,
+                    }
+                }
+                Err(err) => MergeFileState {
+                    path: path.clone(),
+                    file: ConflictFile::default(),
+                    resolutions: Vec::new(),
+                    dirty: false,
+                    staged: false,
+                    load_error: Some(err.to_string()),
+                },
+            })
+            .collect();
+
+        let mut view = MergeView {
+            files,
+            current_file: 0,
+            current_conflict: 0,
+            scroll_offset: 0,
+            viewport_height: 0,
+            return_mode,
+            discard_armed: false,
+            ours_label: info.ours_label,
+            theirs_label: info.theirs_label,
+            ours_commit: info.ours_commit,
+            theirs_commit: info.theirs_commit,
+        };
+        view.scroll_to_current_conflict();
+        self.merge_view = Some(view);
+        self.input_mode = InputMode::MergeConflict;
+        Ok(())
+    }
+
+    /// Esc from the merge view. Unsaved resolutions require a second Esc.
+    pub fn close_merge_view(&mut self) {
+        let Some(view) = self.merge_view.as_mut() else {
+            self.input_mode = InputMode::Normal;
+            return;
+        };
+        if view.files.iter().any(|f| f.dirty) && !view.discard_armed {
+            view.discard_armed = true;
+            self.set_message("Unsaved conflict resolutions \u{2014} press Esc again to discard");
+            return;
+        }
+        let return_mode = view.return_mode;
+        self.input_mode = return_mode;
+        self.merge_view = None;
+        if return_mode == InputMode::CommitSelect {
+            self.refresh_commit_selector_rows();
+        }
+    }
+
+    /// Any key other than Esc cancels a pending discard warning.
+    pub fn merge_disarm_discard(&mut self) {
+        if let Some(view) = self.merge_view.as_mut() {
+            view.discard_armed = false;
+        }
+    }
+
+    pub fn merge_half_page(&self) -> usize {
+        self.merge_view
+            .as_ref()
+            .map(|v| (v.viewport_height / 2).max(1))
+            .unwrap_or(1)
+    }
+
+    pub fn merge_full_page(&self) -> usize {
+        self.merge_view
+            .as_ref()
+            .map(|v| v.viewport_height.max(1))
+            .unwrap_or(1)
+    }
+
+    pub fn merge_scroll_down(&mut self, n: usize) {
+        if let Some(view) = self.merge_view.as_mut() {
+            view.scroll_offset = (view.scroll_offset + n).min(view.max_scroll());
+        }
+    }
+
+    pub fn merge_scroll_up(&mut self, n: usize) {
+        if let Some(view) = self.merge_view.as_mut() {
+            view.scroll_offset = view.scroll_offset.saturating_sub(n);
+        }
+    }
+
+    pub fn merge_scroll_to_top(&mut self) {
+        if let Some(view) = self.merge_view.as_mut() {
+            view.scroll_offset = 0;
+        }
+    }
+
+    pub fn merge_scroll_to_bottom(&mut self) {
+        if let Some(view) = self.merge_view.as_mut() {
+            view.scroll_offset = view.max_scroll();
+        }
+    }
+
+    pub fn merge_next_conflict(&mut self) {
+        let message = {
+            let Some(view) = self.merge_view.as_mut() else {
+                return;
+            };
+            let count = view
+                .current_file_state()
+                .map(|f| f.file.conflict_count())
+                .unwrap_or(0);
+            if count == 0 {
+                Some("No conflicts in this file".to_string())
+            } else if view.current_conflict + 1 >= count {
+                Some("Already at the last conflict".to_string())
+            } else {
+                view.current_conflict += 1;
+                view.scroll_to_current_conflict();
+                None
+            }
+        };
+        if let Some(msg) = message {
+            self.set_message(msg);
+        }
+    }
+
+    pub fn merge_prev_conflict(&mut self) {
+        let message = {
+            let Some(view) = self.merge_view.as_mut() else {
+                return;
+            };
+            let count = view
+                .current_file_state()
+                .map(|f| f.file.conflict_count())
+                .unwrap_or(0);
+            if count == 0 {
+                Some("No conflicts in this file".to_string())
+            } else if view.current_conflict == 0 {
+                Some("Already at the first conflict".to_string())
+            } else {
+                view.current_conflict -= 1;
+                view.scroll_to_current_conflict();
+                None
+            }
+        };
+        if let Some(msg) = message {
+            self.set_message(msg);
+        }
+    }
+
+    pub fn merge_next_file(&mut self) {
+        if let Some(view) = self.merge_view.as_mut()
+            && view.current_file + 1 < view.files.len()
+        {
+            view.current_file += 1;
+            view.current_conflict = 0;
+            view.scroll_offset = 0;
+            view.scroll_to_current_conflict();
+        }
+    }
+
+    pub fn merge_prev_file(&mut self) {
+        if let Some(view) = self.merge_view.as_mut()
+            && view.current_file > 0
+        {
+            view.current_file -= 1;
+            view.current_conflict = 0;
+            view.scroll_offset = 0;
+            view.scroll_to_current_conflict();
+        }
+    }
+
+    /// Apply a resolution to the focused conflict, then advance to the next
+    /// unresolved conflict in the file so repeated picks sweep forward.
+    pub fn merge_resolve_current(&mut self, resolution: ConflictResolution) {
+        let message = {
+            let Some(view) = self.merge_view.as_mut() else {
+                return;
+            };
+            let current_conflict = view.current_conflict;
+            let Some(file) = view.files.get_mut(view.current_file) else {
+                return;
+            };
+            if file.resolutions.is_empty() {
+                Some("No conflicts to resolve in this file".to_string())
+            } else {
+                let idx = current_conflict.min(file.resolutions.len() - 1);
+                if file.resolutions[idx] != resolution {
+                    file.resolutions[idx] = resolution;
+                    file.dirty = true;
+                    file.staged = false;
+                }
+                if resolution == ConflictResolution::Unresolved {
+                    None
+                } else if let Some(next) = file
+                    .resolutions
+                    .iter()
+                    .enumerate()
+                    .skip(idx + 1)
+                    .find(|(_, r)| matches!(r, ConflictResolution::Unresolved))
+                    .map(|(i, _)| i)
+                {
+                    view.current_conflict = next;
+                    view.scroll_to_current_conflict();
+                    None
+                } else if file.unresolved_count() == 0 {
+                    Some("All conflicts resolved \u{00b7} press w to write".to_string())
+                } else {
+                    None
+                }
+            }
+        };
+        if let Some(msg) = message {
+            self.set_message(msg);
+        }
+    }
+
+    /// Write the current file's resolutions to the working tree; stage it
+    /// when every conflict is resolved (the VCS "mark resolved" gesture).
+    pub fn merge_save_current_file(&mut self) -> Result<()> {
+        let root = self.vcs_info.root_path.clone();
+        let load_error = self
+            .merge_view
+            .as_ref()
+            .and_then(MergeView::current_file_state)
+            .and_then(|f| f.load_error.clone());
+        if let Some(err) = load_error {
+            self.set_error(format!("Cannot write this file: {err}"));
+            return Ok(());
+        }
+
+        let (path, unresolved) = {
+            let Some(view) = self.merge_view.as_mut() else {
+                return Ok(());
+            };
+            let Some(file) = view.files.get_mut(view.current_file) else {
+                return Ok(());
+            };
+            let content = apply_resolutions(&file.file, &file.resolutions);
+            std::fs::write(root.join(&file.path), content)?;
+            file.dirty = false;
+            (file.path.clone(), file.unresolved_count())
+        };
+
+        if unresolved > 0 {
+            self.set_message(format!(
+                "Wrote {} \u{00b7} {unresolved} conflict{} remaining",
+                path.display(),
+                if unresolved == 1 { "" } else { "s" }
+            ));
+            return Ok(());
+        }
+
+        match self.vcs.stage_file(&path) {
+            Ok(()) => {
+                if let Some(view) = self.merge_view.as_mut()
+                    && let Some(file) = view.files.get_mut(view.current_file)
+                {
+                    file.staged = true;
+                }
+                if self.merge_all_resolved_and_staged() {
+                    // Hand off to the Y/N prompt; the dialog renders on
+                    // top of the merge view.
+                    self.enter_confirm_mode(ConfirmAction::ContinueMergeOperation);
+                } else {
+                    self.set_message(format!(
+                        "Wrote {} \u{00b7} resolved and staged",
+                        path.display()
+                    ));
+                }
+            }
+            Err(err) => {
+                self.set_error(format!(
+                    "Wrote {} but staging failed: {err}",
+                    path.display()
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// True once every file in the merge view is conflict-free, written,
+    /// and staged — confirmed against the VCS, which is authoritative
+    /// (paths conflicted outside this view would still block).
+    fn merge_all_resolved_and_staged(&self) -> bool {
+        let view_done = self.merge_view.as_ref().is_some_and(|view| {
+            view.files.iter().all(|f| {
+                f.load_error.is_none() && f.unresolved_count() == 0 && !f.dirty && f.staged
+            })
+        });
+        view_done && matches!(self.vcs.get_merge_conflicts(), Ok(None))
+    }
+
+    /// Yes-path of the commit prompt: commit/continue the operation, then
+    /// leave the merge view. On failure, return to the merge view with the
+    /// error surfaced.
+    pub fn confirm_continue_merge_operation(&mut self) {
+        match self.vcs.continue_merge_operation() {
+            Ok(op) => {
+                self.close_merge_view();
+                self.set_message(format!("\u{2713} {op} committed"));
+            }
+            Err(err) => {
+                self.input_mode = InputMode::MergeConflict;
+                self.set_error(format!("Commit failed: {err}"));
+            }
+        }
+    }
+
     // Check if cursor is on the commit expand row
     pub fn is_on_expand_row(&self) -> bool {
         self.can_show_more_commits() && self.commit_list_cursor == self.visible_commit_count
@@ -8476,6 +9058,10 @@ impl App {
         if selected_commits.is_empty() {
             self.set_message("Select at least one commit");
             return Ok(());
+        }
+
+        if selected_commits.iter().any(Self::is_merge_conflicts_commit) {
+            return self.open_merge_view(InputMode::CommitSelect);
         }
 
         let selected_staged = selected_commits.iter().any(Self::is_staged_commit);
@@ -10219,11 +10805,183 @@ mod commit_selection_tests {
             id: id.to_string(),
             short_id: id.to_string(),
             branch_name: None,
+            parent_ids: Vec::new(),
             summary: "Test commit".to_string(),
             body: None,
             author: "Test".to_string(),
             time: Utc::now(),
         }
+    }
+
+    fn install_merge_view(app: &mut App) {
+        let content = "top\n<<<<<<< HEAD\nours1\n=======\ntheirs1\n>>>>>>> x\nmid\n<<<<<<< HEAD\nours2\n=======\ntheirs2\n>>>>>>> x\n";
+        let file = crate::vcs::parse_conflict_file(content);
+        let resolutions = vec![ConflictResolution::Unresolved; file.conflict_count()];
+        app.merge_view = Some(MergeView {
+            files: vec![MergeFileState {
+                path: PathBuf::from("a.txt"),
+                file,
+                resolutions,
+                dirty: false,
+                staged: false,
+                load_error: None,
+            }],
+            current_file: 0,
+            current_conflict: 0,
+            scroll_offset: 0,
+            viewport_height: 20,
+            return_mode: InputMode::CommitSelect,
+            discard_armed: false,
+            ours_label: "main".to_string(),
+            theirs_label: "feature".to_string(),
+            ours_commit: None,
+            theirs_commit: None,
+        });
+        app.input_mode = InputMode::MergeConflict;
+    }
+
+    #[test]
+    fn selector_action_ids_use_selection_range_oldest_first() {
+        // given a selector list with a pseudo row and two commits selected
+        let mut app = build_app(vec![
+            App::staged_commit_entry(),
+            normal_commit("aaa"),
+            normal_commit("bbb"),
+        ]);
+        app.commit_selection_range = Some((0, 2));
+        // when / then: pseudo rows drop out, order flips to oldest-first
+        assert_eq!(
+            app.selector_action_commit_ids(),
+            vec!["bbb".to_string(), "aaa".to_string()]
+        );
+        // and without a selection the cursor row is used
+        app.commit_selection_range = None;
+        app.commit_list_cursor = 1;
+        assert_eq!(app.selector_action_commit_ids(), vec!["aaa".to_string()]);
+        // pseudo cursor rows produce no ids
+        app.commit_list_cursor = 0;
+        assert!(app.selector_action_commit_ids().is_empty());
+    }
+
+    #[test]
+    fn merge_resolve_marks_dirty_and_advances_to_next_unresolved() {
+        // given a merge view with two unresolved conflicts
+        let mut app = build_app(vec![]);
+        install_merge_view(&mut app);
+
+        // when the first conflict takes ours
+        app.merge_resolve_current(ConflictResolution::Ours);
+
+        // then the resolution is recorded, the file is dirty, and focus
+        // sweeps forward to the remaining unresolved conflict
+        let view = app.merge_view.as_ref().unwrap();
+        let file = view.current_file_state().unwrap();
+        assert_eq!(file.resolutions[0], ConflictResolution::Ours);
+        assert!(file.dirty);
+        assert_eq!(view.current_conflict, 1);
+        assert_eq!(file.unresolved_count(), 1);
+    }
+
+    #[test]
+    fn merge_unresolve_restores_conflict() {
+        // given
+        let mut app = build_app(vec![]);
+        install_merge_view(&mut app);
+        app.merge_resolve_current(ConflictResolution::Theirs);
+
+        // when the user moves back and undoes the pick
+        app.merge_prev_conflict();
+        app.merge_resolve_current(ConflictResolution::Unresolved);
+
+        // then
+        let view = app.merge_view.as_ref().unwrap();
+        let file = view.current_file_state().unwrap();
+        assert_eq!(file.resolutions[0], ConflictResolution::Unresolved);
+        assert_eq!(file.unresolved_count(), 2);
+    }
+
+    #[test]
+    fn merge_close_requires_second_esc_when_dirty() {
+        // given unsaved resolutions
+        let mut app = build_app(vec![]);
+        install_merge_view(&mut app);
+        app.merge_resolve_current(ConflictResolution::Ours);
+
+        // when Esc is pressed once
+        app.close_merge_view();
+
+        // then the view stays open with the discard warning armed
+        assert_eq!(app.input_mode, InputMode::MergeConflict);
+        assert!(app.merge_view.as_ref().unwrap().discard_armed);
+
+        // and a second Esc returns to the originating mode
+        app.close_merge_view();
+        assert_eq!(app.input_mode, InputMode::CommitSelect);
+        assert!(app.merge_view.is_none());
+    }
+
+    #[test]
+    fn merge_prompt_triggers_only_when_everything_is_resolved_and_staged() {
+        // given a merge view with two conflicts
+        let mut app = build_app(vec![]);
+        install_merge_view(&mut app);
+        assert!(!app.merge_all_resolved_and_staged());
+
+        // when everything is resolved, written, and staged
+        {
+            let view = app.merge_view.as_mut().unwrap();
+            let file = view.files.get_mut(0).unwrap();
+            file.resolutions = vec![ConflictResolution::Ours, ConflictResolution::Theirs];
+            file.dirty = false;
+            file.staged = true;
+        }
+        // then the prompt condition holds (DummyVcs reports no conflicts)
+        assert!(app.merge_all_resolved_and_staged());
+    }
+
+    #[test]
+    fn merge_commit_prompt_no_returns_to_merge_view() {
+        // given the commit prompt is up
+        let mut app = build_app(vec![]);
+        install_merge_view(&mut app);
+        app.enter_confirm_mode(ConfirmAction::ContinueMergeOperation);
+        assert_eq!(app.input_mode, InputMode::Confirm);
+
+        // when the user declines
+        crate::handler::handle_confirm_action(&mut app, crate::input::Action::ConfirmNo);
+
+        // then we are back in the merge view, not quitting
+        assert_eq!(app.input_mode, InputMode::MergeConflict);
+        assert!(!app.should_quit);
+        assert!(app.merge_view.is_some());
+    }
+
+    #[test]
+    fn merge_commit_prompt_yes_surfaces_backend_error() {
+        // given a backend that cannot continue (DummyVcs default)
+        let mut app = build_app(vec![]);
+        install_merge_view(&mut app);
+        app.enter_confirm_mode(ConfirmAction::ContinueMergeOperation);
+
+        // when the user confirms
+        crate::handler::handle_confirm_action(&mut app, crate::input::Action::ConfirmYes);
+
+        // then the failure is surfaced and the merge view stays open
+        assert_eq!(app.input_mode, InputMode::MergeConflict);
+        assert!(app.merge_view.is_some());
+        assert!(app.message.is_some(), "an error message should be shown");
+    }
+
+    #[test]
+    fn merge_close_without_changes_returns_immediately() {
+        // given
+        let mut app = build_app(vec![]);
+        install_merge_view(&mut app);
+        // when
+        app.close_merge_view();
+        // then
+        assert_eq!(app.input_mode, InputMode::CommitSelect);
+        assert!(app.merge_view.is_none());
     }
 
     #[test]
@@ -10400,6 +11158,7 @@ mod target_selector_tests {
             id: id.to_string(),
             short_id: id.to_string(),
             branch_name: None,
+            parent_ids: Vec::new(),
             summary: format!("commit {id}"),
             body: None,
             author: "tester".to_string(),

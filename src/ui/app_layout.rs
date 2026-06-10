@@ -10,7 +10,7 @@ use crate::ui::diff_view::render_diff_view;
 use crate::ui::file_list::render_file_list;
 use crate::ui::inline_commit_selector::render_inline_commit_selector;
 use crate::ui::selector::render_commit_select;
-use crate::ui::{comment_panel, help_popup, status_bar, styles, submit_modals};
+use crate::ui::{comment_panel, help_popup, merge_conflict, status_bar, styles, submit_modals};
 
 const FILE_LIST_MIN_HEIGHT: u16 = 4;
 const COMMENT_NAVIGATOR_MIN_HEIGHT: u16 = 4;
@@ -25,6 +25,23 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // Special handling for commit selection mode
     if app.input_mode == InputMode::CommitSelect {
         render_commit_select(frame, app);
+        return;
+    }
+
+    // The merge conflict screen is fullscreen, like the selector. The
+    // commit prompt (Confirm mode with a live merge view) renders the
+    // dialog on top of it.
+    if app.input_mode == InputMode::MergeConflict
+        || (app.input_mode == InputMode::Confirm && app.merge_view.is_some())
+    {
+        merge_conflict::render_merge_conflict(frame, app);
+        if app.input_mode == InputMode::Confirm {
+            comment_panel::render_confirm_dialog(
+                frame,
+                app,
+                "All conflicts resolved \u{2014} commit now?",
+            );
+        }
         return;
     }
 

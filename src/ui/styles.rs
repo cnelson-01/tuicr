@@ -180,3 +180,22 @@ pub fn error_inline_style(theme: &Theme) -> Style {
 pub fn pseudo_commit_tag_style(theme: &Theme) -> Style {
     Style::default().fg(theme.file_modified)
 }
+
+/// Fixed palette for commit-graph tracks. Like [`AUTHOR_PALETTE`], plain
+/// ANSI slots so every theme/terminal palette renders distinct tracks;
+/// red is excluded to avoid reading as an error/deletion.
+const GRAPH_TRACK_PALETTE: &[Color] = &[
+    Color::Cyan,
+    Color::Magenta,
+    Color::Yellow,
+    Color::Blue,
+    Color::Green,
+    Color::LightMagenta,
+    Color::LightCyan,
+    Color::LightBlue,
+];
+
+/// Style for a commit-graph track by palette slot (wraps around).
+pub fn graph_track_style(_theme: &Theme, color_index: usize) -> Style {
+    Style::default().fg(GRAPH_TRACK_PALETTE[color_index % GRAPH_TRACK_PALETTE.len()])
+}

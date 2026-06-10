@@ -11,6 +11,7 @@
 //! are Git-backed and contain a `.git` directory. If jj detection fails, Git
 //! is tried next, then Mercurial.
 
+pub mod conflict;
 pub(crate) mod diff_parser;
 pub mod file;
 pub mod git;
@@ -20,14 +21,18 @@ pub mod pr_noop;
 pub mod pristine;
 pub(crate) mod traits;
 
+pub use conflict::{
+    ConflictBlock, ConflictFile, ConflictResolution, ConflictSegment, apply_resolutions,
+    parse_conflict_file,
+};
 pub use file::FileBackend;
 pub use git::{GitBackend, GitBackendPreference};
 pub use hg::HgBackend;
 pub use jj::JjBackend;
 pub use pr_noop::PrNoopVcs;
 pub use traits::{
-    ChangeKind, CommitInfo, DiffWhitespaceMode, ResolvedRevisionRange, RevisionDiffTarget,
-    VcsBackend, VcsChangeStatus, VcsInfo,
+    ChangeKind, CommitInfo, DiffWhitespaceMode, MergeConflictInfo, ResolvedRevisionRange,
+    RevisionDiffTarget, VcsBackend, VcsChangeStatus, VcsInfo,
 };
 
 use std::collections::HashMap;
@@ -349,6 +354,7 @@ mod tests {
             id: "abc".to_string(),
             short_id: "abc".to_string(),
             branch_name: Some("main".to_string()),
+            parent_ids: Vec::new(),
             summary: "test".to_string(),
             body: None,
             author: "author".to_string(),

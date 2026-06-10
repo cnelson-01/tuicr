@@ -9,6 +9,7 @@ use ratatui::{
 use crate::app::{App, TargetTab};
 use crate::forge::selector::{PrTabStatus, PrTabView};
 use crate::forge::traits::PullRequestListScope;
+use crate::ui::commit_graph::{compute_commit_graph, graph_row_spans};
 use crate::ui::commit_row::{
     CURSOR_GLYPH, CommitRowSpec, format_relative_short, render_commit_row,
 };
@@ -183,17 +184,24 @@ fn render_local_target_tab(frame: &mut Frame, app: &mut App, area: Rect) {
     let total_commits = app.commit_list.len();
     let visible_count = app.visible_commit_count.min(total_commits);
 
+    // Lane layout over the whole loaded list so tracks stay stable while
+    // paging; the gutter collapses when no commit reports parents.
+    let graph = compute_commit_graph(&app.commit_list);
+    let gutter_lanes = graph.gutter_lanes();
+
     let mut items: Vec<Line> = app
         .commit_list
         .iter()
         .take(visible_count)
         .enumerate()
         .map(|(i, commit)| {
+            let row = graph.rows.get(i).cloned().unwrap_or_default();
             render_commit_row(&CommitRowSpec {
                 commit,
                 is_cursor: i == app.commit_list_cursor,
                 is_selected: app.is_commit_selected(i),
                 theme: &app.theme,
+                graph: (gutter_lanes > 0).then(|| graph_row_spans(&row, gutter_lanes, &app.theme)),
             })
         })
         .collect();
@@ -203,6 +211,7 @@ fn render_local_target_tab(frame: &mut Frame, app: &mut App, area: Rect) {
             &app.theme,
             app.commit_list_cursor == visible_count,
             "show more commits",
+            gutter_lanes * 2,
         ));
     }
 
@@ -216,7 +225,12 @@ fn render_local_target_tab(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(list, area);
 }
 
-fn overflow_row<'a>(theme: &crate::theme::Theme, is_cursor: bool, label: &'a str) -> Line<'a> {
+fn overflow_row<'a>(
+    theme: &crate::theme::Theme,
+    is_cursor: bool,
+    label: &'a str,
+    graph_pad: usize,
+) -> Line<'a> {
     let style = if is_cursor {
         styles::selected_style(theme)
     } else {
@@ -229,6 +243,7 @@ fn overflow_row<'a>(theme: &crate::theme::Theme, is_cursor: bool, label: &'a str
     };
     Line::from(vec![
         Span::styled(pointer, style),
+        Span::raw(" ".repeat(graph_pad)),
         Span::styled(format!("    \u{2026} {label}"), style),
     ])
 }
@@ -336,7 +351,7 @@ fn render_pr_list(frame: &mut Frame, app: &App, area: Rect, view: &PrTabView<'_>
     if view.has_load_more {
         let load_idx = view.rows.len();
         let is_cursor = view.cursor == load_idx;
-        lines.push(overflow_row(theme, is_cursor, "load more pull requests"));
+        lines.push(overflow_row(theme, is_cursor, "load more pull requests", 0));
     }
 
     if lines.is_empty() {
@@ -417,7 +432,7 @@ fn render_target_selector_footer(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         match app.target_tab {
             TargetTab::Local => {
-                "   j/k navigate \u{00b7} space range \u{00b7} \u{21b5} confirm \u{00b7} q quit"
+                "   j/k navigate \u{00b7} space range \u{00b7} \u{21b5} confirm \u{00b7} p pick \u{00b7} b rebase \u{00b7} q quit"
                     .to_string()
             }
             TargetTab::PullRequests => {
@@ -532,6 +547,7 @@ mod selector_render_snapshot_tests {
             id: format!("abc{i}"),
             short_id: format!("abc{i}"),
             branch_name: None,
+            parent_ids: Vec::new(),
             summary: format!("commit {i}"),
             body: None,
             author: "tester".to_string(),

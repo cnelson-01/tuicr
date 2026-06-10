@@ -65,6 +65,10 @@ pub struct CommitInfo {
     /// Optional branch label for this commit in commit selection UI.
     /// For Git this is populated for commits that are branch tips.
     pub branch_name: Option<String>,
+    /// Parent commit IDs, first parent first. Drives the commit-graph
+    /// track gutter in the selector; empty when the backend doesn't
+    /// report parents (hg/jj, pseudo entries).
+    pub parent_ids: Vec<String>,
     pub summary: String,
     pub body: Option<String>,
     pub author: String,
@@ -144,6 +148,30 @@ pub enum RevisionDiffTarget {
 pub struct VcsChangeStatus {
     pub staged: bool,
     pub unstaged: bool,
+}
+
+/// Identity of the commit feeding one side of a conflict, so the merge
+/// view can attribute each pane to a concrete commit.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ConflictCommit {
+    pub short_id: String,
+    pub summary: String,
+}
+
+/// An in-progress merge (or cherry-pick/rebase stop) with unresolved
+/// conflicts, as surfaced by [`VcsBackend::get_merge_conflicts`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MergeConflictInfo {
+    /// Friendly label for the "ours" side, e.g. the current branch.
+    pub ours_label: String,
+    /// Friendly label for the "theirs" side, e.g. the branch being merged.
+    pub theirs_label: String,
+    /// Commit currently checked out (HEAD) — the "ours" content.
+    pub ours_commit: Option<ConflictCommit>,
+    /// Incoming commit (MERGE_HEAD / CHERRY_PICK_HEAD / REBASE_HEAD…).
+    pub theirs_commit: Option<ConflictCommit>,
+    /// Repo-relative paths with unresolved conflict entries, index order.
+    pub paths: Vec<PathBuf>,
 }
 
 /// Which side of the working tree to enumerate for the cheap path probes.
@@ -280,6 +308,36 @@ pub trait VcsBackend: Send {
             "Staging not supported for this VCS".into(),
         ))
     }
+
+    /// Report unresolved merge conflicts, or `None` when the repository has
+    /// no conflicted paths. Backends without conflict support return `None`.
+    fn get_merge_conflicts(&self) -> Result<Option<MergeConflictInfo>> {
+        Ok(None)
+    }
+
+    /// Cherry-pick the given commits (oldest first) onto the current
+    /// checkout. Stops with conflict state on failure, like the CLI.
+    fn cherry_pick(&self, _commit_ids: &[String]) -> Result<()> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Cherry-pick not supported for this VCS".into(),
+        ))
+    }
+
+    /// Rebase the current branch onto the given commit.
+    fn rebase_onto(&self, _commit_id: &str) -> Result<()> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Rebase not supported for this VCS".into(),
+        ))
+    }
+
+    /// Conclude the conflicted operation once every path is resolved and
+    /// staged: commit a merge, or continue a cherry-pick/rebase/revert.
+    /// Returns the operation's name for user messaging.
+    fn continue_merge_operation(&self) -> Result<String> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Continuing a merge is not supported for this VCS".into(),
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -344,6 +402,7 @@ mod tests {
             id: "abc123def456".to_string(),
             short_id: "abc123d".to_string(),
             branch_name: Some("main".to_string()),
+            parent_ids: Vec::new(),
             summary: "Fix bug".to_string(),
             body: None,
             author: "Test User".to_string(),
