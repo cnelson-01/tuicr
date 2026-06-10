@@ -150,6 +150,17 @@ impl GitRepoMode {
 }
 
 impl GitBackend {
+    /// CLI history operations rewrite `.git/index` (and move HEAD) behind
+    /// libgit2's back. Refresh the cached index afterwards — success or
+    /// failure, since a conflict stop also rewrites the index — so the
+    /// status probes and staged/unstaged diffs that follow see reality.
+    fn refresh_after_cli_op<T>(&self, result: Result<T>) -> Result<T> {
+        if let Self::Libgit2(backend) = self {
+            backend.reload_index();
+        }
+        result
+    }
+
     /// Discover a git repository from the current directory.
     pub fn discover(
         preference: GitBackendPreference,
@@ -398,14 +409,28 @@ impl VcsBackend for GitBackend {
         }
         let mut args: Vec<&str> = vec!["cherry-pick"];
         args.extend(commit_ids.iter().map(String::as_str));
-        run_git_command(&self.info().root_path, &args).map(|_| ())
+        let result = run_git_command(&self.info().root_path, &args).map(|_| ());
+        self.refresh_after_cli_op(result)
     }
 
     fn rebase_onto(&self, commit_id: &str) -> Result<()> {
-        run_git_command(&self.info().root_path, &["rebase", commit_id]).map(|_| ())
+        let result = run_git_command(&self.info().root_path, &["rebase", commit_id]).map(|_| ());
+        self.refresh_after_cli_op(result)
     }
 
     fn squash_commits(&self, commit_ids: &[String]) -> Result<()> {
+        let result = self.squash_commits_inner(commit_ids);
+        self.refresh_after_cli_op(result)
+    }
+
+    fn continue_merge_operation(&self) -> Result<String> {
+        let result = self.continue_merge_operation_inner();
+        self.refresh_after_cli_op(result)
+    }
+}
+
+impl GitBackend {
+    fn squash_commits_inner(&self, commit_ids: &[String]) -> Result<()> {
         if commit_ids.len() < 2 {
             return Err(TuicrError::VcsCommand(
                 "Select at least two commits to squash".into(),
@@ -479,7 +504,7 @@ impl VcsBackend for GitBackend {
         Ok(())
     }
 
-    fn continue_merge_operation(&self) -> Result<String> {
+    fn continue_merge_operation_inner(&self) -> Result<String> {
         let root = &self.info().root_path;
         let in_progress = |head: &str| {
             run_git_command(root, &["rev-parse", "--verify", "--quiet", head])
@@ -679,11 +704,33 @@ mod tests {
         )
         .expect("failed to discover backend");
 
-        // when / then: a clean pick lands on the current branch
+        // when / then: a clean pick lands on the current branch AS A
+        // COMMIT (not just staged changes), and the libgit2 index cache
+        // is refreshed so no phantom staged/unstaged state remains
+        let head_before = git_id(root, "HEAD");
         backend
             .cherry_pick(&[clean_id])
             .expect("clean cherry-pick should succeed");
         assert!(root.join("src/new.txt").exists());
+        assert_ne!(git_id(root, "HEAD"), head_before, "pick must commit");
+        let head_summary =
+            run_git_command(root, &["log", "-1", "--format=%s"]).expect("failed to read summary");
+        assert_eq!(head_summary.trim(), "add new file");
+        let highlighter = crate::syntax::SyntaxHighlighter::default();
+        assert!(
+            matches!(
+                backend.get_staged_diff(&highlighter),
+                Err(TuicrError::NoChanges)
+            ),
+            "no staged changes should remain after a clean pick"
+        );
+        assert!(
+            matches!(
+                backend.get_unstaged_diff(&highlighter),
+                Err(TuicrError::NoChanges)
+            ),
+            "no unstaged changes should remain after a clean pick"
+        );
 
         // and a conflicting pick fails, leaving conflict state behind
         let err = backend.cherry_pick(std::slice::from_ref(&conflict_id));

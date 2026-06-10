@@ -133,6 +133,18 @@ impl Libgit2Backend {
     }
 }
 
+impl Libgit2Backend {
+    /// Refresh the in-memory index from disk. `Repository::index()` hands
+    /// back the same refcounted git_index every time, so one `read`
+    /// refreshes every future user of the cache. Needed whenever the git
+    /// CLI rewrites `.git/index` behind libgit2's back (history ops).
+    pub(super) fn reload_index(&self) {
+        if let Ok(mut index) = self.repo.index() {
+            let _ = index.read(false);
+        }
+    }
+}
+
 impl VcsBackend for Libgit2Backend {
     fn info(&self) -> &VcsInfo {
         &self.info
