@@ -506,6 +506,7 @@ impl App {
     /// view, where HEAD or the conflict state may have changed.
     pub(in crate::app) fn refresh_commit_selector_rows(&mut self) {
         let (rows, has_more) = self.log_rows_from_vcs();
+        self.commit_filter_shown = self.commit_filter.clone();
         self.has_more_commit = has_more;
         self.commit_list = rows;
         self.commit_list_cursor = 0;

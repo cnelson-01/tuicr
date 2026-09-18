@@ -925,6 +925,14 @@ pub struct LogPane {
     pub inner_area: Option<ratatui::layout::Rect>,
 }
 
+/// What a background log search sends back: the generation it answers,
+/// the rows (or the error), and whether more history could be paged in.
+pub struct CommitFilterAnswer {
+    pub generation: u64,
+    pub query: Option<crate::vcs::CommitQuery>,
+    pub result: crate::error::Result<(Vec<CommitInfo>, bool)>,
+}
+
 /// Active tab in the review target selector.
 ///
 /// The selector internally still goes through `InputMode::CommitSelect`,
@@ -1572,6 +1580,14 @@ pub struct App {
     pub commit_filter: Option<crate::vcs::CommitQuery>,
     /// The filter prompt's buffer while it is open.
     pub commit_filter_draft: Option<String>,
+    /// Background log search: bumps per launch so stale answers are dropped.
+    pub commit_filter_generation: u64,
+    /// The in-flight search's receiver, if any.
+    pub commit_filter_rx: Option<std::sync::mpsc::Receiver<CommitFilterAnswer>>,
+    /// Last prompt edit, for the live-search debounce.
+    pub commit_filter_typed_at: Option<std::time::Instant>,
+    /// The query the rows on screen (or the search in flight) came from.
+    pub commit_filter_shown: Option<crate::vcs::CommitQuery>,
     /// Set while the comment composer is editing a commit message.
     pub commit_composer: Option<CommitComposer>,
     /// What a pending `ConfirmAction::DiscardChanges` will discard.

@@ -286,6 +286,12 @@ fn log_filter_prompt_applies_pages_and_clears() {
         app.commit_filter_summary().as_deref(),
         Some("fix author:kim")
     );
+    // the rows arrive from a background search; stand in for its answer
+    assert!(app.commit_filter_loading());
+    let query = app.commit_filter.clone().expect("filter");
+    let rows = app.vcs.search_commits(&query, 0, 10).expect("search");
+    app.commit_filter_rx = None;
+    app.install_filtered_rows(rows, true);
     assert_eq!(pane(&app).commits[0].id, "fix_author:kim-0");
     assert!(app.commit_filter_match_label().ends_with("+ matches"));
 
@@ -321,4 +327,58 @@ fn log_filter_prompt_applies_pages_and_clears() {
     app.commit_filter_clear_draft();
     app.apply_commit_filter();
     assert!(app.commit_filter.is_none());
+}
+
+#[test]
+fn live_filter_debounces_typing_and_installs_rows_behind_special_ones() {
+    let mut app = build_review_app(&["a"]);
+    app.enable_log_pane();
+    app.log_pane.as_mut().unwrap().list.commits.insert(0, {
+        let mut staged = commit(STAGED_SELECTION_ID);
+        staged.summary = "Staged changes".to_string();
+        staged
+    });
+
+    // typing schedules a search but nothing fires before the pause
+    app.begin_commit_filter();
+    app.commit_filter_insert_char('f');
+    assert!(app.commit_filter_typed_at.is_some());
+    assert!(!app.poll_commit_filter());
+    assert!(app.commit_filter_rx.is_none());
+
+    // an answer for the current generation lands behind the pseudo row and
+    // keeps the cursor on its commit
+    app.log_pane.as_mut().unwrap().list.cursor = 1; // on "c0"
+    app.commit_filter_generation += 1;
+    let rows = vec![commit("x1"), commit("c0"), commit("x2")];
+    app.install_filtered_rows(rows, false);
+    let ids: Vec<&str> = pane(&app).commits.iter().map(|c| c.id.as_str()).collect();
+    assert_eq!(ids, [STAGED_SELECTION_ID, "x1", "c0", "x2"]);
+    assert_eq!(pane(&app).cursor, 2, "cursor followed c0");
+    assert!(!pane(&app).has_more);
+
+    // a stale answer (older generation) is ignored
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.commit_filter_rx = Some(rx);
+    tx.send(CommitFilterAnswer {
+        generation: app.commit_filter_generation - 1,
+        query: None,
+        result: Ok((vec![commit("stale")], false)),
+    })
+    .unwrap();
+    assert!(!app.poll_commit_filter());
+    assert_eq!(pane(&app).commits[1].id, "x1");
+
+    // a current one is installed and clears the busy flag
+    tx.send(CommitFilterAnswer {
+        generation: app.commit_filter_generation,
+        query: None,
+        result: Ok((vec![commit("fresh")], true)),
+    })
+    .unwrap();
+    assert!(app.commit_filter_loading());
+    assert!(app.poll_commit_filter());
+    assert!(!app.commit_filter_loading());
+    assert_eq!(pane(&app).commits[1].id, "fresh");
+    assert!(pane(&app).has_more);
 }

@@ -1137,11 +1137,19 @@ pub(super) fn search_commits(
         format!("--skip={offset}"),
         format!("--max-count={limit}"),
         "--date-order".into(),
-        "--branches".into(),
         "--regexp-ignore-case".into(),
         "--fixed-strings".into(),
         "--all-match".into(),
     ];
+    match &query.branch {
+        // Only branches whose name contains the text, local and remote.
+        Some(branch) => {
+            let glob = format!("*{branch}*");
+            args.push(format!("--branches={glob}"));
+            args.push(format!("--remotes={glob}"));
+        }
+        None => args.push("--branches".into()),
+    }
     for word in &query.text {
         args.push(format!("--grep={word}"));
     }
@@ -1149,7 +1157,9 @@ pub(super) fn search_commits(
         args.push(format!("--author={author}"));
     }
     args.push(COMMIT_FORMAT.into());
-    args.push("HEAD".into());
+    if query.branch.is_none() {
+        args.push("HEAD".into());
+    }
     if let Some(path) = &query.path {
         args.push("--".into());
         args.push(path.clone());
@@ -2225,6 +2235,27 @@ mod tests {
         assert_eq!(summaries("fix author:lee"), ["fix typo in A"]);
         // path limits to commits touching it
         assert_eq!(summaries("path:a.txt"), ["fix typo in A", "Add feature A"]);
+        // branch: walks only branches whose name contains the text
+        git(workdir, &["checkout", "-qb", "release/1.0"]);
+        write_file(workdir, "c.txt", "1\n");
+        git(workdir, &["add", "."]);
+        git(workdir, &["commit", "-m", "Release notes"]);
+        git(workdir, &["checkout", "-q", "main"]);
+        write_file(workdir, "d.txt", "1\n");
+        git(workdir, &["add", "."]);
+        git(workdir, &["commit", "-m", "Main only"]);
+        let on_release = summaries("branch:rel");
+        assert!(
+            on_release.contains(&"Release notes".to_string()),
+            "{on_release:?}"
+        );
+        assert!(
+            !on_release.contains(&"Main only".to_string()),
+            "{on_release:?}"
+        );
+        assert_eq!(summaries("notes branch:rel"), ["Release notes"]);
+        git(workdir, &["checkout", "-q", "main"]);
+
         // and paging walks the filtered log
         assert_eq!(
             search_commits(workdir, &CommitQuery::parse("fix").unwrap(), 1, 10)

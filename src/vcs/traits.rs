@@ -99,14 +99,16 @@ pub enum RefKind {
 }
 
 /// A log filter. Free words match the commit message (every word must
-/// match, case-insensitively), `author:NAME` matches the author, and
-/// `path:PATH` keeps commits touching that path. Typed as one line:
-/// `fix retry author:kim path:src/net`.
+/// match, case-insensitively), `author:NAME` matches the author,
+/// `path:PATH` keeps commits touching that path, and `branch:NAME` walks
+/// only branches (local and remote-tracking) whose name contains NAME.
+/// Typed as one line: `fix retry author:kim path:src/net branch:release`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CommitQuery {
     pub text: Vec<String>,
     pub author: Option<String>,
     pub path: Option<String>,
+    pub branch: Option<String>,
 }
 
 impl CommitQuery {
@@ -122,6 +124,10 @@ impl CommitQuery {
                 if !path.is_empty() {
                     query.path = Some(path.to_string());
                 }
+            } else if let Some(branch) = word.strip_prefix("branch:") {
+                if !branch.is_empty() {
+                    query.branch = Some(branch.to_string());
+                }
             } else {
                 query.text.push(word.to_string());
             }
@@ -130,7 +136,10 @@ impl CommitQuery {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.text.is_empty() && self.author.is_none() && self.path.is_none()
+        self.text.is_empty()
+            && self.author.is_none()
+            && self.path.is_none()
+            && self.branch.is_none()
     }
 }
 
@@ -142,6 +151,9 @@ impl std::fmt::Display for CommitQuery {
         }
         if let Some(path) = &self.path {
             parts.push(format!("path:{path}"));
+        }
+        if let Some(branch) = &self.branch {
+            parts.push(format!("branch:{branch}"));
         }
         f.write_str(&parts.join(" "))
     }
@@ -631,6 +643,10 @@ mod tests {
         assert_eq!(query.to_string(), "fix retry author:kim path:src/net");
         assert!(CommitQuery::parse("   ").is_none());
         assert!(CommitQuery::parse("author: path:").is_none());
+        let by_branch = CommitQuery::parse("branch:release").expect("query");
+        assert_eq!(by_branch.branch.as_deref(), Some("release"));
+        assert!(by_branch.text.is_empty());
+        assert_eq!(by_branch.to_string(), "branch:release");
     }
 
     #[test]

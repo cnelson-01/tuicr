@@ -338,16 +338,20 @@ startup, and `log_height = N` (or `:set logheight N`) for its height.
 
 `/` opens a one-line prompt in the log pane and on the selector's Local tab. Free words
 match the commit message (all of them, case-insensitively), `author:NAME` matches the
-author, and `path:PATH` keeps commits that touch that path:
+author, `path:PATH` keeps commits that touch that path, and `branch:NAME` walks only the
+branches (local and remote-tracking) whose name contains NAME:
 
 ```
-/fix retry author:kim path:src/net
+/fix retry author:kim path:src/net branch:release
 ```
 
-`Enter` applies and the title (or the selector footer) shows the filter and a match count;
-the overflow row keeps paging through the filtered history. `/` again reopens the prompt
-pre-filled for editing, an empty prompt clears, and `Esc` clears an active filter before
-its usual meaning. Staged, unstaged, and conflicts rows stay visible while filtering.
+The rows follow the prompt as you type: each pause of about 200ms searches in the
+background and the title shows `…` while a search is running. `Enter` keeps the filter,
+`Esc` while typing puts the rows back to the last kept filter, and `Esc` afterwards clears
+it before its usual meaning. The title (or the selector footer) shows the filter and a
+match count, and the overflow row keeps paging through the filtered history. Free words do
+not match branch names; use `branch:` for that, and read the label chips on the rows.
+Staged, unstaged, and conflicts rows stay visible while filtering.
 
 ## Branch picker
 

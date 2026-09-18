@@ -399,6 +399,7 @@ impl App {
             .get(pane.list.cursor)
             .map(|c| c.id.clone());
         let (rows, has_more) = self.log_rows_from_vcs();
+        self.commit_filter_shown = self.commit_filter.clone();
         let pane = self.log_pane.as_mut().expect("checked above");
         pane.list.cursor = anchor
             .and_then(|id| rows.iter().position(|row| row.id == id))

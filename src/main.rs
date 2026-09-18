@@ -457,6 +457,7 @@ fn main() -> anyhow::Result<()> {
         needs_redraw |= app.poll_persisted_session_changes();
         needs_redraw |= app.poll_diff_watch_changes();
         needs_redraw |= app.poll_log_preview();
+        needs_redraw |= app.poll_commit_filter();
         needs_redraw |= app.poll_log_pane_autoshow();
         needs_redraw |= app.poll_blame();
         needs_redraw |= pr_pending;
