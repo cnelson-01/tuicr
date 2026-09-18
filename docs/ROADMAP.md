@@ -12,11 +12,11 @@ window. Phases land in order, each as its own commit(s). Tick items as they ship
 
 ## Phase 2: persistent log pane
 
-- [ ] Commit graph renders in the inline commit pane beside the diff, not only in
+- [x] Commit graph renders in the inline commit pane beside the diff, not only in
       the full-screen selector
-- [ ] Pane height is adjustable and `<leader>s` still toggles it
-- [ ] Highlighting a commit previews its diff live (no Enter needed)
-- [ ] Changed-file list follows the highlighted commit
+- [x] Pane height is adjustable and `<leader>s` still toggles it
+- [x] Highlighting a commit previews its diff live (no Enter needed)
+- [x] Changed-file list follows the highlighted commit
 
 ## Phase 3: branch operations
 

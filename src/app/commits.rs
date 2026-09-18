@@ -303,7 +303,7 @@ impl App {
 
     /// Whether the inline commit selector panel should be displayed.
     pub fn has_inline_commit_selector(&self) -> bool {
-        self.show_commit_selector && self.has_review_commits()
+        self.log_pane.is_none() && self.show_commit_selector && self.has_review_commits()
     }
 
     /// Whether the current review has a multi-commit selection that `(` / `)`
@@ -365,7 +365,7 @@ impl App {
     /// repeated Space still sweeps a run. The inline selector keeps the
     /// contiguous-range behavior (PR subsets need contiguity).
     pub fn toggle_commit_selection_and_advance(&mut self) {
-        if self.input_mode == InputMode::CommitSelect {
+        if self.input_mode == InputMode::CommitSelect || self.log_pane_focused() {
             let cursor = self.commit_list_cursor;
             if cursor >= self.commit_list.len() {
                 return;
@@ -487,7 +487,7 @@ impl App {
     /// or genuinely failed (surface the VCS error).
     fn handle_history_op_failure(&mut self, op: &str, err: TuicrError) {
         if let Ok(Some(_)) = self.vcs.get_merge_conflicts() {
-            if let Err(open_err) = self.open_merge_view(InputMode::CommitSelect) {
+            if let Err(open_err) = self.open_merge_view(self.selector_return_mode()) {
                 self.set_error(format!("{op} stopped on conflicts: {open_err}"));
                 return;
             }
@@ -505,38 +505,30 @@ impl App {
     /// included). Used after history operations and when leaving the merge
     /// view, where HEAD or the conflict state may have changed.
     fn refresh_commit_selector_rows(&mut self) {
-        let commit_limit = initial_commit_limit();
-        let commits = self
-            .vcs
-            .get_recent_commits(0, commit_limit)
-            .unwrap_or_default();
-        let highlighter = self.theme.syntax_highlighter();
-        let change_status = Self::get_change_status_with_ignore(
-            self.vcs.as_ref(),
-            &self.vcs_info.root_path,
-            highlighter,
-            self.path_filter.as_deref(),
-        )
-        .unwrap_or_default();
-        let merge_conflicts = self.vcs.get_merge_conflicts().ok().flatten();
-
-        self.has_more_commit = commits.len() >= commit_limit;
-        let mut commit_list = commits;
-        if change_status.staged {
-            commit_list.insert(0, Self::staged_commit_entry());
-        }
-        if change_status.unstaged {
-            commit_list.insert(0, Self::unstaged_commit_entry());
-        }
-        if let Some(info) = &merge_conflicts {
-            commit_list.insert(0, Self::merge_commit_entry(info));
-        }
-        self.commit_list = commit_list;
+        let (rows, has_more) = self.log_rows_from_vcs();
+        self.has_more_commit = has_more;
+        self.commit_list = rows;
         self.commit_list_cursor = 0;
         self.commit_list_scroll_offset = 0;
-        self.commit_selection_range = None;
+        // With the log pane open, the range belongs to the review on screen
+        // (comment scoping, `(` / `)` cycling); the pane's picks are what
+        // the selector code just cleared.
+        if self.log_pane.is_none() {
+            self.commit_selection_range = None;
+        }
         self.commit_picks.clear();
         self.visible_commit_count = self.commit_list.len();
+    }
+
+    /// Where a merge view opened from a selector should return: the
+    /// fullscreen selector when it is up, otherwise the review (the log
+    /// pane lives in Normal mode).
+    fn selector_return_mode(&self) -> InputMode {
+        if self.input_mode == InputMode::CommitSelect {
+            InputMode::CommitSelect
+        } else {
+            InputMode::Normal
+        }
     }
 
     // Merge conflict view methods
@@ -612,6 +604,8 @@ impl App {
         self.merge_view = None;
         if return_mode == InputMode::CommitSelect {
             self.refresh_commit_selector_rows();
+        } else if self.log_pane.is_some() {
+            self.refresh_log_rows_keep_cursor();
         }
     }
 

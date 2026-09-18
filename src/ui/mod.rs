@@ -9,6 +9,7 @@ pub mod diff_view;
 pub mod file_list;
 pub mod help_popup;
 pub mod inline_commit_selector;
+pub mod log_pane;
 pub mod merge_conflict;
 pub mod pr_info_panel;
 pub mod row_height;

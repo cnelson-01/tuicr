@@ -115,6 +115,8 @@ considers files that pass the active filters.
 | `<leader>j` | Move focus down (files to comments when visible, otherwise diff) |
 | `<leader>e` | Toggle file list visibility |
 | `<leader>s` | Toggle commit selector visibility (also `:set commits!`) |
+| `<leader>g` | Toggle the persistent log pane (also `:log`, `:set log!`) |
+| `<leader>+` / `<leader>-` | Grow / shrink the log pane (also `:set logheight N`) |
 | `Enter` | Select file (when file list is focused) |
 
 ## Comment navigator
@@ -212,6 +214,9 @@ In command mode,
 | `:set commits` | Show inline commit selector |
 | `:set nocommits` | Hide inline commit selector |
 | `:set commits!` | Toggle inline commit selector |
+| `:log` / `:set log!` | Toggle the persistent log pane |
+| `:set log` / `:set nolog` | Show / hide the persistent log pane |
+| `:set logheight N` | Set the log pane height to N rows (borders included) |
 | `:set reviewed` | Show files already marked reviewed |
 | `:set noreviewed` | Hide files already marked reviewed |
 | `:set reviewed!` / `:reviewed` | Toggle files already marked reviewed |
@@ -236,6 +241,26 @@ losing their reviewed state.
 
 `draft` applies to GitHub only. `comment` and `approve` work on GitHub, GitLab, and Bitbucket.
 `request-changes` works on GitHub and GitLab, but not Bitbucket yet.
+
+## Log pane
+
+`<leader>g` (or `:log`) docks the commit graph above the diff and keeps it there while
+you review, JetBrains-style. It replaces the inline commit selector while open. Resting
+the cursor on a commit for a moment loads that commit's diff below; rows whose diff is
+on screen carry the `▌` bar. Set `show_log = true` in `config.toml` to open it on
+startup, and `log_height = N` (or `:set logheight N`) for its height.
+
+| Key | Action |
+|-----|--------|
+| `j` / `k`, `g` / `G`, `Ctrl-d` / `Ctrl-u` | Move the cursor; the highlighted commit is previewed after a short pause |
+| `Space` | Toggle the cursor commit in the pick set (non-contiguous picks allowed); on the overflow row, load more history |
+| `Enter` | Load the picks (or the cursor commit) as the review; opens the merge view from the conflicts row |
+| `p` | Cherry-pick the picks (or cursor commit) onto the current branch |
+| `b` | Rebase the current branch onto the cursor commit |
+| `s` | Squash the picks into one commit |
+| `Tab` / `Shift-Tab`, `<leader>k` / `<leader>j` | Move focus between the pane and the other panels |
+| `Esc` | Return focus to the diff |
+| Click / wheel | Move the cursor (previews) / scroll |
 
 ## Commit selection / review target selector
 

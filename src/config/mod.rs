@@ -114,6 +114,13 @@ pub struct AppConfig {
     /// multi-commit reviews. Defaults to true; toggle at runtime with
     /// `<leader>s` or `:set commits!`.
     pub show_commits: Option<bool>,
+    /// Whether the persistent log pane (commit graph above the diff) opens
+    /// as soon as a review is on screen. Defaults to false; toggle at
+    /// runtime with `<leader>g` or `:log`.
+    pub show_log: Option<bool>,
+    /// Log pane height in rows, borders included. Defaults to 12; adjust at
+    /// runtime with `<leader>+` / `<leader>-` or `:set logheight N`.
+    pub log_height: Option<usize>,
     /// Whether files already marked reviewed appear in the file tree and the
     /// diff. Defaults to true; toggle at runtime with `H` (file tree) or
     /// `:set reviewed!`.
@@ -191,6 +198,8 @@ const KNOWN_KEYS: &[&str] = &[
     "show_pr_checks",
     "show_pr_comments",
     "show_commits",
+    "show_log",
+    "log_height",
     "show_reviewed",
     "diff_view",
     "commit_order",
@@ -416,6 +425,8 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         show_pr_checks: read_bool(table, "show_pr_checks", &mut warnings),
         show_pr_comments: read_bool(table, "show_pr_comments", &mut warnings),
         show_commits: read_bool(table, "show_commits", &mut warnings),
+        show_log: read_bool(table, "show_log", &mut warnings),
+        log_height: read_usize(table, "log_height", &mut warnings),
         show_reviewed: read_bool(table, "show_reviewed", &mut warnings),
         diff_view: read_enum(
             table,
@@ -969,6 +980,17 @@ mod tests {
             outcome.warnings,
             vec!["Warning: Config key 'show_pr_comments' must be a boolean; ignoring value"]
         );
+    }
+
+    // show_log / log_height
+
+    #[test]
+    fn should_parse_show_log_and_log_height() {
+        let outcome = parse_config("show_log = true\nlog_height = 20\n");
+        let cfg = outcome.config.as_ref().expect("config should parse");
+        assert_eq!(cfg.show_log, Some(true));
+        assert_eq!(cfg.log_height, Some(20));
+        assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
     }
 
     // show_commits

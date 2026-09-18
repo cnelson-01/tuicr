@@ -304,6 +304,9 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             Cow::Borrowed("   \u{21b5} apply \u{00b7} esc cancel")
         } else {
             match app.input_mode {
+                InputMode::Normal if app.log_pane_focused() => Cow::Borrowed(
+                    "   j/k move \u{00b7} space pick \u{00b7} \u{21b5} load \u{00b7} p cherry-pick \u{00b7} b rebase \u{00b7} s squash \u{00b7} esc diff",
+                ),
                 InputMode::Normal if app.focused_panel == FocusedPanel::FileList => Cow::Borrowed(
                     "   j/k move \u{00b7} \u{21b5} open \u{00b7} i/e filter \u{00b7} I/E clear \u{00b7} / search \u{00b7} r reviewed",
                 ),

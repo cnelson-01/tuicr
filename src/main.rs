@@ -21,7 +21,7 @@ use tuicr::handler::{
     handle_visual_action,
 };
 use tuicr::input::{
-    Action, map_file_tree_mode, map_file_tree_prompt_mode, map_key_to_action,
+    Action, map_file_tree_mode, map_file_tree_prompt_mode, map_key_to_action, map_log_pane_mode,
     map_target_filter_mode,
 };
 use tuicr::terminal_state::{TerminalFeatures, TerminalSession};
@@ -349,6 +349,14 @@ fn main() -> anyhow::Result<()> {
         // Start with files already marked reviewed hidden. `init_` rather than
         // `set_` so startup leaves no status message behind; `H` /
         // `:set reviewed!` toggle from here.
+        if cfg.show_log == Some(true) {
+            app.log_pane_wanted = true;
+        }
+        if let Some(rows) = cfg.log_height {
+            app.log_pane_height = u16::try_from(rows)
+                .unwrap_or(u16::MAX)
+                .max(app::MIN_LOG_PANE_HEIGHT);
+        }
         if cfg.show_reviewed == Some(false) {
             app.init_show_reviewed(false);
         }
@@ -448,6 +456,8 @@ fn main() -> anyhow::Result<()> {
         needs_redraw |= app.poll_editor_launches();
         needs_redraw |= app.poll_persisted_session_changes();
         needs_redraw |= app.poll_diff_watch_changes();
+        needs_redraw |= app.poll_log_preview();
+        needs_redraw |= app.poll_log_pane_autoshow();
         needs_redraw |= pr_pending;
 
         if needs_redraw {
@@ -625,7 +635,7 @@ fn main() -> anyhow::Result<()> {
                             crossterm::event::KeyCode::Char('k') => {
                                 if app.focused_panel == app::FocusedPanel::Comments {
                                     app.focused_panel = app::FocusedPanel::FileList;
-                                } else if app.has_inline_commit_selector() {
+                                } else if app.has_commit_pane() {
                                     app.focused_panel = app::FocusedPanel::CommitSelector;
                                 }
                                 continue;
@@ -651,6 +661,20 @@ fn main() -> anyhow::Result<()> {
                             }
                             crossterm::event::KeyCode::Char('f') => {
                                 app.toggle_single_file_view();
+                                continue;
+                            }
+                            // `<leader>g` toggles the persistent log pane;
+                            // `<leader>+` / `<leader>-` resize it.
+                            crossterm::event::KeyCode::Char('g') => {
+                                app.toggle_log_pane();
+                                continue;
+                            }
+                            crossterm::event::KeyCode::Char('+' | '=') => {
+                                app.adjust_log_pane_height(1);
+                                continue;
+                            }
+                            crossterm::event::KeyCode::Char('-') => {
+                                app.adjust_log_pane_height(-1);
                                 continue;
                             }
                             _ => {}
@@ -680,6 +704,10 @@ fn main() -> anyhow::Result<()> {
                         // An open file-tree prompt (`i`/`e`/`/`) captures all
                         // input until Enter/Esc, like the PR filter above.
                         map_file_tree_prompt_mode(key)
+                    } else if app.input_mode == InputMode::Normal && app.log_pane_focused() {
+                        // The log pane claims the selector keys (space,
+                        // enter, p/b/s); the rest stay normal-mode bindings.
+                        map_log_pane_mode(key, app.leader_key)
                     } else if app.input_mode == InputMode::Normal
                         && app.focused_panel == FocusedPanel::FileList
                     {

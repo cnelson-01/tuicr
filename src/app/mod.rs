@@ -56,6 +56,12 @@ pub const STAGED_SELECTION_ID: &str = "__tuicr_staged__";
 pub const UNSTAGED_SELECTION_ID: &str = "__tuicr_unstaged__";
 pub const MERGE_SELECTION_ID: &str = "__tuicr_merge__";
 pub const GAP_EXPAND_BATCH: usize = 20;
+/// Default height (rows, borders included) of the persistent log pane.
+pub const DEFAULT_LOG_PANE_HEIGHT: u16 = 12;
+/// Smallest useful log pane: borders plus one row.
+pub const MIN_LOG_PANE_HEIGHT: u16 = 3;
+/// How long the log cursor must rest before its commit is previewed.
+pub const LOG_PREVIEW_DELAY: std::time::Duration = std::time::Duration::from_millis(150);
 
 /// Create a forge backend for the given repository.
 /// Routes to the GitHub backend (via `gh`), the GitLab backend (via `glab`),
@@ -873,6 +879,34 @@ pub enum FocusedPanel {
     CommitSelector,
 }
 
+/// Selector list state owned by the persistent log pane. The fullscreen
+/// selector and the inline commit pane share `App`'s flat commit-list
+/// fields; the log pane keeps its own copy and swaps it in only while one of
+/// its actions runs (`App::with_log_state`), so review loads that rewrite
+/// those fields never clobber the log.
+#[derive(Debug, Clone, Default)]
+pub struct LogListState {
+    pub commits: Vec<CommitInfo>,
+    pub cursor: usize,
+    pub scroll_offset: usize,
+    pub viewport_height: usize,
+    pub picks: std::collections::BTreeSet<usize>,
+    pub visible_count: usize,
+    pub has_more: bool,
+}
+
+/// The persistent log pane: the commit graph docked above the diff while
+/// reviewing, with live preview of the cursor commit.
+#[derive(Debug, Default)]
+pub struct LogPane {
+    pub list: LogListState,
+    /// Set when the cursor moves; the preview fires once it has rested for
+    /// `LOG_PREVIEW_DELAY`.
+    pub preview_at: Option<std::time::Instant>,
+    /// Body rect from the last render, for mouse hit-testing.
+    pub inner_area: Option<ratatui::layout::Rect>,
+}
+
 /// Active tab in the review target selector.
 ///
 /// The selector internally still goes through `InputMode::CommitSelect`,
@@ -1504,6 +1538,13 @@ pub struct App {
     pub pr_range_reload_rx: Option<std::sync::mpsc::Receiver<PrRangeReloadEvent>>,
     /// Whether the inline commit selector panel is visible
     pub show_commit_selector: bool,
+    /// Persistent log pane state; `None` while the pane is hidden.
+    pub log_pane: Option<LogPane>,
+    /// Log pane height in rows, borders included (`log_height`,
+    /// `:set logheight N`, `<leader>+` / `<leader>-`).
+    pub log_pane_height: u16,
+    /// `show_log = true`: open the pane as soon as a review is on screen.
+    pub log_pane_wanted: bool,
     /// Display order for the inline commit selector (presentation only).
     pub commit_order: CommitOrder,
     /// Which commits are selected when a multi-commit review first opens.
@@ -1878,6 +1919,7 @@ mod diff_load;
 mod file_filter;
 mod gaps;
 mod init;
+mod log_pane;
 mod modes;
 mod navigation;
 mod pr;

@@ -78,6 +78,9 @@ pub struct CommitRowSpec<'a> {
     pub commit: &'a CommitInfo,
     pub is_cursor: bool,
     pub is_selected: bool,
+    /// The row's diff is what the review shows right now (log pane);
+    /// drawn with the range bar like the inline selector's selected range.
+    pub is_loaded: bool,
     pub is_reviewed: bool,
     pub theme: &'a Theme,
     /// Pre-rendered commit-graph gutter cells (two chars per lane), shared
@@ -109,7 +112,7 @@ pub fn render_commit_row<'a>(spec: &CommitRowSpec<'a>) -> Line<'a> {
         row_text_style,
     ));
     spans.push(Span::styled(
-        if spec.is_selected {
+        if spec.is_selected || spec.is_loaded {
             format!("{RANGE_BAR_GLYPH} ")
         } else {
             "  ".to_string()
@@ -270,6 +273,7 @@ mod tests {
             commit: &c,
             is_cursor: true,
             is_selected: false,
+            is_loaded: false,
             is_reviewed: false,
             theme: &theme,
             graph: None,
@@ -290,6 +294,7 @@ mod tests {
             commit: &c,
             is_cursor: false,
             is_selected: true,
+            is_loaded: false,
             is_reviewed: false,
             theme: &theme,
             graph: None,
@@ -311,6 +316,7 @@ mod tests {
             commit: &c,
             is_cursor: false,
             is_selected: false,
+            is_loaded: false,
             is_reviewed: false,
             theme: &theme,
             graph: None,
@@ -332,6 +338,7 @@ mod tests {
             commit: &c,
             is_cursor: false,
             is_selected: false,
+            is_loaded: false,
             is_reviewed: true,
             theme: &theme,
             graph: None,
@@ -352,6 +359,7 @@ mod tests {
             commit: &c,
             is_cursor: false,
             is_selected: false,
+            is_loaded: false,
             is_reviewed: false,
             theme: &theme,
             graph: None,
@@ -374,6 +382,7 @@ mod tests {
             commit: &c,
             is_cursor: false,
             is_selected: false,
+            is_loaded: false,
             is_reviewed: false,
             theme: &theme,
             graph: None,
@@ -394,6 +403,7 @@ mod tests {
             commit: &c,
             is_cursor: false,
             is_selected: false,
+            is_loaded: false,
             is_reviewed: false,
             theme: &theme,
             graph: Some(vec![Span::raw("\u{25cf} ")]),

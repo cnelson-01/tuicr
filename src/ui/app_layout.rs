@@ -4,11 +4,12 @@ use ratatui::{
     widgets::Block,
 };
 
-use crate::app::{App, InputMode};
+use crate::app::{App, InputMode, MIN_LOG_PANE_HEIGHT};
 use crate::ui::comment_navigator::render_comment_navigator;
 use crate::ui::diff_view::render_diff_view;
 use crate::ui::file_list::render_file_list;
 use crate::ui::inline_commit_selector::render_inline_commit_selector;
+use crate::ui::log_pane::render_log_pane;
 use crate::ui::selector::render_commit_select;
 use crate::ui::{
     comment_panel, help_popup, merge_conflict, status_bar, styles, submit_modals, summary_popup,
@@ -130,7 +131,25 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 }
 
 fn render_main_content(frame: &mut Frame, app: &mut App, area: Rect) {
-    let content_area = if app.input_mode != InputMode::Summary && app.has_inline_commit_selector() {
+    let content_area = if app.input_mode != InputMode::Summary && app.log_pane_active() {
+        // The persistent log pane replaces the inline selector while it is
+        // open; its height is user-set but always leaves the diff some room.
+        app.commit_list_inner_area = None;
+        let max_height = area.height.saturating_sub(6).max(MIN_LOG_PANE_HEIGHT);
+        let height = app
+            .log_pane_height
+            .clamp(MIN_LOG_PANE_HEIGHT, max_height)
+            .min(area.height);
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(height), Constraint::Min(0)])
+            .split(area);
+        render_log_pane(frame, app, chunks[0]);
+        chunks[1]
+    } else if app.input_mode != InputMode::Summary && app.has_inline_commit_selector() {
+        if let Some(pane) = app.log_pane.as_mut() {
+            pane.inner_area = None;
+        }
         let selector_height = (app.review_commits.len() as u16 + 2).min(8); // N items + 2 borders, capped
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -140,6 +159,9 @@ fn render_main_content(frame: &mut Frame, app: &mut App, area: Rect) {
         chunks[1]
     } else {
         app.commit_list_inner_area = None;
+        if let Some(pane) = app.log_pane.as_mut() {
+            pane.inner_area = None;
+        }
         area
     };
 

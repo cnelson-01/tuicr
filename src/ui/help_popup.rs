@@ -294,6 +294,64 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(""),
         Line::from(Span::styled(
+            "Log Pane (persistent commit graph)",
+            Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        )),
+        Line::from(""),
+        Line::from(Span::raw(
+            "  The commit graph docked above the diff. Resting the cursor on a commit previews its diff.",
+        )),
+        Line::from(vec![
+            Span::styled(
+                "  <leader>g ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Toggle the log pane (also `:log`, `:set log!`)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  <leader>+/-",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" Grow / shrink the pane (also `:set logheight N`)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  j/k g/G   ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Move the cursor (previews the commit)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  Space     ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Toggle the commit in the pick set"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  Enter     ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Load the picks (or the cursor commit) as the review"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  p / b / s ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Cherry-pick picks / rebase onto cursor / squash picks"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  Esc       ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Return focus to diff"),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
             "Review Target Selector",
             Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
         )),

@@ -1260,6 +1260,10 @@ impl App {
         let Some(rebuilt) = self.rebuilt_commit_pane(fetched, change_status) else {
             return false;
         };
+        // The log pane keeps its own rows; a new commit should show there too.
+        if self.log_pane.is_some() {
+            self.refresh_log_rows_keep_cursor();
+        }
         match Self::reanchored_commit_selection(
             self.commit_selection_range,
             &self.review_commits,

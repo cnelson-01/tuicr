@@ -59,6 +59,9 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     CommandSpec::new(&["set commits"], CommandKind::SetCommitsVisible(true)),
     CommandSpec::new(&["set nocommits"], CommandKind::SetCommitsVisible(false)),
     CommandSpec::new(&["set commits!"], CommandKind::ToggleCommits),
+    CommandSpec::new(&["set log"], CommandKind::SetLogVisible(true)),
+    CommandSpec::new(&["set nolog"], CommandKind::SetLogVisible(false)),
+    CommandSpec::new(&["log", "set log!"], CommandKind::ToggleLog),
     CommandSpec::new(&["set reviewed"], CommandKind::SetShowReviewed(true)),
     CommandSpec::new(&["set noreviewed"], CommandKind::SetShowReviewed(false)),
     CommandSpec::new(
@@ -144,6 +147,8 @@ enum CommandKind {
     SetVim(bool),
     SetCommitsVisible(bool),
     ToggleCommits,
+    SetLogVisible(bool),
+    ToggleLog,
     SetShowReviewed(bool),
     ToggleShowReviewed,
     Diff,
@@ -181,6 +186,7 @@ pub fn handle_mouse_event(app: &mut App, event: MouseEvent) {
             let over_file_list = app.file_list_area.is_some_and(|r| r.contains(pos));
             let over_diff = app.diff_area.is_some_and(|r| r.contains(pos));
             let over_commit_list = app.commit_list_inner_area.is_some_and(|r| r.contains(pos));
+            let over_log = app.log_pane_inner_area().is_some_and(|r| r.contains(pos));
             match app.input_mode {
                 InputMode::Help | InputMode::MessageDetails => handle_help_action(app, action),
                 InputMode::Summary => handle_summary_action(app, action),
@@ -191,6 +197,7 @@ pub fn handle_mouse_event(app: &mut App, event: MouseEvent) {
                         app.merge_scroll_down(WHEEL_LINES);
                     }
                 }
+                InputMode::Normal if over_log => handle_log_pane_action(app, action),
                 InputMode::CommitSelect | InputMode::Normal if over_commit_list => {
                     wheel_commit_list(app, scroll_up);
                 }
@@ -359,6 +366,14 @@ fn handle_left_click(app: &mut App, pos: Position) {
         app.focused_panel = FocusedPanel::Comments;
         app.comment_navigator_state.select(idx);
         app.jump_to_selected_comment();
+        return;
+    }
+
+    if let Some(area) = app.log_pane_inner_area()
+        && area.contains(pos)
+    {
+        app.focused_panel = FocusedPanel::CommitSelector;
+        app.log_pane_click_row(usize::from(pos.y.saturating_sub(area.y)));
         return;
     }
 
@@ -649,6 +664,9 @@ pub fn handle_command_action(app: &mut App, action: Action) {
                 dispatch_command(app, spec.kind)
             } else if let Some((lineno, side)) = parse_lineno_command(&cmd) {
                 app.go_to_source_line(lineno, side);
+                CommandAfterDispatch::ExitCommandMode
+            } else if let Some(rows) = parse_log_height_command(&cmd) {
+                app.set_log_pane_height(rows);
                 CommandAfterDispatch::ExitCommandMode
             } else {
                 app.set_message(format!("Unknown command: {cmd}"));
@@ -942,6 +960,14 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
             app.toggle_commit_selector();
             CommandAfterDispatch::ExitCommandMode
         }
+        CommandKind::SetLogVisible(visible) => {
+            app.set_log_pane_visible(visible);
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::ToggleLog => {
+            app.toggle_log_pane();
+            CommandAfterDispatch::ExitCommandMode
+        }
         CommandKind::SetShowReviewed(show) => {
             app.set_show_reviewed(show);
             CommandAfterDispatch::ExitCommandMode
@@ -1105,6 +1131,13 @@ fn complete_command(app: &mut App, direction: CompletionDirection) {
 
 /// Parse `:<n>` (new-side) or `:o<n>` (old-side) jump targets. The leading `:`
 /// has already been stripped by the time we get here.
+/// `:set logheight N` — the log pane height in rows, borders included.
+fn parse_log_height_command(cmd: &str) -> Option<u16> {
+    let rest = cmd.strip_prefix("set logheight")?.trim();
+    let rest = rest.strip_prefix('=').map(str::trim).unwrap_or(rest);
+    rest.parse().ok()
+}
+
 fn parse_lineno_command(cmd: &str) -> Option<(u32, LineSide)> {
     if let Some(rest) = cmd.strip_prefix('o') {
         rest.parse::<u32>().ok().map(|n| (n, LineSide::Old))
@@ -1394,7 +1427,50 @@ fn handle_pr_filter_action(app: &mut App, action: Action) {
 }
 
 /// Handle actions when inline commit selector panel is focused
+/// Keys while the persistent log pane holds focus (Normal mode). Movement
+/// schedules a preview of the cursor commit; Space builds a pick set; Enter
+/// loads it as the review; `p` / `b` / `s` run the history operations.
+fn handle_log_pane_action(app: &mut App, action: Action) {
+    match action {
+        Action::CommitSelectDown | Action::CursorDown(_) | Action::MouseScrollDown(_) => {
+            let n = match action {
+                Action::CursorDown(n) | Action::MouseScrollDown(n) => n,
+                _ => 1,
+            };
+            app.log_pane_move_down(n);
+        }
+        Action::CommitSelectUp | Action::CursorUp(_) | Action::MouseScrollUp(_) => {
+            let n = match action {
+                Action::CursorUp(n) | Action::MouseScrollUp(n) => n,
+                _ => 1,
+            };
+            app.log_pane_move_up(n);
+        }
+        Action::GoToTop => app.log_pane_go_top(),
+        Action::GoToBottom => app.log_pane_go_bottom(),
+        Action::HalfPageDown => app.log_pane_page(true, true),
+        Action::HalfPageUp => app.log_pane_page(false, true),
+        Action::PageDown => app.log_pane_page(true, false),
+        Action::PageUp => app.log_pane_page(false, false),
+        Action::ToggleCommitSelect | Action::ToggleExpand => app.log_pane_toggle_pick(),
+        Action::ConfirmCommitSelect | Action::SelectFile => {
+            if let Err(e) = app.log_pane_confirm() {
+                app.set_error(format!("Failed to load commits: {e}"));
+            }
+        }
+        Action::SelectorCherryPick => app.log_pane_history_op(|a| a.selector_cherry_pick()),
+        Action::SelectorRebase => app.log_pane_history_op(|a| a.selector_rebase_onto_cursor()),
+        Action::SelectorSquash => app.log_pane_history_op(|a| a.selector_squash()),
+        Action::ExitMode => app.focused_panel = FocusedPanel::Diff,
+        _ => handle_shared_normal_action(app, action),
+    }
+}
+
 pub fn handle_commit_selector_action(app: &mut App, action: Action) {
+    if app.log_pane_active() {
+        handle_log_pane_action(app, action);
+        return;
+    }
     match action {
         // `j`/`k` track screen direction: in ascending (oldest-first) order the
         // display is reversed, so moving down the screen moves toward newer
@@ -1713,7 +1789,7 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
         Action::ToggleReviewed => app.toggle_reviewed(),
         Action::ToggleHunkReviewed => app.toggle_hunk_reviewed(),
         Action::ToggleFocus => {
-            let has_selector = app.has_inline_commit_selector();
+            let has_selector = app.has_commit_pane();
             let has_comments = app.has_comment_navigator_items();
             // Cycle: FileList -> Diff -> CommitSelector -> Comments -> FileList,
             // skipping panels that aren't present.
@@ -1734,7 +1810,7 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
             }
         }
         Action::ToggleFocusReverse => {
-            let has_selector = app.has_inline_commit_selector();
+            let has_selector = app.has_commit_pane();
             let has_comments = app.has_comment_navigator_items();
             app.focused_panel = match (app.focused_panel, has_selector, has_comments) {
                 (FocusedPanel::FileList, _, true) => FocusedPanel::Comments,

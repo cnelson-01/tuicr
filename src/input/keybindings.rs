@@ -487,6 +487,23 @@ fn map_commit_select_mode(key: KeyEvent) -> Action {
     }
 }
 
+/// Key map while the persistent log pane holds focus in `InputMode::Normal`.
+///
+/// The pane claims the selector keys (Space, Enter, `p` / `b` / `s`);
+/// everything else falls through to `map_normal_mode` so `j` / `k`, paging,
+/// `:` commands, `?`, and `y` keep their meanings.
+pub fn map_log_pane_mode(key: KeyEvent, leader_key: char) -> Action {
+    match (key.code, key.modifiers) {
+        (KeyCode::Char(' '), KeyModifiers::NONE) => Action::ToggleCommitSelect,
+        (KeyCode::Enter, KeyModifiers::NONE) => Action::ConfirmCommitSelect,
+        (KeyCode::Char('p'), KeyModifiers::NONE) => Action::SelectorCherryPick,
+        (KeyCode::Char('b'), KeyModifiers::NONE) => Action::SelectorRebase,
+        (KeyCode::Char('s'), KeyModifiers::NONE) => Action::SelectorSquash,
+        (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
+        _ => map_normal_mode(key, leader_key),
+    }
+}
+
 /// Key map used when the file tree holds focus in `InputMode::Normal`.
 ///
 /// Only the keys the tree claims for itself are listed; everything else

@@ -201,6 +201,7 @@ fn render_local_target_tab(frame: &mut Frame, app: &mut App, area: Rect) {
                 commit,
                 is_cursor: i == app.commit_list_cursor,
                 is_selected: app.is_commit_selected(i),
+                is_loaded: false,
                 is_reviewed: false,
                 theme: &app.theme,
                 graph: (gutter_lanes > 0).then(|| graph_row_spans(&row, gutter_lanes, &app.theme)),
@@ -228,7 +229,7 @@ fn render_local_target_tab(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(list, area);
 }
 
-fn overflow_row<'a>(
+pub(super) fn overflow_row<'a>(
     theme: &crate::theme::Theme,
     is_cursor: bool,
     label: &'a str,
