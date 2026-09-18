@@ -188,7 +188,7 @@ fn render_local_target_tab(frame: &mut Frame, app: &mut App, area: Rect) {
     // paging; the gutter collapses when no commit reports parents.
     let graph = compute_commit_graph(&app.commit_list);
     let gutter_lanes = graph.gutter_lanes();
-    let layout = CommitRowLayout::fit(area.width as usize, gutter_lanes * 2);
+    let layout = CommitRowLayout::fit_rows(&app.commit_list, area.width as usize, gutter_lanes * 2);
 
     let mut items: Vec<Line> = app
         .commit_list

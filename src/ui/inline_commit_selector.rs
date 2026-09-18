@@ -25,7 +25,7 @@ pub(super) fn render_inline_commit_selector(frame: &mut Frame, app: &mut App, ar
     app.commit_list_viewport_height = inner.height as usize;
     app.commit_list_inner_area = Some(inner);
 
-    let layout = CommitRowLayout::fit(inner.width as usize, 0);
+    let layout = CommitRowLayout::fit_rows(&app.review_commits, inner.width as usize, 0);
     // Rows are built in data order (index into newest-first `review_commits`),
     // then reversed for ascending display so the oldest commit sits on top.
     let mut items: Vec<Line> = app

@@ -51,9 +51,42 @@ const MAX_AUTHOR_WIDTH: usize = 20;
 const FIXED_ROW_WIDTH: usize = 26;
 
 impl CommitRowLayout {
+    /// Size the columns to the rows that will be drawn: the branch column
+    /// is exactly as wide as the widest row's label chips (capped so a wall
+    /// of labels cannot squeeze the summary below its floor, and empty when
+    /// no row has any), the author grows to its maximum, and the summary
+    /// takes every remaining column so nothing is left unused on the right.
+    pub fn fit_rows(commits: &[CommitInfo], total_width: usize, graph_width: usize) -> Self {
+        let needed_branch = commits.iter().map(chip_columns).max().unwrap_or(0);
+        let base = Self::default();
+        let available = total_width.saturating_sub(FIXED_ROW_WIDTH + graph_width);
+        let branch_cap = MAX_BRANCH_WIDTH.max(available * 2 / 5);
+        let branch_width = needed_branch.min(branch_cap);
+        let mut remaining = available.saturating_sub(branch_width);
+
+        // Floors first so narrow terminals degrade like the fixed layout.
+        let mut author_width = base.author_width.min(remaining);
+        remaining -= author_width;
+        let mut summary_width = base.summary_width.min(remaining);
+        remaining -= summary_width;
+        // Then the author up to its maximum, and everything else to the summary.
+        let author_extra = MAX_AUTHOR_WIDTH.saturating_sub(author_width).min(remaining);
+        author_width += author_extra;
+        remaining -= author_extra;
+        summary_width += remaining;
+
+        Self {
+            branch_width,
+            summary_width: summary_width.max(base.summary_width),
+            author_width: author_width.max(base.author_width),
+        }
+    }
+
     /// Distribute `total_width` (the row area) across the flexible
-    /// columns: floors are the defaults, spare width grows the summary
-    /// first, then the branch chip, then the author, up to sane maxima.
+    /// columns without looking at the rows: floors are the defaults, spare
+    /// width grows the summary first, then the branch chip, then the
+    /// author, up to sane maxima. [`fit_rows`](Self::fit_rows) is the
+    /// content-aware version the renderers use.
     pub fn fit(total_width: usize, graph_width: usize) -> Self {
         let mut layout = Self::default();
         let used = FIXED_ROW_WIDTH
@@ -97,29 +130,65 @@ pub struct CommitRowSpec<'a> {
 /// chip on a detached head. The current branch's chip is bold. Chips that
 /// do not fit are dropped behind an ellipsis and the column is padded to
 /// `width` so the summary stays aligned.
-fn ref_chip_spans<'a>(spec: &CommitRowSpec<'a>, width: usize) -> Vec<Span<'a>> {
-    let theme = spec.theme;
-    let commit = spec.commit;
-    let mut chips: Vec<(String, Style)> = Vec::new();
-    let head_style = styles::branch_style(theme).add_modifier(Modifier::BOLD);
+/// What a label chip stands for, so the layout can measure chips without a
+/// theme and the renderer can style them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChipKind {
+    /// Detached HEAD marker.
+    Head,
+    Local,
+    Remote,
+    Tag,
+}
+
+/// The chips a commit row shows in its branch column, in order.
+fn chip_labels(commit: &CommitInfo) -> Vec<(String, ChipKind)> {
+    let mut chips = Vec::new();
     if commit.is_head && !commit.refs.iter().any(|r| r.kind == RefKind::Local) {
-        chips.push(("[HEAD]".to_string(), head_style));
+        chips.push(("[HEAD]".to_string(), ChipKind::Head));
     }
     if commit.refs.is_empty() {
         if let Some(name) = &commit.branch_name {
-            chips.push((format!("[{name}]"), styles::branch_style(theme)));
+            chips.push((format!("[{name}]"), ChipKind::Local));
         }
     } else {
         for label in &commit.refs {
-            let style = match label.kind {
-                RefKind::Local if commit.is_head => head_style,
-                RefKind::Local => styles::branch_style(theme),
-                RefKind::Remote => Style::default().fg(theme.fg_dim),
-                RefKind::Tag => styles::pseudo_commit_tag_style(theme),
+            let kind = match label.kind {
+                RefKind::Local => ChipKind::Local,
+                RefKind::Remote => ChipKind::Remote,
+                RefKind::Tag => ChipKind::Tag,
             };
-            chips.push((format!("[{}]", label.name), style));
+            chips.push((format!("[{}]", label.name), kind));
         }
     }
+    chips
+}
+
+/// Columns the commit's chips need to show in full.
+pub fn chip_columns(commit: &CommitInfo) -> usize {
+    chip_labels(commit)
+        .iter()
+        .map(|(text, _)| text.chars().count())
+        .sum()
+}
+
+fn ref_chip_spans<'a>(spec: &CommitRowSpec<'a>, width: usize) -> Vec<Span<'a>> {
+    let theme = spec.theme;
+    let commit = spec.commit;
+    let head_style = styles::branch_style(theme).add_modifier(Modifier::BOLD);
+    let chips: Vec<(String, Style)> = chip_labels(commit)
+        .into_iter()
+        .map(|(text, kind)| {
+            let style = match kind {
+                ChipKind::Head => head_style,
+                ChipKind::Local if commit.is_head => head_style,
+                ChipKind::Local => styles::branch_style(theme),
+                ChipKind::Remote => Style::default().fg(theme.fg_dim),
+                ChipKind::Tag => styles::pseudo_commit_tag_style(theme),
+            };
+            (text, style)
+        })
+        .collect();
 
     let mut spans: Vec<Span<'a>> = Vec::with_capacity(chips.len() + 1);
     let mut used = 0usize;
@@ -491,6 +560,50 @@ mod tests {
         // and nothing exceeds the sane maxima
         assert!(layout.branch_width <= 24);
         assert!(layout.author_width <= 20);
+    }
+
+    #[test]
+    fn fit_rows_sizes_the_branch_column_to_the_widest_labels() {
+        // given rows whose chips need more than the fixed cap
+        let mut tagged = commit("abc1234", "Add feature", Some("main"));
+        tagged.refs = vec![
+            crate::vcs::traits::RefLabel {
+                name: "main".to_string(),
+                kind: RefKind::Local,
+            },
+            crate::vcs::traits::RefLabel {
+                name: "origin/main".to_string(),
+                kind: RefKind::Remote,
+            },
+            crate::vcs::traits::RefLabel {
+                name: "v1.2.3".to_string(),
+                kind: RefKind::Tag,
+            },
+        ];
+        let plain = commit("def5678", "Plain", None);
+        let needed = chip_columns(&tagged);
+        assert_eq!(needed, "[main][origin/main][v1.2.3]".len());
+
+        // when the terminal is wide
+        let layout = CommitRowLayout::fit_rows(&[tagged.clone(), plain.clone()], 200, 4);
+
+        // then the chips fit in full and no width is left over on the right
+        assert_eq!(layout.branch_width, needed);
+        assert_eq!(layout.author_width, 20);
+        assert_eq!(
+            FIXED_ROW_WIDTH + 4 + layout.branch_width + layout.summary_width + layout.author_width,
+            200
+        );
+
+        // and rows without any label get no branch column at all
+        let bare = CommitRowLayout::fit_rows(&[plain], 200, 4);
+        assert_eq!(bare.branch_width, 0);
+        assert!(bare.summary_width > layout.summary_width);
+
+        // while a narrow terminal keeps the floors instead of shrinking
+        let narrow = CommitRowLayout::fit_rows(&[tagged], 80, 4);
+        assert!(narrow.summary_width >= CommitRowLayout::default().summary_width);
+        assert!(narrow.author_width >= CommitRowLayout::default().author_width);
     }
 
     #[test]

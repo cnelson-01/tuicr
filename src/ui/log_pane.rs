@@ -80,7 +80,7 @@ pub(super) fn render_log_pane(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let graph = compute_commit_graph(&list.commits);
     let gutter_lanes = graph.gutter_lanes();
-    let layout = CommitRowLayout::fit(inner.width as usize, gutter_lanes * 2);
+    let layout = CommitRowLayout::fit_rows(&list.commits, inner.width as usize, gutter_lanes * 2);
 
     let mut items: Vec<Line> = list
         .commits
