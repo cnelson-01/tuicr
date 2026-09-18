@@ -631,9 +631,12 @@ pub enum InputMode {
     BranchPicker,
     /// Stash picker modal (`:stashes`): Enter pops, `a` applies, `d` drops.
     StashPicker,
+    /// Find-in-files results in place of the diff (`:find <text>`).
+    FindResults,
 }
 
 pub use branches::BranchPicker;
+pub use find::{FIND_MAX_HITS, FindHit, FindState};
 pub use local_changes::{CommitComposer, DiscardTarget, StashPicker};
 
 /// State for the fullscreen side-by-side merge conflict screen.
@@ -1574,6 +1577,8 @@ pub struct App {
     pub pending_discard: Option<DiscardTarget>,
     /// Stash picker modal state; `Some` while `input_mode == StashPicker`.
     pub stash_picker: Option<StashPicker>,
+    /// Last find-in-files search and its hits (`:find`).
+    pub find: FindState,
     /// Display order for the inline commit selector (presentation only).
     pub commit_order: CommitOrder,
     /// Which commits are selected when a multi-commit review first opens.
@@ -1948,6 +1953,7 @@ mod commit_filter;
 mod commits;
 mod diff_load;
 mod file_filter;
+mod find;
 mod gaps;
 mod init;
 mod local_changes;

@@ -621,6 +621,7 @@ impl App {
             commit_composer: None,
             pending_discard: None,
             stash_picker: None,
+            find: FindState::default(),
             commit_order: CommitOrder::default(),
             commit_selection_start: CommitSelectionStart::default(),
             commit_diff_cache: HashMap::new(),

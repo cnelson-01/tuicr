@@ -12,8 +12,8 @@ use crate::ui::inline_commit_selector::render_inline_commit_selector;
 use crate::ui::log_pane::render_log_pane;
 use crate::ui::selector::render_commit_select;
 use crate::ui::{
-    branch_picker, comment_panel, help_popup, merge_conflict, stash_picker, status_bar, styles,
-    submit_modals, summary_popup,
+    branch_picker, comment_panel, find_results, help_popup, merge_conflict, stash_picker,
+    status_bar, styles, submit_modals, summary_popup,
 };
 
 const FILE_LIST_MIN_HEIGHT: u16 = 4;
@@ -160,7 +160,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 }
 
 fn render_main_content(frame: &mut Frame, app: &mut App, area: Rect) {
-    let content_area = if app.input_mode != InputMode::Summary && app.log_pane_active() {
+    let full_width_view = matches!(app.input_mode, InputMode::Summary | InputMode::FindResults);
+    let content_area = if !full_width_view && app.log_pane_active() {
         // The persistent log pane replaces the inline selector while it is
         // open; its height is user-set but always leaves the diff some room.
         app.commit_list_inner_area = None;
@@ -175,7 +176,7 @@ fn render_main_content(frame: &mut Frame, app: &mut App, area: Rect) {
             .split(area);
         render_log_pane(frame, app, chunks[0]);
         chunks[1]
-    } else if app.input_mode != InputMode::Summary && app.has_inline_commit_selector() {
+    } else if !full_width_view && app.has_inline_commit_selector() {
         if let Some(pane) = app.log_pane.as_mut() {
             pane.inner_area = None;
         }
@@ -244,6 +245,8 @@ fn render_content_view(frame: &mut Frame, app: &mut App, area: Rect) {
     app.diff_area = Some(area);
     if app.input_mode == InputMode::Summary {
         summary_popup::render_summary(frame, app, area);
+    } else if app.input_mode == InputMode::FindResults {
+        find_results::render_find_results(frame, app, area);
     } else {
         render_diff_view(frame, app, area);
     }

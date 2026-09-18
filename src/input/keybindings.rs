@@ -244,6 +244,7 @@ pub fn map_key_to_action(key: KeyEvent, mode: InputMode, leader_key: char) -> Ac
         InputMode::SubmitActionPicker => map_submit_action_picker_mode(key),
         InputMode::BranchPicker => map_branch_picker_mode(key),
         InputMode::StashPicker => map_stash_picker_mode(key),
+        InputMode::FindResults => map_find_results_mode(key),
     }
 }
 
@@ -499,6 +500,31 @@ fn map_submit_confirm_mode(key: KeyEvent) -> Action {
         (KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter, _) => Action::ConfirmYes,
         (KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc, _) => Action::ConfirmNo,
         (KeyCode::Char('r') | KeyCode::Char('R'), _) => Action::SubmitReloadPr,
+        _ => Action::None,
+    }
+}
+
+/// Find-in-files results: `j` / `k` move, Enter opens (diff or editor),
+/// `e` forces the editor, `/` starts a new search.
+fn map_find_results_mode(key: KeyEvent) -> Action {
+    match (key.code, key.modifiers) {
+        (KeyCode::Esc, KeyModifiers::NONE) | (KeyCode::Char('q'), KeyModifiers::NONE) => {
+            Action::ExitMode
+        }
+        (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => Action::CursorDown(1),
+        (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => Action::CursorUp(1),
+        (KeyCode::Enter, KeyModifiers::NONE) => Action::SubmitInput,
+        (KeyCode::Char('e'), KeyModifiers::NONE) => Action::EditFile,
+        (KeyCode::Char('/'), _) => Action::BeginTargetFilter,
+        (KeyCode::Char('d'), KeyModifiers::CONTROL) => Action::HalfPageDown,
+        (KeyCode::Char('u'), KeyModifiers::CONTROL) => Action::HalfPageUp,
+        (KeyCode::Char('f'), KeyModifiers::CONTROL) => Action::PageDown,
+        (KeyCode::Char('b'), KeyModifiers::CONTROL) => Action::PageUp,
+        (KeyCode::PageDown, KeyModifiers::NONE) => Action::PageDown,
+        (KeyCode::PageUp, KeyModifiers::NONE) => Action::PageUp,
+        (KeyCode::Char('g'), KeyModifiers::NONE) => Action::GoToTop,
+        (KeyCode::Char('G'), _) => Action::GoToBottom,
+        (KeyCode::Char(':'), _) => Action::EnterCommandMode,
         _ => Action::None,
     }
 }

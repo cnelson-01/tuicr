@@ -71,6 +71,7 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     CommandSpec::new(&["stash"], CommandKind::StashPush),
     CommandSpec::new(&["stash pop"], CommandKind::StashPop),
     CommandSpec::new(&["stashes", "stash list"], CommandKind::StashPicker),
+    CommandSpec::new(&["find", "grep"], CommandKind::FindResults),
     CommandSpec::new(&["set reviewed"], CommandKind::SetShowReviewed(true)),
     CommandSpec::new(&["set noreviewed"], CommandKind::SetShowReviewed(false)),
     CommandSpec::new(
@@ -166,6 +167,7 @@ enum CommandKind {
     StashPush,
     StashPop,
     StashPicker,
+    FindResults,
     SetShowReviewed(bool),
     ToggleShowReviewed,
     Diff,
@@ -207,6 +209,7 @@ pub fn handle_mouse_event(app: &mut App, event: MouseEvent) {
             match app.input_mode {
                 InputMode::Help | InputMode::MessageDetails => handle_help_action(app, action),
                 InputMode::Summary => handle_summary_action(app, action),
+                InputMode::FindResults => handle_find_results_action(app, action),
                 InputMode::MergeConflict => {
                     if scroll_up {
                         app.merge_scroll_up(WHEEL_LINES);
@@ -704,6 +707,14 @@ pub fn handle_command_action(app: &mut App, action: Action) {
                 let message = message.to_string();
                 app.stash_push_current(Some(&message));
                 CommandAfterDispatch::ExitCommandMode
+            } else if let Some(query) = cmd
+                .strip_prefix("find ")
+                .or_else(|| cmd.strip_prefix("grep "))
+            {
+                let query = query.to_string();
+                app.exit_command_mode();
+                app.find_in_files(&query);
+                CommandAfterDispatch::KeepMode
             } else {
                 app.set_message(format!("Unknown command: {cmd}"));
                 CommandAfterDispatch::ExitCommandMode
@@ -1051,6 +1062,14 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
         CommandKind::StashPicker => {
             app.open_stash_picker();
             if app.input_mode == InputMode::StashPicker {
+                CommandAfterDispatch::KeepMode
+            } else {
+                CommandAfterDispatch::ExitCommandMode
+            }
+        }
+        CommandKind::FindResults => {
+            app.reopen_find_results();
+            if matches!(app.input_mode, InputMode::FindResults | InputMode::Command) {
                 CommandAfterDispatch::KeepMode
             } else {
                 CommandAfterDispatch::ExitCommandMode
@@ -1583,6 +1602,26 @@ fn handle_commit_filter_action(app: &mut App, action: Action) {
         Action::ClearLine => app.commit_filter_clear_draft(),
         Action::SubmitInput => app.apply_commit_filter(),
         Action::ExitMode => app.cancel_commit_filter(),
+        _ => {}
+    }
+}
+
+/// Keys in the find-in-files results view.
+pub fn handle_find_results_action(app: &mut App, action: Action) {
+    match action {
+        Action::CursorDown(n) | Action::MouseScrollDown(n) => app.find_select_down(n),
+        Action::CursorUp(n) | Action::MouseScrollUp(n) => app.find_select_up(n),
+        Action::HalfPageDown => app.find_page(true, true),
+        Action::HalfPageUp => app.find_page(false, true),
+        Action::PageDown => app.find_page(true, false),
+        Action::PageUp => app.find_page(false, false),
+        Action::GoToTop => app.find_select_first(),
+        Action::GoToBottom => app.find_select_last(),
+        Action::SubmitInput => app.find_open_selected(false),
+        Action::EditFile => app.find_open_selected(true),
+        Action::BeginTargetFilter => app.start_find_prompt(),
+        Action::EnterCommandMode => app.enter_command_mode(),
+        Action::ExitMode => app.exit_find_results(),
         _ => {}
     }
 }

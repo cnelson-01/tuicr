@@ -118,6 +118,7 @@ considers files that pass the active filters.
 | `<leader>g` | Toggle the persistent log pane (also `:log`, `:set log!`) |
 | `<leader>+` / `<leader>-` | Grow / shrink the log pane (also `:set logheight N`) |
 | `<leader>b` | Open the branch picker (also `:branches`) |
+| `<leader>F` | Find in files: opens the command line with `find ` |
 | `Enter` | Select file (when file list is focused) |
 
 ## Comment navigator
@@ -230,6 +231,8 @@ In command mode,
 | `:stash` / `:stash <message>` | Stash the working tree, untracked files included |
 | `:stash pop` | Restore the newest stash |
 | `:stashes` / `:stash list` | Open the stash picker |
+| `:find <text>` / `:grep <text>` | Search the working tree and show the hits in place of the diff |
+| `:find` | Bring the last results back (or prompt when there are none) |
 | `:set reviewed` | Show files already marked reviewed |
 | `:set noreviewed` | Hide files already marked reviewed |
 | `:set reviewed!` / `:reviewed` | Toggle files already marked reviewed |
@@ -254,6 +257,22 @@ losing their reviewed state.
 
 `draft` applies to GitHub only. `comment` and `approve` work on GitHub, GitLab, and Bitbucket.
 `request-changes` works on GitHub and GitLab, but not Bitbucket yet.
+
+## Find in files
+
+`:find <text>` (or `<leader>F`, which pre-fills the command line) searches the working tree
+with `rg`, falling back to `git grep` when ripgrep is not installed. The text is matched
+literally, case-insensitively unless it contains an uppercase letter. Hits replace the diff:
+
+| Key | Action |
+|-----|--------|
+| `j` / `k`, `g` / `G`, `Ctrl-d` / `Ctrl-u` | Move the selection |
+| `Enter` | Jump to the hit when its file is in the loaded diff, otherwise open `$EDITOR` there |
+| `e` | Open `$EDITOR` at the hit regardless |
+| `/` | Start a new search |
+| `Esc` / `q` | Back to the diff; `:find` brings the results back |
+
+Results are capped at 2000 hits and the title says when that cap was reached.
 
 ## Local changes
 

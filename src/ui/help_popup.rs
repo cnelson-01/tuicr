@@ -294,6 +294,35 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(""),
         Line::from(Span::styled(
+            "Find in Files",
+            Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                "  :find <text>",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" Search the working tree (rg, or git grep); <leader>F prompts"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  \u{21b5} / e     ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(
+                "Jump to the hit in the diff (or open $EDITOR at it) / always open the editor",
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  /  Esc    ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("New search / back to the diff (`:find` brings the results back)"),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
             "Local Changes (staged / unstaged reviews)",
             Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
         )),

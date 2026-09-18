@@ -41,8 +41,8 @@ window. Phases land in order, each as its own commit(s). Tick items as they ship
 
 ## Phase 6: find in files
 
-- [ ] `rg`-backed search over the working tree with a results pane
-- [ ] Enter jumps to the diff line when loaded, otherwise opens `$EDITOR` there
+- [x] `rg`-backed search over the working tree with a results pane
+- [x] Enter jumps to the diff line when loaded, otherwise opens `$EDITOR` there
 
 ## Phase 7: annotate and history
 
