@@ -434,7 +434,9 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  <leader>g ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Toggle the log pane (also `:log`, `:set log!`)"),
+            Span::raw(
+                "Go to the log pane: open it, focus it, or hide it when focused (`:log` toggles)",
+            ),
         ]),
         Line::from(vec![
             Span::styled(

@@ -66,7 +66,10 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     CommandSpec::new(&["set log"], CommandKind::SetLogVisible(true)),
     CommandSpec::new(&["set nolog"], CommandKind::SetLogVisible(false)),
     CommandSpec::new(&["log", "set log!"], CommandKind::ToggleLog),
-    CommandSpec::new(&["branches", "branch"], CommandKind::BranchPicker),
+    CommandSpec::new(
+        &["branches", "branch", "compare", "select"],
+        CommandKind::BranchPicker,
+    ),
     CommandSpec::new(&["abort"], CommandKind::AbortOperation),
     CommandSpec::new(&["commit"], CommandKind::Commit(false)),
     CommandSpec::new(&["commit!", "amend"], CommandKind::Commit(true)),
@@ -727,7 +730,10 @@ pub fn handle_command_action(app: &mut App, action: Action) {
                 let message = message.to_string();
                 app.stash_push_current(Some(&message));
                 CommandAfterDispatch::ExitCommandMode
-            } else if let Some(args) = cmd.strip_prefix("compare ") {
+            } else if let Some(args) = cmd
+                .strip_prefix("compare ")
+                .or_else(|| cmd.strip_prefix("select "))
+            {
                 let args = args.to_string();
                 app.exit_command_mode();
                 app.compare_command(&args);
@@ -1287,7 +1293,7 @@ fn complete_command(app: &mut App, direction: CompletionDirection) {
 }
 
 /// Commands whose arguments are branch names, so Tab / Down complete them.
-const BRANCH_ARGUMENT_COMMANDS: &[&str] = &["compare", "checkout", "checkout!"];
+const BRANCH_ARGUMENT_COMMANDS: &[&str] = &["compare", "select", "checkout", "checkout!"];
 
 /// `:compare ma`, `:compare master ori`, `:checkout ma`: complete the word
 /// being typed against branch names. Unlike command completion there is no

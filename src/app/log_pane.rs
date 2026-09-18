@@ -143,8 +143,19 @@ impl App {
         }
     }
 
+    /// `<leader>g`, like an IDE tool-window key: hidden opens and focuses
+    /// the pane, open-but-unfocused focuses it, focused hides it. So from
+    /// anywhere in the review one press lands in the log and Esc (or the
+    /// same key again) leaves it.
     pub fn toggle_log_pane(&mut self) {
-        self.set_log_pane_visible(self.log_pane.is_none());
+        if self.log_pane.is_none() {
+            self.set_log_pane_visible(true);
+        } else if self.focused_panel != FocusedPanel::CommitSelector {
+            self.focused_panel = FocusedPanel::CommitSelector;
+            self.set_message("Log pane focused \u{00b7} esc returns to the diff");
+        } else {
+            self.set_log_pane_visible(false);
+        }
     }
 
     pub fn set_log_pane_visible(&mut self, visible: bool) {

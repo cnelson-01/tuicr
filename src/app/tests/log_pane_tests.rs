@@ -441,3 +441,25 @@ fn compare_arguments_complete_branch_names_and_cycle() {
     assert_eq!(app.command_buffer, "checkout zzz");
     assert!(app.message.is_some());
 }
+
+#[test]
+fn leader_g_opens_then_focuses_then_hides() {
+    let mut app = build_review_app(&["a"]);
+    assert!(app.log_pane.is_none());
+
+    // hidden: open and focus
+    app.toggle_log_pane();
+    assert!(app.log_pane.is_some());
+    assert_eq!(app.focused_panel, FocusedPanel::CommitSelector);
+
+    // focus elsewhere, then the key comes back to the pane instead of hiding it
+    app.focused_panel = FocusedPanel::Diff;
+    app.toggle_log_pane();
+    assert!(app.log_pane.is_some());
+    assert_eq!(app.focused_panel, FocusedPanel::CommitSelector);
+
+    // focused: hide
+    app.toggle_log_pane();
+    assert!(app.log_pane.is_none());
+    assert_eq!(app.focused_panel, FocusedPanel::Diff);
+}

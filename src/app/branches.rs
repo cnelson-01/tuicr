@@ -192,7 +192,7 @@ impl App {
             return;
         }
         self.close_branch_picker();
-        self.compare_revisions(&format!("{base}...{other}"));
+        self.compare_pair(&base, &other);
     }
 
     /// Ctrl-l: show the picked branches (or the cursor row) in the log pane.

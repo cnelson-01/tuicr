@@ -3,29 +3,90 @@
 //! startup.
 
 use super::*;
-
-/// Turn `:compare` arguments into a revision expression: two names become
-/// `A...B` (what B has that A does not, from their merge base), one name is
-/// compared against HEAD the same way, and anything already containing `..`
-/// is used as typed.
-pub(crate) fn compare_spec(args: &str) -> Option<String> {
-    let words: Vec<&str> = args.split_whitespace().collect();
-    match words.as_slice() {
-        [] => None,
-        [one] if one.contains("..") => Some((*one).to_string()),
-        [one] => Some(format!("HEAD...{one}")),
-        [a, b, ..] => Some(format!("{a}...{b}")),
-    }
-}
+use crate::vcs::CommitQuery;
 
 impl App {
-    /// `:compare <base> <other>`, `:compare <other>`, or `:compare A..B`.
+    /// `:compare <base> <other>` (alias `:select`), `:compare <other>`, or a
+    /// typed range like `:compare A..B`.
     pub fn compare_command(&mut self, args: &str) {
-        let Some(spec) = compare_spec(args) else {
-            self.set_error("Usage: :compare <base> <other>  (or :compare A..B, :compare <other>)");
+        let words: Vec<&str> = args.split_whitespace().collect();
+        match words.as_slice() {
+            [] => self
+                .set_error("Usage: :compare <base> <other>  (or :compare <other>, :compare A..B)"),
+            // A typed range is loaded as written: no direction guessing and
+            // no log narrowing, since the endpoints may not be refs.
+            [one] if one.contains("..") => self.compare_revisions(one),
+            [one] => {
+                let current = self
+                    .vcs_info
+                    .branch_name
+                    .clone()
+                    .unwrap_or_else(|| "HEAD".to_string());
+                self.compare_pair(&current, one);
+            }
+            [base, other, ..] => {
+                let (base, other) = ((*base).to_string(), (*other).to_string());
+                self.compare_pair(&base, &other);
+            }
+        }
+    }
+
+    /// Compare two refs: load `base...other` (what `other` has since their
+    /// merge base). When that side is empty because `base` is the one ahead,
+    /// load `other...base` instead and say so. Either way the log pane is
+    /// narrowed to just the two refs.
+    pub fn compare_pair(&mut self, base: &str, other: &str) {
+        if base == other {
+            self.set_message(format!("{base} compared with itself: nothing to show"));
             return;
+        }
+        let forward = format!("{base}...{other}");
+        let loaded = match self.open_revision_range(&forward) {
+            Ok(count) => Ok((forward, count, false)),
+            Err(first) => {
+                let backward = format!("{other}...{base}");
+                match self.open_revision_range(&backward) {
+                    Ok(count) => Ok((backward, count, true)),
+                    Err(_) => Err(first),
+                }
+            }
         };
-        self.compare_revisions(&spec);
+        match loaded {
+            Ok((spec, count, flipped)) => {
+                self.narrow_log_to_refs(&[base, other]);
+                let note = if flipped {
+                    format!(" \u{00b7} {other} has nothing beyond {base}, so this is the reverse")
+                } else {
+                    String::new()
+                };
+                self.set_message(format!(
+                    "Comparing {spec} \u{00b7} {count} commit{}{note}",
+                    if count == 1 { "" } else { "s" }
+                ));
+            }
+            Err(_) => self.set_error(format!(
+                "No differences between {base} and {other} in either direction"
+            )),
+        }
+    }
+
+    /// Show only `refs` in the log pane (opening it if hidden) without
+    /// moving focus.
+    fn narrow_log_to_refs(&mut self, refs: &[&str]) {
+        self.commit_filter = Some(CommitQuery {
+            refs: refs.iter().map(|r| (*r).to_string()).collect(),
+            ..Default::default()
+        });
+        self.commit_filter_draft = None;
+        self.commit_filter_rx = None;
+        if self.log_pane.is_none() {
+            let focus = self.focused_panel;
+            self.enable_log_pane();
+            self.focused_panel = focus;
+        } else {
+            self.refresh_log_rows_keep_cursor();
+        }
+        self.commit_filter_shown = self.commit_filter.clone();
     }
 
     /// Load `spec` as the review and report what came up.
@@ -113,24 +174,5 @@ impl App {
             self.rebuild_annotations();
         }
         Ok(count)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::compare_spec;
-
-    #[test]
-    fn compare_spec_builds_merge_base_ranges() {
-        assert_eq!(compare_spec("").as_deref(), None);
-        assert_eq!(
-            compare_spec("master origin/master").as_deref(),
-            Some("master...origin/master")
-        );
-        assert_eq!(compare_spec("feature").as_deref(), Some("HEAD...feature"));
-        assert_eq!(compare_spec("main..dev").as_deref(), Some("main..dev"));
-        assert_eq!(compare_spec("a...b").as_deref(), Some("a...b"));
-        // extra words are ignored rather than rejected
-        assert_eq!(compare_spec("a b c").as_deref(), Some("a...b"));
     }
 }

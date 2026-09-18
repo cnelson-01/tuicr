@@ -115,7 +115,7 @@ considers files that pass the active filters.
 | `<leader>j` | Move focus down (files to comments when visible, otherwise diff) |
 | `<leader>e` | Toggle file list visibility |
 | `<leader>s` | Toggle commit selector visibility (also `:set commits!`) |
-| `<leader>g` | Toggle the persistent log pane (also `:log`, `:set log!`) |
+| `<leader>g` | Go to the log pane: opens it (focused) when hidden, focuses it when open, hides it when it already has focus. `:log` / `:set log!` toggle visibility only |
 | `<leader>+` / `<leader>-` | Grow / shrink the log pane (also `:set logheight N`) |
 | `<leader>b` | Open the branch picker (also `:branches`) |
 | `<leader>F` | Find in files: opens the command line with `find ` |
@@ -253,7 +253,7 @@ remote-tracking ones. `:compare ma`, `↓`, `↓`, `Enter` picks the second matc
 | `:stashes` / `:stash list` | Open the stash picker |
 | `:find <text>` / `:grep <text>` | Search the working tree and show the hits in place of the diff |
 | `:find` | Bring the last results back (or prompt when there are none) |
-| `:compare <base> <other>` | Load `base...other` as the review (what `other` has since the merge base); `:compare <other>` compares against HEAD; `:compare A..B` is used as typed |
+| `:compare <base> <other>` (`:select`) | Load `base...other` as the review (what `other` has since the merge base) and narrow the log pane to those two refs. When `other` has nothing beyond `base` the reverse is loaded and the status bar says so. `:compare <other>` compares the current branch; `:compare A..B` is used as typed; bare `:compare` opens the branch picker |
 | `:blame` / `:annotate` / `:set blame!` | Toggle the blame gutter; `:set blame` / `:set noblame` set it |
 | `:history` | Show the commits touching the file under the cursor in the log pane |
 | `:set reviewed` | Show files already marked reviewed |
@@ -403,7 +403,7 @@ bold chip (or `[HEAD]` when detached) on the checked-out commit.
 | any printable key | Filter branches by substring (case-insensitive) |
 | `↑` / `↓`, `Ctrl-p` / `Ctrl-n` | Move the cursor |
 | `Tab` | Pick / unpick the highlighted branch (`◆1`, `◆2`); a third pick replaces the oldest |
-| `Ctrl-d` | Compare: two picks load `first...second` (what the second has that the first does not); one pick or none compares the current branch with it (or the cursor row) |
+| `Ctrl-d` | Compare: two picks load `first...second` (what the second has that the first does not, or the reverse when that is empty) and narrow the log to the pair; one pick or none compares the current branch with it (or the cursor row) |
 | `Ctrl-l` | Show the picked branches (or the cursor row) in the log pane, as a `ref:` filter |
 | `Enter` | Check out the highlighted branch (a remote branch creates its local tracking branch) |
 | `Ctrl-s` | Stash the working tree, check out, then pop the stash |
