@@ -123,6 +123,10 @@ pub struct ReviewSession {
 }
 
 impl ReviewSession {
+    fn file_review_is_invalidated(review: &FileReview, content_hash: u64) -> bool {
+        review.reviewed && review.content_hash != Some(content_hash)
+    }
+
     pub fn new(
         repo_path: PathBuf,
         base_commit: String,
@@ -163,13 +167,12 @@ impl ReviewSession {
     /// reviewed but its content changed, causing reviewed status to be reset.
     pub fn add_file(&mut self, path: PathBuf, status: FileStatus, content_hash: u64) -> bool {
         if let Some(review) = self.files.get_mut(&path) {
-            let old_hash = review.content_hash;
+            let invalidated = Self::file_review_is_invalidated(review, content_hash);
             review.content_hash = Some(content_hash);
-            if review.reviewed && old_hash != Some(content_hash) {
+            if invalidated {
                 review.reviewed = false;
-                return true;
             }
-            return false;
+            return invalidated;
         }
         self.files
             .insert(path.clone(), FileReview::new(path, status, content_hash));
@@ -188,6 +191,23 @@ impl ReviewSession {
         invalidated
     }
 
+    pub(crate) fn reconcile_diff_files(&mut self, diff_files: &[DiffFile]) {
+        for file in diff_files {
+            self.add_diff_file(file);
+        }
+    }
+
+    pub(crate) fn invalidated_diff_file_count(&self, diff_files: &[DiffFile]) -> usize {
+        diff_files
+            .iter()
+            .filter(|file| {
+                self.files.get(file.display_path()).is_some_and(|review| {
+                    Self::file_review_is_invalidated(review, file.content_hash)
+                })
+            })
+            .count()
+    }
+
     /// Register a transient filtered diff without dropping hunk keys that
     /// belong to the broader persisted review scope.
     pub fn add_diff_file_preserving_hunks(&mut self, file: &DiffFile) -> bool {
@@ -200,6 +220,15 @@ impl ReviewSession {
 
     pub fn has_comments(&self) -> bool {
         !self.review_comments.is_empty() || self.files.values().any(|f| f.comment_count() > 0)
+    }
+
+    pub fn comment_count(&self) -> usize {
+        self.review_comments.len()
+            + self
+                .files
+                .values()
+                .map(|f| f.comment_count())
+                .sum::<usize>()
     }
 
     pub fn clear_comments(&mut self, scope: ClearScope) -> (usize, usize) {
@@ -331,6 +360,33 @@ mod tests {
         let file = session.files.get(&path).unwrap();
         assert!(file.file_comments.is_empty());
         assert!(file.line_comments.is_empty());
+    }
+
+    #[test]
+    fn should_count_review_level_and_file_and_line_comments() {
+        let mut session = test_session();
+        assert_eq!(session.comment_count(), 0);
+
+        session.review_comments.push(Comment::new(
+            "note".to_string(),
+            CommentType::from_id("note"),
+            None,
+        ));
+
+        let path = PathBuf::from("src/main.rs");
+        session.add_file(path.clone(), FileStatus::Modified, SOME_HASH);
+        let file = session.get_file_mut(&path).unwrap();
+        file.add_file_comment(Comment::new(
+            "comment".to_string(),
+            CommentType::from_id("note"),
+            None,
+        ));
+        file.add_line_comment(
+            10,
+            Comment::new("line".to_string(), CommentType::from_id("note"), None),
+        );
+
+        assert_eq!(session.comment_count(), 3);
     }
 
     #[test]

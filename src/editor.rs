@@ -17,10 +17,15 @@ const LAUNCH_FAILURE_WINDOW: Duration = Duration::from_secs(5);
 /// suspend/resume code does not need to know about repository-relative paths.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditorTarget {
-    /// Absolute path to the local worktree file.
+    /// Absolute path handed to the editor: the local worktree file, or in PR
+    /// review a read-only snapshot of the reviewed revision.
     pub path: PathBuf,
     /// One-based source line to request from editors that support it.
     pub line: Option<u32>,
+    /// What the status bar calls the opened file. A snapshot lives at a
+    /// temp-dir path nobody wants to read, so the App supplies the repository
+    /// path here, plus the revision when it is not the worktree's.
+    pub label: String,
 }
 
 /// Fully expanded editor invocation.
@@ -36,13 +41,14 @@ pub struct EditorCommand {
 }
 
 impl EditorCommand {
-    /// Builds an invocation from `$EDITOR`.
+    /// Builds an invocation from the configured editor.
+    /// Builds an invocation from `$EDITOR` or the config `editor` override.
     ///
     /// An unset, empty, or unparsable value falls back to `vi` so the caller
     /// always gets a concrete command to run.
-    pub fn from_env(target: &EditorTarget) -> Self {
-        let editor = std::env::var("EDITOR").unwrap_or_default();
-        Self::from_editor(&editor, target)
+    pub fn from_env(editor_override: Option<&str>, target: &EditorTarget) -> Self {
+        let env_editor = std::env::var("EDITOR").unwrap_or_default();
+        Self::from_editor(&resolve_editor(editor_override, &env_editor), target)
     }
 
     /// Builds an invocation from an editor command string.
@@ -207,6 +213,13 @@ enum EditorFamily {
     Plain,
 }
 
+fn resolve_editor(editor_override: Option<&str>, env_editor: &str) -> String {
+    editor_override
+        .filter(|editor| !editor.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| env_editor.to_string())
+}
+
 fn editor_family(program: &str) -> EditorFamily {
     let name = Path::new(program)
         .file_name()
@@ -261,6 +274,7 @@ mod tests {
         EditorTarget {
             path: PathBuf::from("/repo/src/main.rs"),
             line,
+            label: "src/main.rs".to_string(),
         }
     }
 
@@ -411,5 +425,29 @@ mod tests {
         let command = EditorCommand::from_editor("", &target(None));
         assert_eq!(command.program, "vi");
         assert_eq!(args(&command), vec!["/repo/src/main.rs"]);
+    }
+
+    #[test]
+    fn config_override_wins_over_env() {
+        assert_eq!(
+            resolve_editor(Some("from-config"), "from-env"),
+            "from-config"
+        );
+    }
+
+    #[test]
+    fn env_is_used_without_config_override() {
+        assert_eq!(resolve_editor(None, "from-env"), "from-env");
+    }
+
+    #[test]
+    fn blank_config_override_falls_back_to_env() {
+        assert_eq!(resolve_editor(Some("  "), "from-env"), "from-env");
+    }
+
+    #[test]
+    fn missing_env_and_config_fall_back_to_vi() {
+        let command = EditorCommand::from_editor(&resolve_editor(None, ""), &target(None));
+        assert_eq!(command.program, "vi");
     }
 }

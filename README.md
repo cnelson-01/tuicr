@@ -1,6 +1,6 @@
 # tuicr
 
-**A code review TUI with vim keybindings. Export to GitHub, GitLab, Bitbucket, or clipboard.**
+**A code review TUI with vim keybindings. Export to GitHub, GitLab, Gitea, Bitbucket, Azure DevOps, Gerrit, or clipboard.**
 
 [![Crates.io](https://img.shields.io/crates/v/tuicr)](https://crates.io/crates/tuicr)
 [![License](https://img.shields.io/crates/l/tuicr)](./LICENSE)
@@ -16,8 +16,8 @@
 - GitHub-style continuous diff in the terminal. Scroll through every changed file in one stream.
 - PR-style comments at the line, range, file, and review level. 
 - Review tracking at file or hunk granularity, persisted across sessions.
-- Three export targets: push a real review to GitHub, GitLab, or Bitbucket, copy structured
-  markdown to your clipboard, or pipe to stdout.
+- Three export targets: push a real review to GitHub, GitLab, Gitea, Bitbucket, Azure DevOps, or Gerrit, copy
+  structured markdown to your clipboard, or pipe to stdout.
 - Commit selector with a JetBrains-style branch graph: colored tracks across all local
   branches, with branch chips on tips.
 - Three-pane merge conflict resolution (ours | result | theirs), with each pane attributed
@@ -26,7 +26,7 @@
 - Cherry-pick or rebase from the commit selector (`p` / `b`); conflicts drop you straight
   into the resolution view.
 - Works with git, jj, and mercurial. Reviews uncommitted changes, commit ranges, or any GitHub PR,
-  GitLab MR, or Bitbucket PR.
+  GitLab MR, Gitea PR, Bitbucket PR, Azure DevOps PR, or Gerrit change.
 
 ## Install
 
@@ -34,6 +34,8 @@
 curl -fsSL tuicr.dev/install.sh | sh
 # or
 brew install tuicr
+# or
+sudo pacman -S tuicr
 ```
 
 <details>
@@ -84,7 +86,8 @@ tuicr                       # Pick from a commit selector
 tuicr tui                   # Same TUI, explicit subcommand
 tuicr -w                    # Uncommitted changes (skip selector)
 tuicr -r main..HEAD         # Commit range
-tuicr pr 125                # GitHub PR, or Bitbucket PR
+tuicr pr 125                # GitHub, Gitea, Bitbucket, or Azure DevOps PR, or Gerrit change
+tuicr pr 125 --remote up    # Use a named Git remote's fetch URL
 tuicr mr 125                # GitLab MR
 tuicr tui pr 125            # GitHub PR via explicit TUI subcommand
 tuicr tui mr 125            # GitLab MR via explicit TUI subcommand
@@ -94,10 +97,13 @@ tuicr update                # Update the active installation
 tuicr update 0.18.0         # Install a known-good version
 ```
 
+Every flag, environment variable, and exit code in [docs/CLI.md](docs/CLI.md).
+
 Inside tuicr, navigate with `j`/`k`, press `c` to comment, then `y` to copy the review or
-`:submit` to push it to GitHub, GitLab, or Bitbucket. When reopening a pull request you've reviewed
-before, tuicr preselects commits newer than your latest submitted review when that metadata is
-available; commits already covered by that review are marked with `✓` in the inline selector.
+`:submit` to push it to GitHub, GitLab, Gitea, Bitbucket, Azure DevOps, or Gerrit. When reopening a
+pull request you've reviewed before, tuicr preselects commits newer than your latest submitted
+review when that metadata is available; commits already covered by that review are marked with
+`✓` in the inline selector.
 (Bitbucket does not record which commit an approval covered, so that preselection does not apply
 there.)
 Use `:summary` during a review to show every pending local-draft comment. The summary replaces the
@@ -107,7 +113,8 @@ the view scrolls automatically to keep it visible. Press `Enter` to jump to the 
 in the continuous diff, leaving single-file view if necessary, or `Esc` to return to the diff. If
 its file or hunk is already marked reviewed, tuicr reveals the target without clearing that
 reviewed state.
-Auto-detects git, jj, or mercurial.
+Auto-detects git, jj, or mercurial. SHA-256 Git repositories automatically use the Git CLI backend,
+including when reviewing root commits; ordinary SHA-1 repositories still default to libgit2.
 
 ## How it compares
 
@@ -118,7 +125,10 @@ Auto-detects git, jj, or mercurial.
 | Vim keybindings | ✅ | ❌ | partial¹ | ❌ | ❌ |
 | Push inline review to GitHub | ✅ | ❌ | ❌ | partial² | ❌ |
 | Push inline review to GitLab | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Push inline review to Gitea | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Push inline review to Bitbucket | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Push inline review to Azure DevOps | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Push inline review to Gerrit | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Agent-ready markdown export | ✅ | via CLI skill | ❌ | ❌ | ❌ |
 | git | ✅ | ✅ | ✅ | ❌ | ✅ |
 | jj | ✅ | ✅ | ✅ | ❌ | ❌ |
@@ -143,10 +153,19 @@ Requires `gh` authenticated to the repo.
 
 ### To GitLab
 
-`:submit` offers Comment, Approve, or Request changes on a GitLab MR. Inline comments post as
-discussion notes. Review-level comments become the summary. Requires `glab` authenticated to the
-host. Request changes needs your account to be an assigned reviewer. Only Draft is GitHub-only
-here. See [docs/GITLAB.md](docs/GITLAB.md) for setup, self-hosted instances, and troubleshooting.
+`:submit` offers Comment, Approve, Request changes, or Draft on a GitLab MR. Inline comments post
+as discussion notes, or as draft notes for Draft. Review-level comments become the summary.
+Requires `glab` authenticated to the host. Request changes needs your account to be an assigned
+reviewer. See [docs/GITLAB.md](docs/GITLAB.md) for setup, self-hosted instances, and
+troubleshooting.
+
+### To Gitea
+
+`:submit` offers Comment, Approve, Request changes, or Draft on a Gitea pull request. Inline
+comments post as review comments and review-level comments become the summary, all in one request.
+Requires [`tea`](https://gitea.com/gitea/tea) with a login for the instance (`tea logins add`).
+Multi-line comments collapse to their last line — Gitea has no range form. See
+[docs/GITEA.md](docs/GITEA.md) for setup, self-hosted detection, and limitations.
 
 ### To Bitbucket
 
@@ -164,6 +183,16 @@ Access Token in `AZURE_DEVOPS_EXT_PAT` (preferred — works with enterprise tena
 to `az login` via the Azure CLI. Run tuicr from a local clone of the repo — Azure exposes no
 unified-diff API, so the diff is built with `git diff base...head`. See
 [docs/AZURE.md](docs/AZURE.md) for setup, supported URL forms, and MVP limitations.
+
+### To Gerrit
+
+`:submit` offers Comment, Approve, Request changes, or Draft on a Gerrit change. Inline comments
+post as Gerrit comments (multi-line ranges included) and the review-level comment becomes the
+change message; Approve votes `Code-Review +2` and Request changes votes `-1`. Draft keeps
+everything as Gerrit draft comments so you can publish from the web UI. Auth is your Gerrit HTTP
+password in `GERRIT_USERNAME` / `GERRIT_PASSWORD`. Run tuicr from a local clone — the diff is
+built with `git diff base..head` after fetching the change's patch-set ref. See
+[docs/GERRIT.md](docs/GERRIT.md) for setup, detection of self-hosted hosts, and limitations.
 
 ### To your coding agent
 
@@ -202,6 +231,11 @@ The TUI creates a persisted session file when a review target becomes active,
 so collaborative tools can add comments immediately. Empty auto-created session
 files are removed when the TUI exits. `tuicr review list` marks currently open
 TUI sessions with `"active": true`.
+
+Inside the TUI, the review target selector's **Sessions** tab lists the saved
+reviews for the current checkout, so you can resume one by picking it instead of
+retyping the commit range it was opened with. Open it with `:sessions` or cycle
+to it with `Tab`.
 
 ## Library API
 
@@ -242,6 +276,7 @@ ignore_whitespace = false    # ignore all whitespace in local VCS diffs
 appearance = "system"        # or "dark" / "light"
 mouse = true
 leader = ";"                  # configurable prefix for leader shortcuts
+editor = "nvim"               # editor for `e` / `:edit`; overrides $EDITOR
 comment_vim = false           # vim modal editing in the review comment box
 relative_line_numbers = false # show rendered-row distances in the diff gutter
 
@@ -287,10 +322,10 @@ A first-session cheatsheet. Press `?` inside tuicr for the full reference.
 | `v` / `V` | Visual mode (range comment) |
 | `r` | Toggle file reviewed |
 | `R` | Toggle hunk reviewed |
-| `e` | Open focused file in `$EDITOR` |
+| `e` | Open focused file in `$EDITOR` (in PR review: the PR's revision, as a read-only copy when the checkout differs) |
 | `y` | Copy review to clipboard |
 | `:edit` | Open focused file in `$EDITOR` |
-| `:submit` | Push review to GitHub, GitLab, or Bitbucket |
+| `:submit` | Push review to GitHub, GitLab, Gitea, Bitbucket, Azure DevOps, or Gerrit |
 | `Tab` in `:` prompt | Complete or cycle commands |
 | `?` | Toggle full help |
 

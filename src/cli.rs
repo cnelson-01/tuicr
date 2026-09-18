@@ -32,6 +32,8 @@ pub struct CliArgs {
     pub pr_target: Option<String>,
     /// Override the GitHub repo used for PR operations.
     pub repo_url: Option<String>,
+    /// Use a named VCS remote for PR operations.
+    pub remote: Option<String>,
     /// Non-interactive review session operation.
     pub review_command: Option<ReviewCommand>,
     /// Update the installed tuicr binary and exit.
@@ -131,6 +133,15 @@ struct TuiOptions {
         value_parser = parse_repo_url
     )]
     repo_url: Option<String>,
+
+    /// Use a named remote's fetch URL for PR operations (Git only).
+    #[arg(
+        long,
+        value_name = "NAME",
+        value_parser = clap::builder::NonEmptyStringValueParser::new(),
+        conflicts_with = "repo_url"
+    )]
+    remote: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -214,6 +225,8 @@ pub enum ReviewCommand {
 
         /// Comment classification. Defaults to `none` (no type, no `[TYPE]`
         /// prefix); pass a type configured via `comment_types` to classify.
+        /// An id absent from a configured `comment_types` warns on stderr but
+        /// is still stored.
         #[arg(long = "type", value_name = "TYPE", default_value = "none", value_parser = non_empty_comment_type)]
         comment_type: String,
 
@@ -318,6 +331,7 @@ impl From<Cli> for CliArgs {
             all_files: options.all_files,
             pr_target,
             repo_url: options.repo_url,
+            remote: options.remote,
             review_command,
             update_command,
             update_version,
@@ -337,6 +351,7 @@ impl TuiOptions {
             || self.file_path.is_some()
             || self.all_files
             || self.repo_url.is_some()
+            || self.remote.is_some()
     }
 
     fn merge(self, later: TuiOptions) -> Self {
@@ -351,6 +366,7 @@ impl TuiOptions {
             file_path: later.file_path.or(self.file_path),
             all_files: self.all_files || later.all_files,
             repo_url: later.repo_url.or(self.repo_url),
+            remote: later.remote.or(self.remote),
         }
     }
 }
@@ -367,7 +383,16 @@ impl Cli {
                     "TUI options cannot be used with `tuicr {command_name}`; run `tuicr {command_name} --help` for command options"
                 ),
             )),
-            _ => Ok(self.into()),
+            _ => {
+                let args: CliArgs = self.into();
+                if args.remote.is_some() && args.repo_url.is_some() {
+                    return Err(clap::Error::raw(
+                        clap::error::ErrorKind::ArgumentConflict,
+                        "--remote cannot be used with --repo-url",
+                    ));
+                }
+                Ok(args)
+            }
         }
     }
 
@@ -397,17 +422,19 @@ fn non_empty_theme_name(s: &str) -> Result<String, String> {
 }
 
 /// Reject `--repo-url` values that don't parse as a supported forge remote URL
-/// (GitHub, GitLab, Bitbucket, or Azure DevOps) so the failure is surfaced at
-/// startup rather than when the PR tab is opened.
+/// (GitHub, GitLab, Gitea, Bitbucket, Azure DevOps, or Gerrit) so the failure is
+/// surfaced at startup rather than when the PR tab is opened.
 fn parse_repo_url(s: &str) -> Result<String, String> {
     if crate::forge::parse_any_remote_url(s).is_some() {
         Ok(s.to_string())
     } else {
         Err(format!(
-            "--repo-url value '{s}' is not a recognized GitHub, GitLab, Bitbucket, or Azure \
-             DevOps URL. Expected forms like: https://github.com/owner/repo, \
-             git@gitlab.com:owner/repo, https://bitbucket.org/workspace/repo, or \
-             https://dev.azure.com/org/project/_git/repo"
+            "--repo-url value '{s}' is not a recognized GitHub, GitLab, Gitea, Bitbucket, \
+             Azure DevOps, or Gerrit URL. Expected forms like: https://github.com/owner/repo, \
+             git@gitlab.com:owner/repo, https://gitea.com/owner/repo, \
+             https://bitbucket.org/workspace/repo, \
+             https://dev.azure.com/org/project/_git/repo, or \
+             https://gerrit.example.com/my/project"
         ))
     }
 }
@@ -856,7 +883,7 @@ mod tests {
         assert_eq!(err.kind(), ErrorKind::ValueValidation);
         assert!(
             err.to_string()
-                .contains("not a recognized GitHub, GitLab, Bitbucket, or Azure"),
+                .contains("not a recognized GitHub, GitLab, Gitea, Bitbucket, Azure"),
             "unexpected error: {err}"
         );
     }
@@ -864,13 +891,17 @@ mod tests {
     #[test]
     fn should_accept_repo_url_for_every_supported_forge() {
         // `--repo-url` used to validate against GitHub only, which silently
-        // rejected GitLab, Bitbucket, and Azure DevOps remotes.
+        // rejected GitLab, Bitbucket, Azure DevOps, and Gerrit remotes.
         for url in [
             "https://github.com/slatedb/slatedb.git",
             "https://gitlab.com/owner/repo.git",
             "https://bitbucket.org/example-workspace/repo.git",
             "git@bitbucket.org:example-workspace/repo.git",
             "https://dev.azure.com/org/project/_git/repo",
+            "https://gitea.com/owner/repo.git",
+            "git@gitea.example.com:owner/repo.git",
+            "https://gerrit.example.com/my/project",
+            "ssh://reviewer@review.example.com:29418/my/project",
         ] {
             let parsed = parse_for_test(&["tuicr", "--repo-url", url])
                 .unwrap_or_else(|err| panic!("{url} should parse: {err}"));
@@ -888,6 +919,72 @@ mod tests {
     fn should_leave_repo_url_none_when_not_provided() {
         let parsed = parse_for_test(&["tuicr"]).expect("parse should succeed");
         assert_eq!(parsed.repo_url, None);
+    }
+
+    #[test]
+    fn should_reject_conflicting_remote_and_repo_url_across_command_levels() {
+        for args in [
+            vec![
+                "tuicr",
+                "pr",
+                "382",
+                "--remote",
+                "upstream",
+                "--repo-url",
+                "https://github.com/owner/repo",
+            ],
+            vec![
+                "tuicr",
+                "--remote",
+                "upstream",
+                "tui",
+                "pr",
+                "382",
+                "--repo-url",
+                "https://github.com/owner/repo",
+            ],
+            vec![
+                "tuicr",
+                "--repo-url",
+                "https://github.com/owner/repo",
+                "tui",
+                "--remote",
+                "upstream",
+                "mr",
+                "382",
+            ],
+        ] {
+            let err = parse_for_test(&args).expect_err("conflicting repository selectors");
+            assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+        }
+    }
+
+    #[test]
+    fn should_use_innermost_remote_option() {
+        let parsed = parse_for_test(&[
+            "tuicr",
+            "--remote",
+            "origin",
+            "tui",
+            "--remote",
+            "upstream",
+            "pr",
+            "382",
+            "--remote",
+            "staging-upstream",
+        ])
+        .expect("parse should succeed");
+        assert_eq!(parsed.remote.as_deref(), Some("staging-upstream"));
+    }
+
+    #[test]
+    fn should_reject_remote_for_non_tui_commands() {
+        for command in [vec!["review", "list"], vec!["update"]] {
+            let mut args = vec!["tuicr", "--remote", "upstream"];
+            args.extend(command);
+            let err = parse_for_test(&args).expect_err("TUI option on non-TUI command");
+            assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+        }
     }
 
     #[test]

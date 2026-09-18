@@ -62,6 +62,8 @@ pub struct ExportConfig {
     pub remote_comments_header: Option<String>,
     /// Whether to emit the `Comment types:` legend.
     pub legend: Option<bool>,
+    /// Whether to emit the `## Session: <slug>` header.
+    pub session_header: Option<bool>,
 }
 
 impl ExportConfig {
@@ -92,6 +94,10 @@ impl ExportConfig {
     pub fn legend(&self) -> bool {
         self.legend.unwrap_or(true)
     }
+
+    pub fn session_header(&self) -> bool {
+        self.session_header.unwrap_or(true)
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -104,6 +110,8 @@ pub struct AppConfig {
     pub backend: Option<String>,
     pub comment_types: Option<Vec<CommentTypeConfig>>,
     pub show_file_list: Option<bool>,
+    /// Join single-child directory chains in the file tree. Defaults to false.
+    pub compact_folders: Option<bool>,
     /// Whether pull-request CI checks are fetched and shown.
     /// Defaults to false.
     pub show_pr_checks: Option<bool>,
@@ -143,10 +151,14 @@ pub struct AppConfig {
     /// Enable vim-style modal editing in the review comment text box. When
     /// unset/false the comment box uses the default emacs/readline bindings.
     pub comment_vim: Option<bool>,
+    /// Restore the legacy bare `q` quit binding in review modes.
+    /// Defaults to false.
+    pub q_quits: Option<bool>,
     /// Number of spaces inserted by Tab while typing in the vim comment box.
     /// Defaults to 4 (matching diff tab expansion).
     pub comment_tab_width: Option<usize>,
     pub leader: Option<char>,
+    pub editor: Option<String>,
     pub transparent_background: Option<bool>,
     pub scroll_offset: Option<usize>,
     pub review_watch_interval_ms: Option<usize>,
@@ -195,6 +207,7 @@ const KNOWN_KEYS: &[&str] = &[
     "backend",
     "comment_types",
     "show_file_list",
+    "compact_folders",
     "show_pr_checks",
     "show_pr_comments",
     "show_commits",
@@ -212,8 +225,10 @@ const KNOWN_KEYS: &[&str] = &[
     "search_highlight",
     "mouse",
     "comment_vim",
+    "q_quits",
     "comment_tab_width",
     "leader",
+    "editor",
     "transparent_background",
     "scroll_offset",
     "review_watch_interval_ms",
@@ -234,6 +249,7 @@ const EXPORT_KNOWN_KEYS: &[&str] = &[
     "comments_header",
     "remote_comments_header",
     "legend",
+    "session_header",
 ];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -422,6 +438,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
             .get("comment_types")
             .and_then(|v| parse_comment_types(v, &mut warnings)),
         show_file_list: read_bool(table, "show_file_list", &mut warnings),
+        compact_folders: read_bool(table, "compact_folders", &mut warnings),
         show_pr_checks: read_bool(table, "show_pr_checks", &mut warnings),
         show_pr_comments: read_bool(table, "show_pr_comments", &mut warnings),
         show_commits: read_bool(table, "show_commits", &mut warnings),
@@ -454,8 +471,10 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         search_highlight: read_bool(table, "search_highlight", &mut warnings),
         mouse: read_bool(table, "mouse", &mut warnings),
         comment_vim: read_bool(table, "comment_vim", &mut warnings),
+        q_quits: read_bool(table, "q_quits", &mut warnings),
         comment_tab_width: read_usize(table, "comment_tab_width", &mut warnings),
         leader: read_leader(table, &mut warnings),
+        editor: read_string(table, "editor", &mut warnings),
         transparent_background: read_bool(table, "transparent_background", &mut warnings),
         scroll_offset: read_usize(table, "scroll_offset", &mut warnings),
         review_watch_interval_ms: read_usize(table, "review_watch_interval_ms", &mut warnings),
@@ -541,6 +560,7 @@ fn parse_export(value: &Value, warnings: &mut Vec<String>) -> Option<ExportConfi
             warnings,
         ),
         legend: read_section_bool(table, "export", "legend", warnings),
+        session_header: read_section_bool(table, "export", "session_header", warnings),
     };
 
     if cfg == ExportConfig::default() {
@@ -908,6 +928,18 @@ mod tests {
             outcome.warnings[0],
             "Warning: Config key 'theme_dark' must be a string; ignoring value"
         );
+    }
+
+    #[test]
+    fn should_parse_compact_folders_and_reject_invalid_types() {
+        for value in [true, false] {
+            let outcome = parse_config(&format!("compact_folders = {value}\n"));
+            assert_eq!(outcome.config.unwrap().compact_folders, Some(value));
+            assert!(outcome.warnings.is_empty());
+        }
+        let outcome = parse_config("compact_folders = \"yes\"\n");
+        assert_eq!(outcome.config.unwrap().compact_folders, None);
+        assert_eq!(outcome.warnings.len(), 1);
     }
 
     // show_file_list
@@ -1373,6 +1405,35 @@ mod tests {
         );
     }
 
+    // q_quits
+
+    #[test]
+    fn should_parse_q_quits_true() {
+        let outcome = parse_config("q_quits = true\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.q_quits),
+            Some(true)
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_default_q_quits_to_none() {
+        let outcome = parse_config("\n");
+        assert_eq!(outcome.config.as_ref().and_then(|cfg| cfg.q_quits), None);
+    }
+
+    #[test]
+    fn should_warn_and_ignore_q_quits_with_invalid_type() {
+        let outcome = parse_config("q_quits = \"yes\"\n");
+        assert_eq!(outcome.config.as_ref().and_then(|cfg| cfg.q_quits), None);
+        assert_eq!(outcome.warnings.len(), 1);
+        assert_eq!(
+            outcome.warnings[0],
+            "Warning: Config key 'q_quits' must be a boolean; ignoring value"
+        );
+    }
+
     // leader
 
     #[test]
@@ -1404,6 +1465,32 @@ mod tests {
         assert_eq!(
             outcome.warnings[0],
             "Warning: Config key 'leader' must be a string; ignoring value"
+        );
+    }
+
+    // editor
+
+    #[test]
+    fn should_parse_editor_command_with_args() {
+        let outcome = parse_config("editor = \"code -w\"\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.editor.clone()),
+            Some("code -w".to_string())
+        );
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_warn_and_ignore_editor_with_invalid_type() {
+        let outcome = parse_config("editor = 42\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.editor.clone()),
+            None
+        );
+        assert_eq!(outcome.warnings.len(), 1);
+        assert_eq!(
+            outcome.warnings[0],
+            "Warning: Config key 'editor' must be a string; ignoring value"
         );
     }
 
@@ -1720,6 +1807,7 @@ pr_metadata = false
 comments_header = "## Comments"
 remote_comments_header = "## Upstream"
 legend = false
+session_header = false
 "###,
         );
         let export = outcome
@@ -1733,6 +1821,7 @@ legend = false
         assert_eq!(export.comments_header(), "## Comments");
         assert_eq!(export.remote_comments_header(), "## Upstream");
         assert!(!export.legend());
+        assert!(!export.session_header());
         assert!(outcome.warnings.is_empty());
     }
 

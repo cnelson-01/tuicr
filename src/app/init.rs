@@ -441,6 +441,7 @@ impl App {
         path_filter: Option<&str>,
         repo_url_override: Option<ForgeRepository>,
     ) -> Result<Self> {
+        let persisted_session_snapshot = session.clone();
         // Ensure all diff files are registered in the session. Persisted PR
         // subsets hydrate through the full PR diff first; keep subset-specific
         // hunk keys alive until the selected diff is loaded.
@@ -468,8 +469,6 @@ impl App {
             .as_deref()
             .filter(|path| path.exists())
             .and_then(|path| SessionFileState::from_path(path).ok());
-        let persisted_session_snapshot = session.clone();
-
         let mut app = Self {
             theme,
             vcs,
@@ -491,11 +490,13 @@ impl App {
             diff_files,
             diff_source,
             pending_editor_target: None,
+            editor_override: None,
             editor_launches: Vec::new(),
             input_mode,
             focused_panel: FocusedPanel::Diff,
             diff_view_mode: DiffViewMode::Unified,
             relative_line_numbers: false,
+            cursor_side: LineSide::New,
             file_list_state: FileListState::default(),
             comment_navigator_state: CommentNavigatorState::default(),
             diff_state: DiffState::default(),
@@ -517,6 +518,7 @@ impl App {
             comment_buffer: String::new(),
             comment_cursor: 0,
             comment_vim_enabled: false,
+            q_quits: false,
             comment_tab_width: 4,
             comment_vim_editor: None,
             comment_vim_command: None,
@@ -548,6 +550,8 @@ impl App {
             pr_list_viewport_height: 0,
             pr_list_inner_area: None,
             pr_filter_draft: None,
+            sessions_tab: crate::app::sessions_tab::SessionsTab::default(),
+            sessions_list_viewport_height: 0,
             pr_load_rx: None,
             pr_open_state: None,
             pr_open_rx: None,
@@ -575,6 +579,7 @@ impl App {
             pending_confirm: None,
             supports_keyboard_enhancement: false,
             show_file_list: true,
+            compact_folders: false,
             is_pristine_mode: false,
             is_single_file_view: false,
             revealed_reviewed_file: None,
@@ -652,7 +657,7 @@ impl App {
     /// Lazily called during startup — running this synchronously is fine
     /// because it only reads local config, never the network.
     fn detect_forge_repository(&mut self) {
-        // `--repo-url` short-circuits detection: the user has told us
+        // An explicit repository override short-circuits detection: the user has told us
         // exactly which repo to target, so skip both the local-remote
         // probe and the `gh api` parent lookup that runs on PR-tab entry.
         if let Some(override_repo) = self.repo_url_override.clone() {
@@ -854,24 +859,32 @@ impl App {
     ) -> Result<Self> {
         use crate::forge::azure::az::parse_pull_request_target_azure;
         use crate::forge::bitbucket::bkt::parse_pull_request_target_bitbucket;
+        use crate::forge::gerrit::api::parse_pull_request_target_gerrit;
+        use crate::forge::gitea::tea::parse_pull_request_target_gitea;
         use crate::forge::github::gh::parse_pull_request_target;
         use crate::forge::gitlab::glab::parse_pull_request_target_gitlab;
         use crate::forge::pr_open::open_pull_request;
         use crate::forge::traits::ForgeKind;
 
         // Bitbucket first: its URL shape (`/pull-requests/<n>`) is distinct,
-        // and the GitHub parser would otherwise claim the host. GitHub then
-        // handles numeric / `owner/repo#N` / GitHub URLs, GitLab handles
-        // `/-/merge_requests/<n>`, and an Azure DevOps PR URL falls through to
-        // the Azure parser last.
+        // and the GitHub parser would otherwise claim the host. Gitea next:
+        // its `/pulls/<n>` URL differs from GitHub's singular `/pull/<n>`, but
+        // only the Gitea parser knows which self-hosted hosts are Gitea, and
+        // it must see a host-qualified `host/owner/repo#N` before GitHub's
+        // parser claims it. GitHub then handles numeric / `owner/repo#N` /
+        // GitHub URLs, GitLab handles `/-/merge_requests/<n>`, and the Azure
+        // (`/pullrequest/<n>`) and Gerrit (`/c/<project>/+/<n>`) URL shapes
+        // fall through last.
         let parsed = parse_pull_request_target_bitbucket(target)
+            .or_else(|_| parse_pull_request_target_gitea(target))
             .or_else(|_| parse_pull_request_target(target))
             .or_else(|_| parse_pull_request_target_gitlab(target))
-            .or_else(|_| parse_pull_request_target_azure(target))?;
+            .or_else(|_| parse_pull_request_target_azure(target))
+            .or_else(|_| parse_pull_request_target_gerrit(target))?;
 
         // Resolution order when the target lacks an explicit repo
         // (`tuicr pr 125`):
-        //   1. `--repo-url` override (explicit user intent; no I/O)
+        //   1. resolved `--repo-url` or `--remote` override
         //   2. canonical of the local `origin` (gh api parent lookup —
         //      so `tuicr pr 125` from a fork checkout opens the PR on
         //      the upstream, matching the PR-tab behavior)

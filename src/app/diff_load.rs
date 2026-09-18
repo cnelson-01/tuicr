@@ -469,10 +469,50 @@ impl App {
         for file in &diff_files {
             self.session.add_diff_file(file);
         }
-        self.reset_persisted_session_tracking();
+        self.reset_persisted_session_tracking()?;
 
         self.diff_files = diff_files;
         self.diff_source = DiffSource::StagedAndUnstaged;
+        self.input_mode = InputMode::Normal;
+        self.diff_state = DiffState::default();
+        self.file_list_state = FileListState::default();
+        self.clear_expanded_gaps();
+        self.sort_files_by_directory(true);
+        self.expand_all_dirs();
+        self.rebuild_annotations();
+
+        Ok(())
+    }
+
+    /// Load a whole-working-tree review (`tuicr -w`).
+    ///
+    /// This must record `SessionDiffSource::WorkingTree`. The source is part of
+    /// the session identity, even though this loader and the staged-plus-
+    /// unstaged loader read the same diff.
+    pub(in crate::app) fn load_working_tree_selection(&mut self) -> Result<()> {
+        let highlighter = self.theme.syntax_highlighter();
+        let diff_files = match Self::get_working_tree_diff_with_ignore(
+            self.vcs.as_ref(),
+            &self.vcs_info.root_path,
+            highlighter,
+            self.path_filter.as_deref(),
+        ) {
+            Ok(diff_files) => diff_files,
+            Err(TuicrError::NoChanges) => {
+                self.set_message("No working tree changes");
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        };
+
+        self.session = Self::load_or_create_session(&self.vcs_info, SessionDiffSource::WorkingTree);
+        for file in &diff_files {
+            self.session.add_diff_file(file);
+        }
+        self.reset_persisted_session_tracking()?;
+
+        self.diff_files = diff_files;
+        self.diff_source = DiffSource::WorkingTree;
         self.input_mode = InputMode::Normal;
         self.diff_state = DiffState::default();
         self.file_list_state = FileListState::default();
@@ -504,7 +544,7 @@ impl App {
         for file in &diff_files {
             self.session.add_diff_file(file);
         }
-        self.reset_persisted_session_tracking();
+        self.reset_persisted_session_tracking()?;
 
         self.diff_files = diff_files;
         self.diff_source = DiffSource::Staged;
@@ -539,7 +579,7 @@ impl App {
         for file in &diff_files {
             self.session.add_diff_file(file);
         }
-        self.reset_persisted_session_tracking();
+        self.reset_persisted_session_tracking()?;
 
         self.diff_files = diff_files;
         self.diff_source = DiffSource::Unstaged;
@@ -831,7 +871,23 @@ impl App {
     /// `invalidated_count` is the number of previously reviewed files whose content changed.
     pub fn reload_diff_files(&mut self) -> Result<(usize, usize)> {
         let diff_files = self.fetch_diff_files()?;
-        Ok(self.apply_diff_files(diff_files))
+        let full_reload = !Self::is_strict_commit_selection(
+            self.commit_selection_range,
+            self.review_commits.len(),
+        );
+        let invalidated = self.session.invalidated_diff_file_count(&diff_files);
+        if full_reload {
+            self.persist_diff_reconciliation(&diff_files)?;
+        }
+        let (count, applied_invalidated) = self.apply_diff_files(diff_files);
+        Ok((
+            count,
+            if full_reload {
+                invalidated
+            } else {
+                applied_invalidated
+            },
+        ))
     }
 
     /// Returns the freshly fetched diff only when it differs from what is
@@ -937,7 +993,7 @@ impl App {
         for file in &diff_files {
             self.session.add_diff_file(file);
         }
-        self.reset_persisted_session_tracking();
+        self.reset_persisted_session_tracking()?;
 
         self.diff_files = diff_files;
         self.diff_source = DiffSource::StagedUnstagedAndCommits(selected_ids);

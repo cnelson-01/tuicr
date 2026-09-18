@@ -109,8 +109,8 @@ considers files that pass the active filters.
 | Key | Action |
 |-----|--------|
 | `Tab` / `Shift-Tab` | Cycle focus forward / backward between file list, comment navigator, diff, and commit selector |
-| `<leader>h` | Focus file list (left panel) |
-| `<leader>l` | Focus diff view (right panel) |
+| `<leader>h` | Move focus one panel left (side-by-side: new side → old side → file list) |
+| `<leader>l` | Move focus one panel right (side-by-side: file list → diff → old side → new side) |
 | `<leader>k` | Move focus up (comments to files, or diff/files to commit selector when visible) |
 | `<leader>j` | Move focus down (files to comments when visible, otherwise diff) |
 | `<leader>e` | Toggle file list visibility |
@@ -152,8 +152,18 @@ Shown below the file tree when local comments or visible remote PR threads exist
 `e` opens the file at the cursor's line. Terminal editors (`vim`, `nvim`, `nano`, …)
 take over the screen and tuicr reloads the diff once they exit. Windowed editors
 (`code`, `cursor`, `zed`, `subl`, …) open in their own window while tuicr stays on
-screen; reload with `:e` after editing. Adding `--wait` to `$EDITOR` opts a windowed
-editor back into the blocking behaviour.
+screen; reload with `:e` after editing. Adding `--wait` to the editor command opts a
+windowed editor back into the blocking behaviour. Set the `editor` config key to
+override `$EDITOR`.
+
+In PR review `e` opens the revision under review, not whatever the checkout
+happens to hold. When the local file *is* that revision you get the real file and
+your edits land in it; otherwise — wrong branch checked out, file added or deleted
+by the PR, no checkout at all — tuicr writes a read-only copy of the PR's content
+to a temp directory and opens that, so the text and the line the cursor sits on
+match the diff. The status bar names which one you got, e.g.
+`Opened src/main.rs @ 1a2b3c4 (read-only PR copy)`. Binary files are only opened
+from the checkout, never copied.
 
 ## Visual mode
 
@@ -197,23 +207,30 @@ remote-tracking ones. `:compare ma`, `↓`, `↓`, `Enter` picks the second matc
 |---------|--------|
 | `:{N}` | Jump to new-side line N in current file |
 | `:o{N}` | Jump to old-side line N in current file (matches deletions) |
-| `:w` | Save session |
+| `:w` (`:write`) | Save session |
 | `:e` (`:reload`) | Reload diff files |
 | `:edit` | Open focused file in `$EDITOR` |
 | `:clip` (`:export`) | Copy review to clipboard |
 | `:copy-url` | Copy the open PR URL to clipboard (PR mode) |
 | `:summary` | Show all pending local-draft comments; `j`/`k` select and `Enter` jumps |
 | `:diff` | Toggle diff view (unified / side-by-side) |
-| `:vim` / `:novim` (`:set vim` / `:set novim`) | Enable/toggle/disable vim modal editing in the comment box (overrides `comment_vim`) |
-| `:commits` | Select commits to review |
+| `:focus` (`:f`) | Toggle single-file view |
+| `:stage` | Stage reviewed files (unstaged diffs only) |
+| `:vim` (`:set vim!`) / `:novim` (`:set novim`) / `:set vim` | Toggle / disable / enable vim modal editing in the comment box (overrides `comment_vim`) |
+| `:commits` (`:targets`) | Select commits to review |
+| `:prs` | Open the review target selector on Pull Requests |
+| `:sessions` (`:reviews`) | Resume a saved review for this checkout |
 | `:merge` (`:conflicts`) | Open the side-by-side merge conflict view |
 | `:submit` | Open submit picker (Comment / Approve / Request changes / Draft) |
 | `:submit comment` | Submit a Comment review |
 | `:submit approve` | Submit an Approve review |
 | `:submit request-changes` | Submit a Request-changes review |
-| `:submit draft` | Submit a Draft review (pending on GitHub) |
+| `:submit draft` | Submit a Draft (pending) review |
+| `:comments unresolved` | Show unresolved remote comments (PR mode, default) |
+| `:comments all` | Show all remote comments including resolved and outdated |
+| `:comments hide` | Hide remote comments in PR mode |
 | `:set wrap` | Enable line wrap in diff view |
-| `:set wrap!` | Toggle line wrap in diff view |
+| `:set wrap!` (`:wrap`) | Toggle line wrap in diff view |
 | `:set relativenumber` / `:set norelativenumber` | Enable / disable relative rendered-row numbers |
 | `:set relativenumber!` | Toggle relative rendered-row numbers |
 | `:set commits` | Show inline commit selector |
@@ -244,15 +261,19 @@ remote-tracking ones. `:compare ma`, `↓`, `↓`, `Enter` picks the second matc
 | `:set reviewed!` / `:reviewed` | Toggle files already marked reviewed |
 | `:clear` | Clear all comments |
 | `:clearc` | Clear comments without clearing reviewed marks |
+| `:help` (`:h`) | Open the help screen |
+| `:messages` | Open full details for the current error |
 | `:version` | Show tuicr version |
 | `:update` | Check for updates |
-| `:q` | Quit (warns on unsaved comments; discards review-only state) |
-| `:q!` | Force quit |
+| `:q` (`:quit`) | Quit (warns on unsaved comments; discards review-only state) |
+| `:q!` (`:quit!`) | Force quit |
 | `:x` / `:wq` | Save and quit (prompts to copy if comments exist) |
 | `ZZ` | Save and quit |
 | `ZQ` | Quit without saving |
 | `?` | Toggle help |
-| `q` | Quick quit |
+
+Pressing bare `q` no longer quits by default; it prints a reminder to use `:q` instead. Set
+`q_quits = true` to restore `q` as a quit key in review modes.
 
 The summary replaces the diff while leaving the file sidebar visible when it is open. The first
 pending comment is selected when the summary opens. Use `j`/`k` to select the next
@@ -261,8 +282,21 @@ to the continuous diff and jumps to the selected comment, leaving single-file vi
 while `Esc` returns without jumping. Reviewed files and hunks are revealed for the jump without
 losing their reviewed state.
 
-`draft` applies to GitHub only. `comment` and `approve` work on GitHub, GitLab, and Bitbucket.
-`request-changes` works on GitHub and GitLab, but not Bitbucket yet.
+Not every forge supports every event:
+
+| Event | GitHub | GitLab | Gitea | Bitbucket | Azure DevOps | Gerrit |
+|---|---|---|---|---|---|---|
+| `comment` | yes | yes | yes | yes | yes | yes |
+| `approve` | yes | yes | yes | yes | yes (vote +10) | yes (vote +2) |
+| `request-changes` | yes | yes | yes | no | yes (vote -10) | yes (vote -1) |
+| `draft` | yes | yes | yes | no | yes (plain comment) | yes |
+
+Bitbucket rejects `request-changes` and `draft` up front rather than silently downgrading them.
+Azure DevOps has no pending-review primitive, so `draft` posts as a plain comment with no vote.
+Gitea requires a review summary for `request-changes` and `draft`, and for `comment` when there
+are no inline comments; inline comments alone do not satisfy it. GitLab `draft` creates draft
+notes that the author publishes from GitLab's own "Submit review" UI. Gerrit `draft` stores draft
+comments that the author publishes from Gerrit's Reply UI.
 
 ## Blame and history
 
@@ -400,10 +434,10 @@ first, with children always above their parents so the graph stays coherent.
 
 | Key | Action |
 |-----|--------|
-| `Tab` / `Shift-Tab` | Switch between Local and Pull Requests tabs |
+| `Tab` / `Shift-Tab` | Switch between Local, Pull Requests, and Sessions tabs |
 | `j` / `k` | Move selection |
 | `Space` | Toggle the commit under the cursor in the pick set (non-contiguous picks allowed — pull in single commits from other branches; consecutive presses still sweep a run) |
-| `Enter` | Review the picked commits (must be a contiguous run), open PR, load more PRs, or open merge conflicts |
+| `Enter` | Review the picked commits (must be a contiguous run), open PR, load more PRs, resume a saved review, or open merge conflicts |
 | `p` | Cherry-pick the picked (or cursor) commits onto the current branch — works with non-contiguous picks |
 | `b` | Rebase the current branch onto the cursor commit |
 | `s` | Squash the selected range (must end at HEAD) into one commit |
@@ -413,7 +447,14 @@ first, with children always above their parents so the graph stays coherent.
 | `B` | Open the branch picker |
 | `/` | Local tab: filter the log by message / `author:` / `path:` (see the log pane section); Pull Requests tab: filter the loaded PR rows |
 | `r` | In Pull Requests tab, toggle all open PRs / PRs requesting your review |
-| `q` / `Esc` | Quit / return |
+| `Esc` | Return to the diff |
+| `:q` | Quit |
+
+The Sessions tab lists saved reviews for the current checkout, so you can pick one
+instead of retyping the commit range it was opened with. Rows show the review target,
+comment count, reviewed files, and age. Reviews with no comments and no reviewed files
+are omitted. Selecting a saved PR review re-fetches it from the forge, the same as
+opening it from the Pull Requests tab.
 
 ## Merge conflict view
 

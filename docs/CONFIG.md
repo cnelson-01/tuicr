@@ -26,13 +26,19 @@ theme_light = "gruvbox-light"
 
 diff_view = "side-by-side"
 ignore_whitespace = false
+commit_order = "descending"
+initial_commit_selection = "all"
 show_file_list = true
+compact_folders = false
 show_pr_checks = false
 show_pr_comments = true
+show_commits = true
 show_reviewed = true
 mouse = true
 leader = ","
+editor = "nvim"
 comment_vim = false
+q_quits = false
 comment_tab_width = 4
 wrap = false
 relative_line_numbers = false
@@ -66,6 +72,7 @@ pr_metadata = true
 comments_header = "## Local tuicr Comments"
 remote_comments_header = "## Existing GitHub Comments"
 legend = true
+session_header = true
 ```
 
 ## Options
@@ -81,6 +88,7 @@ legend = true
 | `initial_commit_selection` | `all`        | Which commits are selected when a multi-commit review first opens: `all`, or `oldest` to start on just the oldest commit and walk forward with `(` / `)`.  |
 | `ignore_whitespace`        | `false`      | Ignore all whitespace in local Git, jj, and hg diffs. PR diffs are unchanged.                                                                              |
 | `show_file_list`           | `true`       | Whether the file list panel is visible on startup. Toggle with `<leader>e`.                                                                                |
+| `compact_folders` | `false` | Join single-child directory chains into one file-tree row. Restart tuicr after changing this setting. |
 | `show_pr_checks`           | `false`      | Whether PR CI checks are fetched and shown. Set to `true` to include GitHub check rollups.                                                           |
 | `show_pr_comments`         | `true`       | Whether PR conversation comments are fetched and shown. Set to `false` to skip PR comments.                                                         |
 | `show_commits`             | `true`       | Whether the inline commit selector pane is visible on startup for multi-commit reviews. Toggle with `<leader>s` or `:set commits!`.                        |
@@ -89,7 +97,9 @@ legend = true
 | `show_reviewed`            | `true`       | Whether files already marked reviewed appear in the file tree and the diff. Set `false` to start a session showing only what is left. Toggle with `:set reviewed!`. |
 | `mouse`                    | `true`       | Wheel scrolling, clicks, and drag-to-select.                                                                                                               |
 | `leader`                   | `;`          | Single-character prefix for panel focus, sidebar toggles, and review-comment shortcuts. Invalid multi-character values are ignored with a startup warning. |
+| `editor`                   | `$EDITOR`    | Editor command for the `e` / `:edit` handoff, split with shell-like quoting rules (e.g. `"code -w"`). Falls back to `$EDITOR`, then `vi`. |
 | `comment_vim`              | `false`      | Vim modal editing in the comment box; toggle at runtime with `:vim`. When off, default emacs/readline bindings.                                            |
+| `q_quits`                  | `false`      | Restore bare `q` as a quit key in review modes. `:q`, `ZZ`, and `ZQ` work regardless of this setting.                                                     |
 | `comment_tab_width`        | `4`          | Spaces inserted by Tab while typing in the vim comment box (Insert mode).                                                                                  |
 | `wrap`                     | `false`      | Line wrap in the diff view. Toggle with `:set wrap!`.                                                                                                      |
 | `relative_line_numbers`    | `false`      | Show gutter numbers as rendered-row distances from the cursor. Toggle with `:set relativenumber!`.                                                         |
@@ -182,7 +192,7 @@ and fall back through normal precedence.
 Comment categories control:
 
 - The classification badge shown in the TUI (color + label)
-- The `[TYPE]` tag in the exported markdown
+- The `[TYPE]` tag in the exported markdown and in comments submitted to a forge
 - The Tab cycle order in comment mode
 
 ### Fields
@@ -190,7 +200,7 @@ Comment categories control:
 | Field        | Required | Description                                                                             |
 | ------------ | -------- | --------------------------------------------------------------------------------------- |
 | `id`         | yes      | Stable internal value. Saved in sessions and used for matching.                         |
-| `label`      | no       | Visible tag in UI and export (`[QUESTION]`, `[NITPICK]`). Defaults to `id` uppercased.  |
+| `label`      | no       | Visible tag in the UI, export, and submitted comments (`[QUESTION]`, `[NITPICK]`). Defaults to `id` uppercased. |
 | `definition` | no       | Guidance text for LLMs, included in the exported `Comment types:` legend.               |
 | `color`      | no       | Comment badge / border color. Terminal name (`yellow`, `light_red`) or hex (`#RRGGBB`). |
 
@@ -206,6 +216,13 @@ classifications.
 and it is appended to the end of the Tab cycle when they are, so you can always leave a comment
 untyped. An untyped comment never renders a `[TYPE]` tag, a badge, or a legend entry (file-level
 comments still keep their `File-level:` marker on submit).
+
+### `tuicr review add --type`
+
+When `comment_types` is configured, `tuicr review add --type <id>` warns on stderr if `<id>` is not
+one of them, listing the ids that are. The comment is still stored and the command still exits `0`,
+so scripted callers keep working. With `comment_types` unset there is nothing to check against and
+no warning is emitted.
 
 ### Replacement semantics
 
@@ -224,7 +241,8 @@ comment_types = [
 
 ## Forge
 
-Settings under the `[forge]` section control how tuicr submits reviews to GitHub, GitLab, and Bitbucket.
+Settings under the `[forge]` section control how tuicr submits reviews to GitHub, GitLab, Gitea,
+Bitbucket, Azure DevOps, and Gerrit.
 
 ```toml
 [forge]
@@ -233,7 +251,7 @@ comment_type_prefix = false
 
 | Key                   | Default | Description                                                                                                                                                                 |
 | --------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `comment_type_prefix` | `true`  | Prepend `[TYPE] ` to comment bodies on submit (e.g. `[ISSUE] Magic number should be a constant`). Set to `false` to send the raw comment body without a classification tag. |
+| `comment_type_prefix` | `true`  | Prepend `[TYPE] ` to comment bodies on submit (e.g. `[ISSUE] Magic number should be a constant`). The tag uses the type's `label`, uppercased — the same text the TUI badge and export show. Set to `false` to send the raw comment body without a classification tag. |
 
 When enabled (the default), submitted comments look like:
 
@@ -251,7 +269,9 @@ Magic number should be a named constant
 This module could use a doc comment
 ```
 
-This applies to inline line comments, file-level comments, and review-level comments pushed via `:submit`. The prefix works the same way on GitLab MR and Bitbucket PR submissions.
+This applies to inline line comments, file-level comments, and review-level comments pushed via
+`:submit`. The prefix works the same way on GitLab, Gitea, Bitbucket, Azure DevOps, and Gerrit
+submissions.
 
 ## Export
 
@@ -274,6 +294,7 @@ comments_header = "## Comments"
 | `comments_header`        | `## Local tuicr Comments`                                                    | Heading above comments you wrote in the TUI. Set to `""` to omit it.                                                                        |
 | `remote_comments_header` | `## Existing GitHub Comments`                                                | Heading above unresolved forge threads. Appears only in pull request mode. Set to `""` to omit it.                                          |
 | `legend`                 | `true`                                                                       | Emit the `Comment types:` legend. Takes precedence over the top-level `export_legend` key when set.                                         |
+| `session_header`         | `true`                                                                       | Emit the `## Session: <slug>` header naming the session. Set to `false` for agents that treat it as noise.                                  |
 
 The example above produces an export that opens directly on the comment list:
 
@@ -301,3 +322,16 @@ dist/
 *.lock
 !Cargo.lock
 ```
+
+## Compact folders
+
+Set `compact_folders = true` to reduce nesting in the file tree. For example,
+`app/src/main/kotlin/Editor.kt` appears as one `app/src/main/kotlin/` directory
+row with `Editor.kt` one level below it.
+
+A chain stops at a directory containing a review file directly or more than one
+child directory. Chains follow the active file filters, so hiding a sibling can
+join more directories. Opening or closing a joined row affects the whole chain;
+expand-all, collapse-all, and full-path search continue to work. Long labels use
+the existing horizontal scrolling. The default is `false`; there is no runtime
+toggle.

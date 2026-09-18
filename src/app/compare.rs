@@ -76,7 +76,7 @@ impl App {
             session.add_diff_file(file);
         }
         self.session = session;
-        self.reset_persisted_session_tracking();
+        self.reset_persisted_session_tracking()?;
 
         self.diff_files = diff_files;
         self.diff_source = DiffSource::CommitRange(commit_ids);

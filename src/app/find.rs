@@ -221,6 +221,7 @@ impl App {
                 self.pending_editor_target = Some(EditorTarget {
                     path: self.vcs_info.root_path.join(&hit.path),
                     line: Some(hit.line),
+                    label: hit.path.display().to_string(),
                 });
             }
         }
