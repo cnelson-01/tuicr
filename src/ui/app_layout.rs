@@ -4,7 +4,7 @@ use ratatui::{
     widgets::Block,
 };
 
-use crate::app::{App, InputMode, MIN_LOG_PANE_HEIGHT};
+use crate::app::{App, ConfirmAction, DiscardTarget, InputMode, MIN_LOG_PANE_HEIGHT};
 use crate::ui::comment_navigator::render_comment_navigator;
 use crate::ui::diff_view::render_diff_view;
 use crate::ui::file_list::render_file_list;
@@ -12,8 +12,8 @@ use crate::ui::inline_commit_selector::render_inline_commit_selector;
 use crate::ui::log_pane::render_log_pane;
 use crate::ui::selector::render_commit_select;
 use crate::ui::{
-    branch_picker, comment_panel, help_popup, merge_conflict, status_bar, styles, submit_modals,
-    summary_popup,
+    branch_picker, comment_panel, help_popup, merge_conflict, stash_picker, status_bar, styles,
+    submit_modals, summary_popup,
 };
 
 const FILE_LIST_MIN_HEIGHT: u16 = 4;
@@ -106,12 +106,28 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     if app.input_mode == InputMode::BranchPicker {
         branch_picker::render_branch_picker(frame, app);
     }
+    // The stash picker stays under its own drop-confirmation prompt.
+    if app.input_mode == InputMode::StashPicker
+        || (app.input_mode == InputMode::Confirm
+            && app.pending_confirm == Some(ConfirmAction::DropStash))
+    {
+        stash_picker::render_stash_picker(frame, app);
+    }
 
     // Comment input is now rendered inline in the diff view
 
     // Render confirm dialog if in confirm mode
     if app.input_mode == InputMode::Confirm {
-        comment_panel::render_confirm_dialog(frame, app, "Copy review to clipboard?");
+        let title = match app.pending_confirm {
+            Some(ConfirmAction::DiscardChanges) => app
+                .pending_discard
+                .as_ref()
+                .map(DiscardTarget::prompt)
+                .unwrap_or_else(|| "Discard these changes?".to_string()),
+            Some(ConfirmAction::DropStash) => "Drop this stash? This cannot be undone.".to_string(),
+            _ => "Copy review to clipboard?".to_string(),
+        };
+        comment_panel::render_confirm_dialog(frame, app, &title);
     }
 
     // Submit-flow modals.

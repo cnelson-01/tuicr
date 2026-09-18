@@ -297,6 +297,7 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             InputMode::SubmitConfirm => " SUBMIT ".to_string(),
             InputMode::SubmitActionPicker => " SUBMIT ".to_string(),
             InputMode::BranchPicker => "BRANCHES".to_string(),
+            InputMode::StashPicker => "STASHES".to_string(),
             InputMode::MergeConflict => " MERGE ".to_string(),
         };
 
@@ -334,6 +335,9 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                     Cow::Borrowed("   j/k select \u{00b7} \u{21b5} jump \u{00b7} q/esc close")
                 }
                 InputMode::Confirm => Cow::Borrowed("   y yes \u{00b7} n no"),
+                InputMode::StashPicker => Cow::Borrowed(
+                    "   j/k move \u{00b7} \u{21b5} pop \u{00b7} a apply \u{00b7} d drop \u{00b7} esc close",
+                ),
                 InputMode::BranchPicker => Cow::Borrowed(
                     "   type to filter \u{00b7} \u{2191}/\u{2193} move \u{00b7} \u{21b5} checkout \u{00b7} ctrl-s stash+switch \u{00b7} esc close",
                 ),

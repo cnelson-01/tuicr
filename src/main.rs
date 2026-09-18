@@ -17,7 +17,7 @@ use tuicr::handler::{
     handle_comment_navigator_action, handle_commit_select_action, handle_commit_selector_action,
     handle_confirm_action, handle_diff_action, handle_file_list_action, handle_help_action,
     handle_merge_conflict_action, handle_mouse_event, handle_search_action,
-    handle_submit_action_picker_action, handle_submit_confirm_action,
+    handle_stash_picker_action, handle_submit_action_picker_action, handle_submit_confirm_action,
     handle_submit_resolver_action, handle_summary_action, handle_visual_action,
 };
 use tuicr::input::{
@@ -916,6 +916,7 @@ fn dispatch_action(app: &mut App, action: Action) {
         InputMode::SubmitConfirm => handle_submit_confirm_action(app, action),
         InputMode::SubmitActionPicker => handle_submit_action_picker_action(app, action),
         InputMode::BranchPicker => handle_branch_picker_action(app, action),
+        InputMode::StashPicker => handle_stash_picker_action(app, action),
         InputMode::Normal => match app.focused_panel {
             FocusedPanel::FileList => handle_file_list_action(app, action),
             FocusedPanel::Comments => handle_comment_navigator_action(app, action),

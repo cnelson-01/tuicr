@@ -294,6 +294,53 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(""),
         Line::from(Span::styled(
+            "Local Changes (staged / unstaged reviews)",
+            Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                "  s / u     ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Stage / unstage the file under the cursor (diff or file tree)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  S / U     ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Stage the hunk under the cursor / unstage it (from the staged view)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  X         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(
+                "Discard the hunk under the cursor (asks first); `:discard` drops the whole file",
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :commit   ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(
+                "Commit the index: opens the message box (`:commit <msg>` inline; `:commit!` amends)",
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :stash    ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(
+                "Stash the tree (`:stash <msg>`); `:stash pop` restores; `:stashes` lists (pop / apply / drop)",
+            ),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
             "Log Pane (persistent commit graph)",
             Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
         )),

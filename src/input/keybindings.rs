@@ -189,6 +189,28 @@ pub enum Action {
     /// Open the branch picker (`B` in a selector, `<leader>b`, `:branches`).
     OpenBranchPicker,
 
+    // Local changes (working-tree reviews)
+    /// Stage the focused file (`s`).
+    StageFile,
+    /// Unstage the focused file (`u`).
+    UnstageFile,
+    /// Stage the hunk under the cursor (`S`).
+    StageHunk,
+    /// Unstage the hunk under the cursor (`U`, staged view).
+    UnstageHunk,
+    /// Discard the hunk under the cursor after confirmation (`X`).
+    DiscardHunk,
+
+    // Stash picker
+    StashPickerDown,
+    StashPickerUp,
+    /// Pop the highlighted stash (Enter).
+    StashPickerPop,
+    /// Apply the highlighted stash, keeping it (`a`).
+    StashPickerApply,
+    /// Drop the highlighted stash after confirmation (`d`).
+    StashPickerDrop,
+
     // Branch picker
     BranchPickerDown,
     BranchPickerUp,
@@ -221,6 +243,7 @@ pub fn map_key_to_action(key: KeyEvent, mode: InputMode, leader_key: char) -> Ac
         InputMode::SubmitConfirm => map_submit_confirm_mode(key),
         InputMode::SubmitActionPicker => map_submit_action_picker_mode(key),
         InputMode::BranchPicker => map_branch_picker_mode(key),
+        InputMode::StashPicker => map_stash_picker_mode(key),
     }
 }
 
@@ -276,6 +299,13 @@ fn map_normal_mode(key: KeyEvent, leader_key: char) -> Action {
         (KeyCode::Char('d'), KeyModifiers::NONE) => Action::PendingDCommand,
         (KeyCode::Char('v') | KeyCode::Char('V'), _) => Action::EnterVisualMode,
         (KeyCode::Char('y'), KeyModifiers::NONE) => Action::ExportToClipboard,
+
+        // Local changes (working-tree reviews)
+        (KeyCode::Char('s'), KeyModifiers::NONE) => Action::StageFile,
+        (KeyCode::Char('u'), KeyModifiers::NONE) => Action::UnstageFile,
+        (KeyCode::Char('S'), _) => Action::StageHunk,
+        (KeyCode::Char('U'), _) => Action::UnstageHunk,
+        (KeyCode::Char('X'), _) => Action::DiscardHunk,
         (KeyCode::Char('Y'), _) => Action::CopyCommentAtCursor,
         (KeyCode::Char('e'), KeyModifiers::NONE) => Action::EditFile,
         (KeyCode::Char('n'), KeyModifiers::NONE) => Action::SearchNext,
@@ -469,6 +499,19 @@ fn map_submit_confirm_mode(key: KeyEvent) -> Action {
         (KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter, _) => Action::ConfirmYes,
         (KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc, _) => Action::ConfirmNo,
         (KeyCode::Char('r') | KeyCode::Char('R'), _) => Action::SubmitReloadPr,
+        _ => Action::None,
+    }
+}
+
+/// Stash picker: `j` / `k` move, Enter pops, `a` applies, `d` drops.
+fn map_stash_picker_mode(key: KeyEvent) -> Action {
+    match (key.code, key.modifiers) {
+        (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => Action::StashPickerDown,
+        (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => Action::StashPickerUp,
+        (KeyCode::Enter, KeyModifiers::NONE) => Action::StashPickerPop,
+        (KeyCode::Char('a'), KeyModifiers::NONE) => Action::StashPickerApply,
+        (KeyCode::Char('d'), KeyModifiers::NONE) => Action::StashPickerDrop,
+        (KeyCode::Esc | KeyCode::Char('q'), KeyModifiers::NONE) => Action::ExitMode,
         _ => Action::None,
     }
 }

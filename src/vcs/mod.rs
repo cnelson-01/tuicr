@@ -31,8 +31,8 @@ pub use hg::HgBackend;
 pub use jj::JjBackend;
 pub use pr_noop::PrNoopVcs;
 pub use traits::{
-    ChangeKind, CommitInfo, CommitQuery, DiffWhitespaceMode, MergeConflictInfo,
-    ResolvedRevisionRange, RevisionDiffTarget, VcsBackend, VcsChangeStatus, VcsInfo,
+    ChangeKind, CommitInfo, CommitQuery, DiffWhitespaceMode, HunkScope, MergeConflictInfo,
+    ResolvedRevisionRange, RevisionDiffTarget, StashEntry, VcsBackend, VcsChangeStatus, VcsInfo,
 };
 
 use std::collections::HashMap;

@@ -15,6 +15,7 @@ pub mod merge_conflict;
 pub mod pr_info_panel;
 pub mod row_height;
 pub mod selector;
+pub mod stash_picker;
 pub mod status_bar;
 pub mod styles;
 pub mod submit_modals;

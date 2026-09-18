@@ -21,7 +21,8 @@ src/
 │   ├── file_filter.rs   # File-tree include/exclude regex filters + `/` path search
 │   ├── log_pane.rs      # Persistent log pane: own list state swapped into the selector fields per action, live preview
 │   ├── branches.rs      # Branch picker, checkout with dirty-tree guard / stash-and-switch, :branch, abort
-│   └── commit_filter.rs # Log filter prompt (`/`): CommitQuery over message / author / path, filtered paging
+│   ├── commit_filter.rs # Log filter prompt (`/`): CommitQuery over message / author / path, filtered paging
+│   └── local_changes.rs # Stage/unstage file+hunk, discard (confirmed), commit/amend via the composer, stash picker
 ├── error.rs             # Error types (TuicrError enum)
 ├── editor.rs            # External $EDITOR command construction and launch helpers
 ├── review_store.rs      # Library API for session listing/loading and shared comment insertion
@@ -435,3 +436,4 @@ You can reference comments by number (e.g., "Regarding comment #2...").
 6. **If unclear**, ask for clarification rather than guessing
     ├── log_pane.rs      # Persistent log pane renderer (graph above the diff)
     ├── branch_picker.rs # Branch picker modal (filter-as-you-type, tracking state)
+    ├── stash_picker.rs  # Stash picker modal (pop / apply / drop)

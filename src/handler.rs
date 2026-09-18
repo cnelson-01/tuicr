@@ -64,6 +64,13 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     CommandSpec::new(&["log", "set log!"], CommandKind::ToggleLog),
     CommandSpec::new(&["branches", "branch"], CommandKind::BranchPicker),
     CommandSpec::new(&["abort"], CommandKind::AbortOperation),
+    CommandSpec::new(&["commit"], CommandKind::Commit(false)),
+    CommandSpec::new(&["commit!", "amend"], CommandKind::Commit(true)),
+    CommandSpec::new(&["unstage"], CommandKind::UnstageFile),
+    CommandSpec::new(&["discard"], CommandKind::DiscardFile),
+    CommandSpec::new(&["stash"], CommandKind::StashPush),
+    CommandSpec::new(&["stash pop"], CommandKind::StashPop),
+    CommandSpec::new(&["stashes", "stash list"], CommandKind::StashPicker),
     CommandSpec::new(&["set reviewed"], CommandKind::SetShowReviewed(true)),
     CommandSpec::new(&["set noreviewed"], CommandKind::SetShowReviewed(false)),
     CommandSpec::new(
@@ -153,6 +160,12 @@ enum CommandKind {
     ToggleLog,
     BranchPicker,
     AbortOperation,
+    Commit(bool),
+    UnstageFile,
+    DiscardFile,
+    StashPush,
+    StashPop,
+    StashPicker,
     SetShowReviewed(bool),
     ToggleShowReviewed,
     Diff,
@@ -679,6 +692,18 @@ pub fn handle_command_action(app: &mut App, action: Action) {
                 let name = name.to_string();
                 app.create_branch(&name);
                 CommandAfterDispatch::ExitCommandMode
+            } else if let Some(message) = cmd.strip_prefix("commit! ") {
+                let message = message.to_string();
+                app.commit_with_message(&message, true);
+                CommandAfterDispatch::ExitCommandMode
+            } else if let Some(message) = cmd.strip_prefix("commit ") {
+                let message = message.to_string();
+                app.commit_with_message(&message, false);
+                CommandAfterDispatch::ExitCommandMode
+            } else if let Some(message) = cmd.strip_prefix("stash ") {
+                let message = message.to_string();
+                app.stash_push_current(Some(&message));
+                CommandAfterDispatch::ExitCommandMode
             } else {
                 app.set_message(format!("Unknown command: {cmd}"));
                 CommandAfterDispatch::ExitCommandMode
@@ -995,6 +1020,42 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
                 CommandAfterDispatch::ExitCommandMode
             }
         }
+        CommandKind::Commit(amend) => {
+            app.start_commit_composer(amend);
+            if app.input_mode == InputMode::Comment {
+                CommandAfterDispatch::KeepMode
+            } else {
+                CommandAfterDispatch::ExitCommandMode
+            }
+        }
+        CommandKind::UnstageFile => {
+            app.unstage_file_at_cursor();
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::DiscardFile => {
+            app.request_discard_file();
+            if app.input_mode == InputMode::Confirm {
+                CommandAfterDispatch::KeepMode
+            } else {
+                CommandAfterDispatch::ExitCommandMode
+            }
+        }
+        CommandKind::StashPush => {
+            app.stash_push_current(None);
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::StashPop => {
+            app.stash_pop_newest();
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::StashPicker => {
+            app.open_stash_picker();
+            if app.input_mode == InputMode::StashPicker {
+                CommandAfterDispatch::KeepMode
+            } else {
+                CommandAfterDispatch::ExitCommandMode
+            }
+        }
         CommandKind::SetShowReviewed(show) => {
             app.set_show_reviewed(show);
             CommandAfterDispatch::ExitCommandMode
@@ -1298,6 +1359,28 @@ pub fn handle_confirm_action(app: &mut App, action: Action) {
         return;
     }
 
+    // Destructive local-change prompts: act, then return to the review or
+    // the stash picker rather than running the quit flow below.
+    match app.pending_confirm {
+        Some(app::ConfirmAction::DiscardChanges) => {
+            match action {
+                Action::ConfirmYes => app.confirm_discard(),
+                Action::ConfirmNo => app.cancel_discard(),
+                _ => {}
+            }
+            return;
+        }
+        Some(app::ConfirmAction::DropStash) => {
+            match action {
+                Action::ConfirmYes => app.confirm_drop_stash(),
+                Action::ConfirmNo => app.cancel_drop_stash(),
+                _ => {}
+            }
+            return;
+        }
+        _ => {}
+    }
+
     match action {
         Action::ConfirmYes => {
             if let Some(app::ConfirmAction::CopyAndQuit) = app.pending_confirm {
@@ -1500,6 +1583,19 @@ fn handle_commit_filter_action(app: &mut App, action: Action) {
         Action::ClearLine => app.commit_filter_clear_draft(),
         Action::SubmitInput => app.apply_commit_filter(),
         Action::ExitMode => app.cancel_commit_filter(),
+        _ => {}
+    }
+}
+
+/// Keys in the stash picker modal.
+pub fn handle_stash_picker_action(app: &mut App, action: Action) {
+    match action {
+        Action::StashPickerDown => app.stash_picker_down(),
+        Action::StashPickerUp => app.stash_picker_up(),
+        Action::StashPickerPop => app.stash_picker_apply(true),
+        Action::StashPickerApply => app.stash_picker_apply(false),
+        Action::StashPickerDrop => app.request_drop_stash(),
+        Action::ExitMode => app.close_stash_picker(),
         _ => {}
     }
 }
@@ -2018,6 +2114,11 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
                 app.set_error(format!("Failed to load diff: {e}"));
             }
         }
+        Action::StageFile => app.stage_file_at_cursor(),
+        Action::UnstageFile => app.unstage_file_at_cursor(),
+        Action::StageHunk => app.stage_hunk_at_cursor(),
+        Action::UnstageHunk => app.unstage_hunk_at_cursor(),
+        Action::DiscardHunk => app.request_discard_hunk(),
         Action::EditFile => app.queue_editor_for_focused_item(),
         _ => {}
     }

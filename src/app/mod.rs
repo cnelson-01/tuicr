@@ -629,9 +629,12 @@ pub enum InputMode {
     /// Branch picker modal (`<leader>b`, `:branches`): filter by typing,
     /// Enter checks out.
     BranchPicker,
+    /// Stash picker modal (`:stashes`): Enter pops, `a` applies, `d` drops.
+    StashPicker,
 }
 
 pub use branches::BranchPicker;
+pub use local_changes::{CommitComposer, DiscardTarget, StashPicker};
 
 /// State for the fullscreen side-by-side merge conflict screen.
 #[derive(Debug)]
@@ -819,6 +822,10 @@ pub enum ConfirmAction {
     /// Every conflict is resolved and staged — commit/continue the
     /// in-progress merge operation?
     ContinueMergeOperation,
+    /// Throw away the hunk or file in `App::pending_discard`?
+    DiscardChanges,
+    /// Drop the stash highlighted in the stash picker?
+    DropStash,
 }
 
 /// Push a `MappedComment` onto the appropriate bucket. Free function so the
@@ -1561,6 +1568,12 @@ pub struct App {
     pub commit_filter: Option<crate::vcs::CommitQuery>,
     /// The filter prompt's buffer while it is open.
     pub commit_filter_draft: Option<String>,
+    /// Set while the comment composer is editing a commit message.
+    pub commit_composer: Option<CommitComposer>,
+    /// What a pending `ConfirmAction::DiscardChanges` will discard.
+    pub pending_discard: Option<DiscardTarget>,
+    /// Stash picker modal state; `Some` while `input_mode == StashPicker`.
+    pub stash_picker: Option<StashPicker>,
     /// Display order for the inline commit selector (presentation only).
     pub commit_order: CommitOrder,
     /// Which commits are selected when a multi-commit review first opens.
@@ -1937,6 +1950,7 @@ mod diff_load;
 mod file_filter;
 mod gaps;
 mod init;
+mod local_changes;
 mod log_pane;
 mod modes;
 mod navigation;

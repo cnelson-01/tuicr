@@ -147,6 +147,27 @@ impl std::fmt::Display for CommitQuery {
     }
 }
 
+/// Which diff a hunk was displayed from. Hunk operations re-read that diff
+/// from git and apply only the hunk with the same `@@` coordinates, so the
+/// rendered lines never have to be turned back into a patch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HunkScope {
+    /// HEAD → working tree (the combined and working-tree reviews).
+    WorkingTree,
+    /// index → working tree (the unstaged review).
+    Unstaged,
+    /// HEAD → index (the staged review).
+    Staged,
+}
+
+/// One `git stash list` row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StashEntry {
+    /// `N` in `stash@{N}`.
+    pub index: usize,
+    pub message: String,
+}
+
 /// One row of the branch picker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BranchInfo {
@@ -492,6 +513,91 @@ pub trait VcsBackend: Send {
     fn abort_merge_operation(&self) -> Result<String> {
         Err(crate::error::TuicrError::UnsupportedOperation(
             "Aborting a merge is not supported for this VCS".into(),
+        ))
+    }
+
+    /// Remove a file's changes from the index (keeping the working tree).
+    fn unstage_file(&self, _path: &Path) -> Result<()> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Unstaging is not supported for this VCS".into(),
+        ))
+    }
+
+    /// Throw away every change to a file: restore it from HEAD, or delete it
+    /// when it is new. Destructive; callers confirm first.
+    fn discard_file(&self, _path: &Path) -> Result<()> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Discarding changes is not supported for this VCS".into(),
+        ))
+    }
+
+    /// Stage one hunk of `path`, identified by its `@@ -old +new @@` starts
+    /// in the diff `scope` was displayed from.
+    fn stage_hunk(
+        &self,
+        _path: &Path,
+        _scope: HunkScope,
+        _old_start: u32,
+        _new_start: u32,
+    ) -> Result<()> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Staging hunks is not supported for this VCS".into(),
+        ))
+    }
+
+    /// Unstage one hunk of `path`, identified in the staged (HEAD → index)
+    /// diff.
+    fn unstage_hunk(&self, _path: &Path, _old_start: u32, _new_start: u32) -> Result<()> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Unstaging hunks is not supported for this VCS".into(),
+        ))
+    }
+
+    /// Revert one hunk in the working tree (and the index when the hunk was
+    /// displayed against HEAD). Destructive; callers confirm first.
+    fn discard_hunk(
+        &self,
+        _path: &Path,
+        _scope: HunkScope,
+        _old_start: u32,
+        _new_start: u32,
+    ) -> Result<()> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Discarding hunks is not supported for this VCS".into(),
+        ))
+    }
+
+    /// Commit the index with `message` (or amend HEAD). Returns the new
+    /// commit's short id.
+    fn commit(&self, _message: &str, _amend: bool) -> Result<String> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Committing is not supported for this VCS".into(),
+        ))
+    }
+
+    /// HEAD's full commit message, for amend prompts.
+    fn head_commit_message(&self) -> Result<String> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Reading the head commit is not supported for this VCS".into(),
+        ))
+    }
+
+    fn stash_list(&self) -> Result<Vec<StashEntry>> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Stashing is not supported for this VCS".into(),
+        ))
+    }
+
+    /// Apply `stash@{index}`, dropping it too when `pop`.
+    fn stash_apply(&self, _index: usize, _pop: bool) -> Result<()> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Stashing is not supported for this VCS".into(),
+        ))
+    }
+
+    fn stash_drop(&self, _index: usize) -> Result<()> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Stashing is not supported for this VCS".into(),
         ))
     }
 }

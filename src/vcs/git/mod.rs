@@ -6,7 +6,7 @@ pub(crate) mod raw;
 pub mod repository;
 pub mod staging;
 
-use crate::vcs::traits::{BranchInfo, CommitQuery};
+use crate::vcs::traits::{BranchInfo, CommitQuery, HunkScope, StashEntry};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
@@ -494,6 +494,235 @@ impl VcsBackend for GitBackend {
         let result = self.abort_merge_operation_inner();
         self.refresh_after_cli_op(result)
     }
+
+    fn unstage_file(&self, path: &Path) -> Result<()> {
+        let root = &self.info().root_path;
+        let path = path.to_string_lossy();
+        // `reset` needs a HEAD; on an unborn branch fall back to dropping
+        // the entry from the index.
+        let result = run_git_command(root, &["reset", "-q", "--", &path])
+            .or_else(|_| run_git_command(root, &["rm", "-q", "--cached", "--", &path]))
+            .map(|_| ());
+        self.refresh_after_cli_op(result)
+    }
+
+    fn discard_file(&self, path: &Path) -> Result<()> {
+        let root = &self.info().root_path;
+        let path = path.to_string_lossy();
+        let tracked = run_git_command(root, &["ls-files", "--error-unmatch", "--", &path]).is_ok();
+        let in_head = run_git_command(root, &["cat-file", "-e", &format!("HEAD:{path}")]).is_ok();
+        let result = if !tracked {
+            run_git_command(root, &["clean", "-f", "-q", "--", &path])
+        } else if in_head {
+            run_git_command(root, &["checkout", "HEAD", "--", &path])
+        } else {
+            run_git_command(root, &["rm", "-q", "-f", "--", &path])
+        }
+        .map(|_| ());
+        self.refresh_after_cli_op(result)
+    }
+
+    fn stage_hunk(
+        &self,
+        path: &Path,
+        scope: HunkScope,
+        old_start: u32,
+        new_start: u32,
+    ) -> Result<()> {
+        let root = &self.info().root_path;
+        let result =
+            extract_hunk_patch(root, path, scope, old_start, new_start).and_then(|patch| {
+                run_git_stdin(root, &["apply", "--cached", "--whitespace=nowarn"], &patch)
+                    .map(|_| ())
+            });
+        self.refresh_after_cli_op(result)
+    }
+
+    fn unstage_hunk(&self, path: &Path, old_start: u32, new_start: u32) -> Result<()> {
+        let root = &self.info().root_path;
+        let result = extract_hunk_patch(root, path, HunkScope::Staged, old_start, new_start)
+            .and_then(|patch| {
+                run_git_stdin(
+                    root,
+                    &["apply", "--cached", "-R", "--whitespace=nowarn"],
+                    &patch,
+                )
+                .map(|_| ())
+            });
+        self.refresh_after_cli_op(result)
+    }
+
+    fn discard_hunk(
+        &self,
+        path: &Path,
+        scope: HunkScope,
+        old_start: u32,
+        new_start: u32,
+    ) -> Result<()> {
+        let root = &self.info().root_path;
+        let result =
+            extract_hunk_patch(root, path, scope, old_start, new_start).and_then(|patch| {
+                let worktree_only = ["apply", "-R", "--whitespace=nowarn"];
+                let with_index = ["apply", "-R", "--index", "--whitespace=nowarn"];
+                match scope {
+                    HunkScope::Unstaged => run_git_stdin(root, &worktree_only, &patch),
+                    HunkScope::Staged => run_git_stdin(root, &with_index, &patch),
+                    // A HEAD-based hunk may be partly staged: revert both when
+                    // the index agrees with the tree, else just the tree.
+                    HunkScope::WorkingTree => run_git_stdin(root, &with_index, &patch)
+                        .or_else(|_| run_git_stdin(root, &worktree_only, &patch)),
+                }
+                .map(|_| ())
+            });
+        self.refresh_after_cli_op(result)
+    }
+
+    fn commit(&self, message: &str, amend: bool) -> Result<String> {
+        let root = &self.info().root_path;
+        let mut args = vec!["commit", "-q"];
+        if amend {
+            args.push("--amend");
+        }
+        args.extend(["-m", message]);
+        let result = run_git_command(root, &args)
+            .and_then(|_| run_git_command(root, &["rev-parse", "--short", "HEAD"]))
+            .map(|id| id.trim().to_string());
+        self.refresh_after_cli_op(result)
+    }
+
+    fn head_commit_message(&self) -> Result<String> {
+        run_git_command(&self.info().root_path, &["log", "-1", "--format=%B"])
+    }
+
+    fn stash_list(&self) -> Result<Vec<StashEntry>> {
+        let output = run_git_command(
+            &self.info().root_path,
+            &["stash", "list", "--format=%gd%x00%s"],
+        )?;
+        Ok(output
+            .lines()
+            .filter_map(|line| {
+                let (selector, message) = line.split_once('\0')?;
+                let index = selector
+                    .trim_start_matches("stash@{")
+                    .trim_end_matches('}')
+                    .parse()
+                    .ok()?;
+                Some(StashEntry {
+                    index,
+                    message: message.to_string(),
+                })
+            })
+            .collect())
+    }
+
+    fn stash_apply(&self, index: usize, pop: bool) -> Result<()> {
+        let selector = format!("stash@{{{index}}}");
+        let verb = if pop { "pop" } else { "apply" };
+        let result =
+            run_git_command(&self.info().root_path, &["stash", verb, "-q", &selector]).map(|_| ());
+        self.refresh_after_cli_op(result)
+    }
+
+    fn stash_drop(&self, index: usize) -> Result<()> {
+        let selector = format!("stash@{{{index}}}");
+        run_git_command(&self.info().root_path, &["stash", "drop", "-q", &selector]).map(|_| ())
+    }
+}
+
+/// Run git with `input` on stdin (patches for `git apply`).
+fn run_git_stdin(workdir: &Path, args: &[&str], input: &str) -> Result<String> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new("git")
+        .current_dir(workdir)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| TuicrError::VcsCommand(format!("Failed to run git: {e}")))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(input.as_bytes())
+            .map_err(|e| TuicrError::VcsCommand(format!("Failed to feed git: {e}")))?;
+    }
+    let output = child
+        .wait_with_output()
+        .map_err(|e| TuicrError::VcsCommand(format!("Failed to wait for git: {e}")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(TuicrError::VcsCommand(if stderr.is_empty() {
+            format!("git {} failed", args.join(" "))
+        } else {
+            stderr
+        }));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// The unified diff of `path` from the scope's base, cut down to the file
+/// header plus the one `@@` block whose starts are (`old_start`,
+/// `new_start`): a patch `git apply` accepts for exactly that hunk.
+fn extract_hunk_patch(
+    root: &Path,
+    path: &Path,
+    scope: HunkScope,
+    old_start: u32,
+    new_start: u32,
+) -> Result<String> {
+    let path = path.to_string_lossy();
+    let mut args = vec!["diff", "--no-color", "--no-ext-diff"];
+    match scope {
+        HunkScope::WorkingTree => args.push("HEAD"),
+        HunkScope::Staged => args.push("--cached"),
+        HunkScope::Unstaged => {}
+    }
+    args.extend(["--", &path]);
+    let diff = run_git_command(root, &args)?;
+
+    #[derive(PartialEq)]
+    enum State {
+        Header,
+        OtherHunk,
+        Target,
+    }
+    let mut header = String::new();
+    let mut target = String::new();
+    let mut state = State::Header;
+    for line in diff.split_inclusive('\n') {
+        if line.starts_with("@@") {
+            if state == State::Target {
+                break;
+            }
+            state = if parse_hunk_header_starts(line) == Some((old_start, new_start)) {
+                State::Target
+            } else {
+                State::OtherHunk
+            };
+        }
+        match state {
+            State::Header => header.push_str(line),
+            State::Target => target.push_str(line),
+            State::OtherHunk => {}
+        }
+    }
+    if target.is_empty() {
+        return Err(TuicrError::VcsCommand(format!(
+            "hunk @@ -{old_start} +{new_start} @@ not found in {path} (untracked files can only be staged whole; if the file changed, `:e` and retry)"
+        )));
+    }
+    Ok(header + &target)
+}
+
+/// `@@ -12,3 +14,5 @@ ...` → `(12, 14)`.
+fn parse_hunk_header_starts(line: &str) -> Option<(u32, u32)> {
+    let mut parts = line.split_whitespace();
+    parts.next()?; // "@@"
+    let old = parts.next()?.strip_prefix('-')?;
+    let new = parts.next()?.strip_prefix('+')?;
+    let start = |spec: &str| spec.split(',').next()?.parse::<u32>().ok();
+    Some((start(old)?, start(new)?))
 }
 
 /// Parse `for-each-ref` output over `refs/heads` and `refs/remotes` (see
@@ -1200,6 +1429,166 @@ mod tests {
             backend.abort_merge_operation().is_err(),
             "nothing left to abort"
         );
+    }
+
+    #[test]
+    fn hunk_header_starts_parse() {
+        assert_eq!(
+            parse_hunk_header_starts("@@ -12,3 +14,5 @@ fn x"),
+            Some((12, 14))
+        );
+        assert_eq!(parse_hunk_header_starts("@@ -1 +1 @@"), Some((1, 1)));
+        assert_eq!(parse_hunk_header_starts("diff --git a b"), None);
+    }
+
+    fn hunk_starts(root: &Path, args: &[&str]) -> Vec<(u32, u32)> {
+        run_git_command(root, args)
+            .expect("git diff")
+            .lines()
+            .filter(|l| l.starts_with("@@"))
+            .filter_map(parse_hunk_header_starts)
+            .collect()
+    }
+
+    #[test]
+    fn hunk_and_file_operations_stage_unstage_and_discard() {
+        // given a twenty-line file edited near the top and near the bottom,
+        // so the two edits land in separate hunks
+        let temp_dir = tempdir().expect("failed to create temp dir");
+        let root = temp_dir.path();
+        setup_standard_repo(root);
+        let base: String = (1..=20).map(|i| format!("line {i}\n")).collect();
+        fs::write(root.join("src/file.txt"), &base).expect("write");
+        run_git_command(root, &["commit", "-qam", "twenty lines"]).expect("commit");
+        let backend = GitBackend::discover_from(
+            root,
+            GitBackendPreference::Libgit2,
+            DiffWhitespaceMode::Normal,
+        )
+        .expect("failed to discover backend");
+        let edited = base
+            .replace("line 2\n", "line two\n")
+            .replace("line 18\n", "line eighteen\n");
+        fs::write(root.join("src/file.txt"), &edited).expect("write");
+        let path = Path::new("src/file.txt");
+        let staged_diff = || run_git_command(root, &["diff", "--cached"]).expect("diff");
+
+        let worktree_hunks = hunk_starts(root, &["diff", "HEAD", "--", "src/file.txt"]);
+        assert_eq!(worktree_hunks.len(), 2, "{worktree_hunks:?}");
+
+        // when the first hunk is staged, only it reaches the index
+        let (old_start, new_start) = worktree_hunks[0];
+        backend
+            .stage_hunk(path, HunkScope::WorkingTree, old_start, new_start)
+            .expect("stage hunk");
+        assert!(staged_diff().contains("+line two"));
+        assert!(!staged_diff().contains("+line eighteen"));
+
+        // and it can be unstaged from the staged diff's coordinates
+        let staged_hunks = hunk_starts(root, &["diff", "--cached", "--", "src/file.txt"]);
+        assert_eq!(staged_hunks.len(), 1);
+        backend
+            .unstage_hunk(path, staged_hunks[0].0, staged_hunks[0].1)
+            .expect("unstage hunk");
+        assert!(staged_diff().trim().is_empty());
+
+        // discarding the second hunk reverts just that edit in the tree
+        let unstaged_hunks = hunk_starts(root, &["diff", "--", "src/file.txt"]);
+        let (old_start, new_start) = unstaged_hunks[1];
+        backend
+            .discard_hunk(path, HunkScope::Unstaged, old_start, new_start)
+            .expect("discard hunk");
+        let now = fs::read_to_string(root.join("src/file.txt")).expect("read");
+        assert!(now.contains("line two\n"));
+        assert!(now.contains("line 18\n"));
+
+        // a hunk that is not there is an error, not a silent no-op
+        assert!(
+            backend
+                .stage_hunk(path, HunkScope::WorkingTree, 999, 999)
+                .is_err()
+        );
+
+        // whole-file stage / unstage / discard
+        backend.stage_file(path).expect("stage file");
+        assert!(!staged_diff().trim().is_empty());
+        backend.unstage_file(path).expect("unstage file");
+        assert!(staged_diff().trim().is_empty());
+        backend.discard_file(path).expect("discard file");
+        assert_eq!(
+            fs::read_to_string(root.join("src/file.txt")).expect("read"),
+            base
+        );
+
+        // an untracked file is removed by discard
+        fs::write(root.join("src/new.txt"), "new\n").expect("write");
+        backend
+            .discard_file(Path::new("src/new.txt"))
+            .expect("discard untracked");
+        assert!(!root.join("src/new.txt").exists());
+    }
+
+    #[test]
+    fn commit_amend_and_stash_list_round_trip() {
+        let temp_dir = tempdir().expect("failed to create temp dir");
+        let root = temp_dir.path();
+        setup_standard_repo(root);
+        let backend = GitBackend::discover_from(
+            root,
+            GitBackendPreference::Libgit2,
+            DiffWhitespaceMode::Normal,
+        )
+        .expect("failed to discover backend");
+        let file = root.join("src/file.txt");
+        let path = Path::new("src/file.txt");
+
+        // commit, then amend the message
+        fs::write(&file, "changed\n").expect("write");
+        backend.stage_file(path).expect("stage");
+        let id = backend
+            .commit("first message\n\nbody", false)
+            .expect("commit");
+        assert!(id.len() >= 7);
+        assert!(
+            backend
+                .head_commit_message()
+                .expect("message")
+                .starts_with("first message")
+        );
+        let amended = backend.commit("amended message", true).expect("amend");
+        assert_ne!(id, amended);
+        assert!(
+            backend
+                .head_commit_message()
+                .expect("message")
+                .starts_with("amended message")
+        );
+        assert_eq!(
+            run_git_command(root, &["rev-list", "--count", "HEAD"])
+                .expect("count")
+                .trim(),
+            "2"
+        );
+
+        // two stashes: list, apply the older one (kept), drop it, pop the rest
+        fs::write(&file, "stashed\n").expect("write");
+        backend.stash_push("wip one").expect("stash one");
+        fs::write(&file, "stashed two\n").expect("write");
+        backend.stash_push("wip two").expect("stash two");
+        let list = backend.stash_list().expect("list");
+        assert_eq!(list.iter().map(|e| e.index).collect::<Vec<_>>(), [0, 1]);
+        assert!(list[0].message.contains("wip two"));
+        assert!(list[1].message.contains("wip one"));
+
+        backend.stash_apply(1, false).expect("apply");
+        assert_eq!(fs::read_to_string(&file).expect("read"), "stashed\n");
+        assert_eq!(backend.stash_list().expect("list").len(), 2);
+        backend.discard_file(path).expect("discard");
+        backend.stash_drop(1).expect("drop");
+        assert_eq!(backend.stash_list().expect("list").len(), 1);
+        backend.stash_apply(0, true).expect("pop");
+        assert_eq!(fs::read_to_string(&file).expect("read"), "stashed two\n");
+        assert!(backend.stash_list().expect("list").is_empty());
     }
 
     fn is_dirty(root: &Path) -> bool {

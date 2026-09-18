@@ -33,11 +33,11 @@ window. Phases land in order, each as its own commit(s). Tick items as they ship
 
 ## Phase 5: local changes
 
-- [ ] Stage / unstage per file
-- [ ] Stage / unstage per hunk
-- [ ] Discard (rollback) a hunk or a file
-- [ ] Commit with a message; amend
-- [ ] Stash push / pop / list
+- [x] Stage / unstage per file
+- [x] Stage / unstage per hunk
+- [x] Discard (rollback) a hunk or a file
+- [x] Commit with a message; amend
+- [x] Stash push / pop / list
 
 ## Phase 6: find in files
 

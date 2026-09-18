@@ -223,6 +223,13 @@ In command mode,
 | `:checkout <target>` | Check out a branch or commit; refuses when the working tree has changes |
 | `:checkout! <target>` | Stash (untracked included), check out, and pop the stash |
 | `:abort` | Abort the in-progress merge / cherry-pick / rebase / revert |
+| `:commit` / `:commit <message>` | Commit the index; without a message the comment box opens as the message editor |
+| `:commit!` / `:amend` / `:commit! <message>` | Amend HEAD (the box is pre-filled with its message) |
+| `:unstage` | Unstage the file under the cursor |
+| `:discard` | Discard every change to the file under the cursor (asks first) |
+| `:stash` / `:stash <message>` | Stash the working tree, untracked files included |
+| `:stash pop` | Restore the newest stash |
+| `:stashes` / `:stash list` | Open the stash picker |
 | `:set reviewed` | Show files already marked reviewed |
 | `:set noreviewed` | Hide files already marked reviewed |
 | `:set reviewed!` / `:reviewed` | Toggle files already marked reviewed |
@@ -247,6 +254,26 @@ losing their reviewed state.
 
 `draft` applies to GitHub only. `comment` and `approve` work on GitHub, GitLab, and Bitbucket.
 `request-changes` works on GitHub and GitLab, but not Bitbucket yet.
+
+## Local changes
+
+In a working-tree review (the `Staged changes` / `Unstaged changes` rows, `-w`, or both), the
+file tree and the diff act like a commit tool window:
+
+| Key | Action |
+|-----|--------|
+| `s` / `u` | Stage / unstage the file under the cursor (the tree's selection when the tree is focused) |
+| `S` | Stage the hunk under the cursor |
+| `U` | Unstage the hunk under the cursor (from the staged view, where its line numbers are meaningful) |
+| `X` | Discard the hunk under the cursor, after a `y`/`n` prompt |
+| `:discard` | Discard every change to the file under the cursor, after a prompt (a new file is deleted) |
+| `:commit`, `:commit!` | Commit / amend: the comment box becomes the message editor (`Enter` or `Ctrl-s` commits, `Esc` cancels) |
+| `:stash`, `:stash pop`, `:stashes` | Stash, restore the newest stash, or open the stash picker (`Enter` pop, `a` apply, `d` drop) |
+
+Hunk operations hand git the hunk's `@@` coordinates and the diff it came from, so they apply
+exactly what is on screen. Untracked files can only be staged or discarded whole. The diff
+reloads after every operation; when the review empties out (everything staged away from the
+unstaged view) the pane goes blank until `:e` or the next change.
 
 ## Log pane
 

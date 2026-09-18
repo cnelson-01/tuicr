@@ -947,6 +947,7 @@ impl App {
 
     pub fn exit_comment_mode(&mut self) {
         self.input_mode = InputMode::Normal;
+        self.commit_composer = None;
         self.comment_buffer.clear();
         self.comment_cursor = 0;
         self.comment_vim_editor = None;
@@ -958,6 +959,11 @@ impl App {
     }
 
     pub fn save_comment(&mut self) {
+        // The composer doubles as the commit message editor (`:commit`).
+        if let Some(composer) = self.commit_composer.take() {
+            self.commit_from_composer(composer);
+            return;
+        }
         if self.comment_buffer.trim().is_empty() {
             self.set_message("Comment cannot be empty");
             return;
