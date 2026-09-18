@@ -188,8 +188,10 @@ also saves.
 
 ## Commands
 
-In command mode,
-`Tab` and `Shift-Tab` complete or cycle command names.
+In command mode, `Tab` and `Shift-Tab` complete or cycle command names. After `:compare`,
+`:checkout`, or `:checkout!`, they (and `↓` / `↑`, `Ctrl-n` / `Ctrl-p`) complete the branch name
+being typed: prefix matches first, then names containing the text, local branches before
+remote-tracking ones. `:compare ma`, `↓`, `↓`, `Enter` picks the second match.
 
 | Command | Action |
 |---------|--------|

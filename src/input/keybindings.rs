@@ -343,6 +343,10 @@ fn map_command_mode(key: KeyEvent) -> Action {
         (KeyCode::Enter, KeyModifiers::NONE) => Action::SubmitInput,
         (KeyCode::Tab, KeyModifiers::NONE) => Action::CompleteCommand,
         (KeyCode::BackTab, _) => Action::CompleteCommandReverse,
+        (KeyCode::Down, _) | (KeyCode::Char('n'), KeyModifiers::CONTROL) => Action::CompleteCommand,
+        (KeyCode::Up, _) | (KeyCode::Char('p'), KeyModifiers::CONTROL) => {
+            Action::CompleteCommandReverse
+        }
         (KeyCode::Backspace, mods) if mods.contains(KeyModifiers::ALT) => Action::DeleteWord,
         (KeyCode::Backspace, KeyModifiers::NONE) => Action::DeleteChar,
         (KeyCode::Char('w'), KeyModifiers::CONTROL) => Action::DeleteWord,

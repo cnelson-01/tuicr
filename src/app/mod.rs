@@ -731,8 +731,8 @@ impl MergeFileState {
 pub(crate) struct CommandCompletionState {
     /// Prefix used to build `matches`.
     pub(crate) prefix: String,
-    /// Matching command strings in the order they should cycle.
-    pub(crate) matches: Vec<&'static str>,
+    /// Matching buffers (whole command lines) in the order they should cycle.
+    pub(crate) matches: Vec<String>,
     /// Index of the command currently displayed in the command buffer.
     pub(crate) selected: usize,
 }

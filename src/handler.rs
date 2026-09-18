@@ -776,14 +776,15 @@ impl<'a> CommandCompleter<'a> {
         }
 
         let prefix = buffer.trim_start().to_string();
-        let matches: Vec<&'static str> = self
+        let matches: Vec<String> = self
             .command_names()
             .filter(|command| command.starts_with(&prefix))
+            .map(str::to_string)
             .collect();
 
         match matches.len() {
             0 => CompletionResult::NoMatch,
-            1 => CompletionResult::replace(matches[0], None),
+            1 => CompletionResult::replace(matches[0].clone(), None),
             _ => {
                 let common_prefix = Self::common_prefix(&matches);
                 if common_prefix.len() > prefix.len() {
@@ -815,7 +816,7 @@ impl<'a> CommandCompleter<'a> {
 
         let selected = Self::next_index(completion.selected, completion.matches.len(), direction);
         Some(CompletionResult::replace(
-            completion.matches[selected],
+            completion.matches[selected].clone(),
             Some(CommandCompletionState {
                 prefix: completion.prefix.clone(),
                 matches: completion.matches.clone(),
@@ -828,12 +829,12 @@ impl<'a> CommandCompleter<'a> {
         &self,
         buffer: &str,
         prefix: String,
-        matches: Vec<&'static str>,
+        matches: Vec<String>,
         direction: CompletionDirection,
     ) -> CompletionResult {
         let selected = matches
             .iter()
-            .position(|command| *command == buffer)
+            .position(|command| command == buffer)
             .map(|idx| Self::next_index(idx, matches.len(), direction))
             .unwrap_or_else(|| match direction {
                 CompletionDirection::Forward => 0,
@@ -841,7 +842,7 @@ impl<'a> CommandCompleter<'a> {
             });
 
         CompletionResult::replace(
-            matches[selected],
+            matches[selected].clone(),
             Some(CommandCompletionState {
                 prefix,
                 matches,
@@ -857,7 +858,7 @@ impl<'a> CommandCompleter<'a> {
         }
     }
 
-    fn common_prefix(matches: &[&str]) -> String {
+    fn common_prefix(matches: &[String]) -> String {
         let mut prefix = matches
             .first()
             .map(|command| (*command).to_string())
@@ -1248,20 +1249,82 @@ fn set_remote_comments_visibility(app: &mut App, visibility: PrCommentsVisibilit
 
 fn complete_command(app: &mut App, direction: CompletionDirection) {
     let completer = CommandCompleter::new(COMMAND_SPECS);
-    match completer.complete(
-        &app.command_buffer,
-        app.command_completion.as_ref(),
-        direction,
-    ) {
+    let (result, what) = match complete_branch_argument(app, &completer, direction) {
+        Some(result) => (result, "branch"),
+        None => (
+            completer.complete(
+                &app.command_buffer,
+                app.command_completion.as_ref(),
+                direction,
+            ),
+            "command",
+        ),
+    };
+    match result {
         CompletionResult::NoMatch => {
             app.command_completion = None;
-            app.set_message("No command matches");
+            app.set_message(format!("No {what} matches"));
         }
         CompletionResult::Replace { buffer, completion } => {
             app.command_buffer = buffer;
             app.command_completion = completion;
         }
     }
+}
+
+/// Commands whose arguments are branch names, so Tab / Down complete them.
+const BRANCH_ARGUMENT_COMMANDS: &[&str] = &["compare", "checkout", "checkout!"];
+
+/// `:compare ma`, `:compare master ori`, `:checkout ma`: complete the word
+/// being typed against branch names. Unlike command completion there is no
+/// common-prefix stop: the first press lands on the best match and further
+/// presses cycle, so `:compare ma`, Down, Down, Enter works.
+fn complete_branch_argument(
+    app: &mut App,
+    completer: &CommandCompleter<'_>,
+    direction: CompletionDirection,
+) -> Option<CompletionResult> {
+    let buffer = app.command_buffer.clone();
+    let (head, word) = buffer.rsplit_once(' ')?;
+    let command = head.split_whitespace().next()?;
+    if !BRANCH_ARGUMENT_COMMANDS.contains(&command) {
+        return None;
+    }
+    if let Some(result) =
+        completer.cycle_existing(&buffer, app.command_completion.as_ref(), direction)
+    {
+        return Some(result);
+    }
+    let branches = app.vcs.list_branches().ok()?;
+    let names: Vec<String> = branches.into_iter().map(|b| b.name).collect();
+    let head = format!("{head} ");
+    let matches: Vec<String> = rank_branch_matches(&names, word)
+        .into_iter()
+        .map(|name| format!("{head}{name}"))
+        .collect();
+    if matches.is_empty() {
+        return Some(CompletionResult::NoMatch);
+    }
+    Some(completer.start_cycle(&buffer, buffer.clone(), matches, direction))
+}
+
+/// Branch names matching `word` case-insensitively: prefix matches first,
+/// then names containing it, each group in the list's own order (local
+/// branches before remote-tracking ones).
+fn rank_branch_matches(names: &[String], word: &str) -> Vec<String> {
+    let needle = word.to_lowercase();
+    let mut prefix_hits = Vec::new();
+    let mut inner_hits = Vec::new();
+    for name in names {
+        let lower = name.to_lowercase();
+        if lower.starts_with(&needle) {
+            prefix_hits.push(name.clone());
+        } else if lower.contains(&needle) {
+            inner_hits.push(name.clone());
+        }
+    }
+    prefix_hits.extend(inner_hits);
+    prefix_hits
 }
 
 /// Parse `:<n>` (new-side) or `:o<n>` (old-side) jump targets. The leading `:`
@@ -2291,5 +2354,35 @@ mod command_tests {
             command_spec_for("reviewed").map(|spec| spec.kind),
             Some(CommandKind::ToggleShowReviewed)
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn branch_matches_rank_prefixes_before_substrings_in_list_order() {
+        let names: Vec<String> = [
+            "main",
+            "master",
+            "dev",
+            "origin/main",
+            "origin/master",
+            "feature/mail",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(
+            super::rank_branch_matches(&names, "ma"),
+            [
+                "main",
+                "master",
+                "origin/main",
+                "origin/master",
+                "feature/mail"
+            ]
+        );
+        assert_eq!(super::rank_branch_matches(&names, "MAIL"), ["feature/mail"]);
+        assert!(super::rank_branch_matches(&names, "zzz").is_empty());
     }
 }

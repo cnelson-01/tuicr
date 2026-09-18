@@ -49,6 +49,22 @@ impl VcsBackend for EndlessVcs {
             .collect())
     }
 
+    fn list_branches(&self) -> Result<Vec<crate::vcs::traits::BranchInfo>> {
+        Ok(["main", "master", "dev", "origin/main"]
+            .iter()
+            .map(|name| crate::vcs::traits::BranchInfo {
+                name: name.to_string(),
+                tip_id: "abc".to_string(),
+                is_current: *name == "main",
+                is_remote: name.starts_with("origin/"),
+                upstream: None,
+                ahead: 0,
+                behind: 0,
+                upstream_gone: false,
+            })
+            .collect())
+    }
+
     /// Filtered pages are named after the query so tests can tell them apart.
     fn search_commits(
         &self,
@@ -381,4 +397,47 @@ fn live_filter_debounces_typing_and_installs_rows_behind_special_ones() {
     assert!(!app.commit_filter_loading());
     assert_eq!(pane(&app).commits[1].id, "fresh");
     assert!(pane(&app).has_more);
+}
+
+#[test]
+fn compare_arguments_complete_branch_names_and_cycle() {
+    use crate::handler::handle_command_action;
+    use crate::input::Action;
+
+    let mut app = build_review_app(&["a"]);
+    app.enter_command_mode();
+    app.command_buffer = "compare ma".to_string();
+
+    // the first press lands on the best match, later ones cycle
+    handle_command_action(&mut app, Action::CompleteCommand);
+    assert_eq!(app.command_buffer, "compare main");
+    handle_command_action(&mut app, Action::CompleteCommand);
+    assert_eq!(app.command_buffer, "compare master");
+    handle_command_action(&mut app, Action::CompleteCommand);
+    assert_eq!(app.command_buffer, "compare origin/main");
+    handle_command_action(&mut app, Action::CompleteCommandReverse);
+    assert_eq!(app.command_buffer, "compare master");
+
+    // a second argument completes on its own
+    app.command_buffer = "compare master ori".to_string();
+    app.command_completion = None;
+    handle_command_action(&mut app, Action::CompleteCommand);
+    assert_eq!(app.command_buffer, "compare master origin/main");
+
+    // commands that do not take a branch still complete command names
+    app.command_buffer = "set lo".to_string();
+    app.command_completion = None;
+    handle_command_action(&mut app, Action::CompleteCommand);
+    assert!(
+        app.command_buffer.starts_with("set log"),
+        "{}",
+        app.command_buffer
+    );
+
+    // no branch matches leaves the buffer alone and says so
+    app.command_buffer = "checkout zzz".to_string();
+    app.command_completion = None;
+    handle_command_action(&mut app, Action::CompleteCommand);
+    assert_eq!(app.command_buffer, "checkout zzz");
+    assert!(app.message.is_some());
 }
