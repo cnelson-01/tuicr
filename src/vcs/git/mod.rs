@@ -15,8 +15,8 @@ use crate::process::{CommandOutputError, CommandOutputErrorKind, run_command_out
 use crate::syntax::SyntaxHighlighter;
 
 use super::traits::{
-    ChangeKind, CommitInfo, DiffWhitespaceMode, ResolvedRevisionRange, VcsBackend, VcsChangeStatus,
-    VcsInfo,
+    ChangeKind, CommitInfo, DiffWhitespaceMode, MergeConflictInfo, ResolvedRevisionRange,
+    VcsBackend, VcsChangeStatus, VcsInfo,
 };
 use cli::GitCliBackend;
 pub use libgit2::Libgit2Backend;
@@ -151,6 +151,17 @@ impl GitRepoMode {
 }
 
 impl GitBackend {
+    /// CLI history operations rewrite `.git/index` (and move HEAD) behind
+    /// libgit2's back. Refresh the cached index afterwards — success or
+    /// failure, since a conflict stop also rewrites the index — so the
+    /// status probes and staged/unstaged diffs that follow see reality.
+    fn refresh_after_cli_op<T>(&self, result: Result<T>) -> Result<T> {
+        if let Self::Libgit2(backend) = self {
+            backend.reload_index();
+        }
+        result
+    }
+
     /// Discover a git repository from the current directory.
     pub fn discover(
         preference: GitBackendPreference,
@@ -389,6 +400,146 @@ impl VcsBackend for GitBackend {
             Self::Cli(backend) => backend.stage_file(path),
         }
     }
+
+    fn get_merge_conflicts(&self) -> Result<Option<MergeConflictInfo>> {
+        match self {
+            Self::Libgit2(backend) => backend.get_merge_conflicts(),
+            Self::Cli(backend) => backend.get_merge_conflicts(),
+        }
+    }
+
+    // History-rewrite operations shell out to the git CLI regardless of the
+    // selected diff backend: libgit2's cherry-pick/rebase plumbing would
+    // have to reimplement sequencer state (.git/sequencer, --continue)
+    // that users expect to finish from their shell.
+    fn cherry_pick(&self, commit_ids: &[String]) -> Result<()> {
+        if commit_ids.is_empty() {
+            return Ok(());
+        }
+        let mut args: Vec<&str> = vec!["cherry-pick"];
+        args.extend(commit_ids.iter().map(String::as_str));
+        let result = run_git_command(&self.info().root_path, &args).map(|_| ());
+        self.refresh_after_cli_op(result)
+    }
+
+    fn rebase_onto(&self, commit_id: &str) -> Result<()> {
+        let result = run_git_command(&self.info().root_path, &["rebase", commit_id]).map(|_| ());
+        self.refresh_after_cli_op(result)
+    }
+
+    fn squash_commits(&self, commit_ids: &[String]) -> Result<()> {
+        let result = self.squash_commits_inner(commit_ids);
+        self.refresh_after_cli_op(result)
+    }
+
+    fn continue_merge_operation(&self) -> Result<String> {
+        let result = self.continue_merge_operation_inner();
+        self.refresh_after_cli_op(result)
+    }
+}
+
+impl GitBackend {
+    fn squash_commits_inner(&self, commit_ids: &[String]) -> Result<()> {
+        if commit_ids.len() < 2 {
+            return Err(TuicrError::VcsCommand(
+                "Select at least two commits to squash".into(),
+            ));
+        }
+        let root = &self.info().root_path;
+
+        // Refuse when the index already has staged changes: `reset --soft`
+        // would silently fold them into the squash commit.
+        if run_git_command(root, &["diff", "--cached", "--quiet"]).is_err() {
+            return Err(TuicrError::VcsCommand(
+                "The index has staged changes; commit or unstage them first".into(),
+            ));
+        }
+
+        // The selection must be exactly HEAD's first-parent chain so the
+        // rewrite is a plain soft-reset + commit (no history surgery on
+        // commits below unrelated work).
+        let chain = run_git_command(
+            root,
+            &[
+                "rev-list",
+                "--first-parent",
+                &format!("--max-count={}", commit_ids.len()),
+                "HEAD",
+            ],
+        )?;
+        let chain: Vec<&str> = chain.split_whitespace().collect();
+        let newest_first: Vec<&str> = commit_ids.iter().rev().map(String::as_str).collect();
+        if chain != newest_first {
+            return Err(TuicrError::VcsCommand(
+                "Squash needs a contiguous range of commits ending at HEAD".into(),
+            ));
+        }
+
+        let oldest = &commit_ids[0];
+        if run_git_command(
+            root,
+            &["rev-parse", "--verify", "--quiet", &format!("{oldest}^")],
+        )
+        .is_err()
+        {
+            return Err(TuicrError::VcsCommand(
+                "Cannot squash through the root commit".into(),
+            ));
+        }
+
+        // Combined message: every selected message, oldest first, the way
+        // an interactive-rebase squash would assemble it.
+        let mut message = String::new();
+        for id in commit_ids {
+            let body = run_git_command(root, &["log", "-1", "--format=%B", id])?;
+            if !message.is_empty() {
+                message.push('\n');
+            }
+            message.push_str(body.trim_end());
+            message.push('\n');
+        }
+
+        let original_head = run_git_command(root, &["rev-parse", "HEAD"])?
+            .trim()
+            .to_string();
+        run_git_command(root, &["reset", "--soft", &format!("{oldest}^")])?;
+        if let Err(err) =
+            run_git_command(root, &["commit", "--allow-empty", "-m", message.trim_end()])
+        {
+            // Put the branch back where it was; the tree is untouched.
+            let _ = run_git_command(root, &["reset", "--soft", &original_head]);
+            return Err(err);
+        }
+        Ok(())
+    }
+
+    fn continue_merge_operation_inner(&self) -> Result<String> {
+        let root = &self.info().root_path;
+        let in_progress = |head: &str| {
+            run_git_command(root, &["rev-parse", "--verify", "--quiet", head])
+                .map(|out| !out.trim().is_empty())
+                .unwrap_or(false)
+        };
+        if in_progress("MERGE_HEAD") {
+            run_git_command(root, &["commit", "--no-edit"])?;
+            return Ok("merge".to_string());
+        }
+        // `core.editor=true` accepts the prepared commit message without
+        // opening $EDITOR inside the TUI.
+        for (head, op) in [
+            ("CHERRY_PICK_HEAD", "cherry-pick"),
+            ("REBASE_HEAD", "rebase"),
+            ("REVERT_HEAD", "revert"),
+        ] {
+            if in_progress(head) {
+                run_git_command(root, &["-c", "core.editor=true", op, "--continue"])?;
+                return Ok(op.to_string());
+            }
+        }
+        Err(TuicrError::VcsCommand(
+            "No merge operation in progress".into(),
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -519,6 +670,281 @@ mod tests {
             matches!(backend, GitBackend::Cli(_)),
             "split-index repo should use Git CLI backend, not libgit2"
         );
+    }
+
+    fn git_id(root: &Path, rev: &str) -> String {
+        run_git_command(root, &["rev-parse", rev])
+            .expect("failed to resolve revision")
+            .trim()
+            .to_string()
+    }
+
+    #[test]
+    fn cherry_pick_applies_clean_commit_and_stops_on_conflict() {
+        // given main with an extra commit, plus two branches off the base:
+        // one adding a new file (clean pick) and one editing the same line
+        // main later changed (conflicting pick)
+        let temp_dir = tempdir().expect("failed to create temp dir");
+        let root = temp_dir.path();
+        setup_standard_repo(root);
+        run_git_command(root, &["checkout", "-b", "trunk"]).expect("failed to branch trunk");
+        run_git_command(root, &["branch", "clean-pick"]).expect("failed to branch");
+        run_git_command(root, &["branch", "conflicting-pick"]).expect("failed to branch");
+
+        fs::write(root.join("src/file.txt"), "main version\n").expect("failed to write");
+        run_git_command(root, &["commit", "-am", "main change"]).expect("failed to commit");
+
+        run_git_command(root, &["checkout", "clean-pick"]).expect("failed to checkout");
+        fs::write(root.join("src/new.txt"), "new\n").expect("failed to write");
+        run_git_command(root, &["add", "src/new.txt"]).expect("failed to add");
+        run_git_command(root, &["commit", "-m", "add new file"]).expect("failed to commit");
+        let clean_id = git_id(root, "HEAD");
+
+        run_git_command(root, &["checkout", "conflicting-pick"]).expect("failed to checkout");
+        fs::write(root.join("src/file.txt"), "pick version\n").expect("failed to write");
+        run_git_command(root, &["commit", "-am", "pick change"]).expect("failed to commit");
+        let conflict_id = git_id(root, "HEAD");
+
+        run_git_command(root, &["checkout", "trunk"]).expect("failed to checkout trunk");
+        let backend = GitBackend::discover_from(
+            root,
+            GitBackendPreference::Libgit2,
+            DiffWhitespaceMode::Normal,
+        )
+        .expect("failed to discover backend");
+
+        // when / then: a clean pick lands on the current branch AS A
+        // COMMIT (not just staged changes), and the libgit2 index cache
+        // is refreshed so no phantom staged/unstaged state remains
+        let head_before = git_id(root, "HEAD");
+        backend
+            .cherry_pick(&[clean_id])
+            .expect("clean cherry-pick should succeed");
+        assert!(root.join("src/new.txt").exists());
+        assert_ne!(git_id(root, "HEAD"), head_before, "pick must commit");
+        let head_summary =
+            run_git_command(root, &["log", "-1", "--format=%s"]).expect("failed to read summary");
+        assert_eq!(head_summary.trim(), "add new file");
+        let highlighter = crate::syntax::SyntaxHighlighter::default();
+        assert!(
+            matches!(
+                backend.get_staged_diff(&highlighter),
+                Err(TuicrError::NoChanges)
+            ),
+            "no staged changes should remain after a clean pick"
+        );
+        assert!(
+            matches!(
+                backend.get_unstaged_diff(&highlighter),
+                Err(TuicrError::NoChanges)
+            ),
+            "no unstaged changes should remain after a clean pick"
+        );
+
+        // and a conflicting pick fails, leaving conflict state behind
+        let err = backend.cherry_pick(std::slice::from_ref(&conflict_id));
+        assert!(err.is_err(), "conflicting cherry-pick should fail");
+        let info = backend
+            .get_merge_conflicts()
+            .expect("conflict probe failed")
+            .expect("conflict state should be reported");
+        assert_eq!(info.paths, vec![PathBuf::from("src/file.txt")]);
+        assert_eq!(info.theirs_label, "conflicting-pick");
+        run_git_command(root, &["cherry-pick", "--abort"]).expect("failed to abort");
+    }
+
+    #[test]
+    fn rebase_onto_replays_current_branch() {
+        // given feature branched before main's latest commit
+        let temp_dir = tempdir().expect("failed to create temp dir");
+        let root = temp_dir.path();
+        setup_standard_repo(root);
+        run_git_command(root, &["checkout", "-b", "feature"]).expect("failed to branch");
+        fs::write(root.join("src/feature.txt"), "feature\n").expect("failed to write");
+        run_git_command(root, &["add", "src/feature.txt"]).expect("failed to add");
+        run_git_command(root, &["commit", "-m", "feature work"]).expect("failed to commit");
+
+        run_git_command(root, &["checkout", "-"]).expect("failed to checkout main");
+        fs::write(root.join("src/main.txt"), "main\n").expect("failed to write");
+        run_git_command(root, &["add", "src/main.txt"]).expect("failed to add");
+        run_git_command(root, &["commit", "-m", "main advance"]).expect("failed to commit");
+        let main_tip = git_id(root, "HEAD");
+
+        run_git_command(root, &["checkout", "feature"]).expect("failed to checkout feature");
+        let backend = GitBackend::discover_from(
+            root,
+            GitBackendPreference::Libgit2,
+            DiffWhitespaceMode::Normal,
+        )
+        .expect("failed to discover backend");
+
+        // when
+        backend
+            .rebase_onto(&main_tip)
+            .expect("rebase should succeed");
+
+        // then feature's commit now sits on top of main's tip
+        assert_eq!(git_id(root, "HEAD~1"), main_tip);
+    }
+
+    #[test]
+    fn continue_merge_operation_commits_resolved_merge() {
+        // given a merge stopped on a conflict, then resolved and staged
+        let temp_dir = tempdir().expect("failed to create temp dir");
+        let root = temp_dir.path();
+        setup_standard_repo(root);
+        run_git_command(root, &["checkout", "-b", "trunk"]).expect("failed to branch trunk");
+        run_git_command(root, &["branch", "other"]).expect("failed to branch");
+
+        fs::write(root.join("src/file.txt"), "trunk version\n").expect("failed to write");
+        run_git_command(root, &["commit", "-am", "trunk change"]).expect("failed to commit");
+
+        run_git_command(root, &["checkout", "other"]).expect("failed to checkout");
+        fs::write(root.join("src/file.txt"), "other version\n").expect("failed to write");
+        run_git_command(root, &["commit", "-am", "other change"]).expect("failed to commit");
+
+        run_git_command(root, &["checkout", "trunk"]).expect("failed to checkout trunk");
+        let merge = std::process::Command::new("git")
+            .current_dir(root)
+            .args(["merge", "other"])
+            .output()
+            .expect("failed to run git merge");
+        assert!(!merge.status.success(), "merge should stop on conflicts");
+
+        fs::write(root.join("src/file.txt"), "resolved version\n").expect("failed to write");
+        run_git_command(root, &["add", "src/file.txt"]).expect("failed to stage");
+
+        let backend = GitBackend::discover_from(
+            root,
+            GitBackendPreference::Libgit2,
+            DiffWhitespaceMode::Normal,
+        )
+        .expect("failed to discover backend");
+
+        // when
+        let op = backend
+            .continue_merge_operation()
+            .expect("continuing the merge should succeed");
+
+        // then the merge commit landed and the merge state is gone
+        assert_eq!(op, "merge");
+        assert!(
+            run_git_command(root, &["rev-parse", "--verify", "--quiet", "MERGE_HEAD"]).is_err(),
+            "MERGE_HEAD should be gone after committing"
+        );
+        run_git_command(root, &["rev-parse", "HEAD^2"])
+            .expect("merge commit should have a second parent");
+    }
+
+    #[test]
+    fn continue_merge_operation_without_state_errors() {
+        // given a clean repository
+        let temp_dir = tempdir().expect("failed to create temp dir");
+        let root = temp_dir.path();
+        setup_standard_repo(root);
+        let backend = GitBackend::discover_from(
+            root,
+            GitBackendPreference::Libgit2,
+            DiffWhitespaceMode::Normal,
+        )
+        .expect("failed to discover backend");
+        // when / then
+        assert!(backend.continue_merge_operation().is_err());
+    }
+
+    #[test]
+    fn squash_combines_head_range_into_one_commit() {
+        // given three commits on the current branch
+        let temp_dir = tempdir().expect("failed to create temp dir");
+        let root = temp_dir.path();
+        setup_standard_repo(root);
+        fs::write(root.join("src/file.txt"), "two\n").expect("failed to write");
+        run_git_command(root, &["commit", "-am", "second"]).expect("failed to commit");
+        fs::write(root.join("src/file.txt"), "three\n").expect("failed to write");
+        run_git_command(root, &["commit", "-am", "third"]).expect("failed to commit");
+
+        let backend = GitBackend::discover_from(
+            root,
+            GitBackendPreference::Libgit2,
+            DiffWhitespaceMode::Normal,
+        )
+        .expect("failed to discover backend");
+        let second = git_id(root, "HEAD~1");
+        let third = git_id(root, "HEAD");
+
+        // when squashing the top two (oldest first)
+        backend
+            .squash_commits(&[second, third])
+            .expect("squash should succeed");
+
+        // then one commit replaces them, content intact, messages combined
+        let count = run_git_command(root, &["rev-list", "--count", "HEAD"])
+            .expect("failed to count")
+            .trim()
+            .to_string();
+        assert_eq!(count, "2");
+        let message =
+            run_git_command(root, &["log", "-1", "--format=%B"]).expect("failed to read message");
+        assert!(message.contains("second"), "got: {message:?}");
+        assert!(message.contains("third"), "got: {message:?}");
+        assert_eq!(
+            fs::read_to_string(root.join("src/file.txt")).expect("read"),
+            "three\n"
+        );
+    }
+
+    #[test]
+    fn squash_rejects_ranges_not_ending_at_head() {
+        // given three commits
+        let temp_dir = tempdir().expect("failed to create temp dir");
+        let root = temp_dir.path();
+        setup_standard_repo(root);
+        fs::write(root.join("src/file.txt"), "two\n").expect("failed to write");
+        run_git_command(root, &["commit", "-am", "second"]).expect("failed to commit");
+        fs::write(root.join("src/file.txt"), "three\n").expect("failed to write");
+        run_git_command(root, &["commit", "-am", "third"]).expect("failed to commit");
+
+        let backend = GitBackend::discover_from(
+            root,
+            GitBackendPreference::Libgit2,
+            DiffWhitespaceMode::Normal,
+        )
+        .expect("failed to discover backend");
+        let first = git_id(root, "HEAD~2");
+        let second = git_id(root, "HEAD~1");
+
+        // when / then: a mid-history range is refused, history untouched
+        assert!(backend.squash_commits(&[first, second]).is_err());
+        let count = run_git_command(root, &["rev-list", "--count", "HEAD"])
+            .expect("failed to count")
+            .trim()
+            .to_string();
+        assert_eq!(count, "3");
+    }
+
+    #[test]
+    fn squash_rejects_dirty_index() {
+        // given two commits and a staged change
+        let temp_dir = tempdir().expect("failed to create temp dir");
+        let root = temp_dir.path();
+        setup_standard_repo(root);
+        fs::write(root.join("src/file.txt"), "two\n").expect("failed to write");
+        run_git_command(root, &["commit", "-am", "second"]).expect("failed to commit");
+        fs::write(root.join("src/file.txt"), "staged\n").expect("failed to write");
+        run_git_command(root, &["add", "src/file.txt"]).expect("failed to stage");
+
+        let backend = GitBackend::discover_from(
+            root,
+            GitBackendPreference::Libgit2,
+            DiffWhitespaceMode::Normal,
+        )
+        .expect("failed to discover backend");
+        let first = git_id(root, "HEAD~1");
+        let second = git_id(root, "HEAD");
+
+        // when / then
+        let err = backend.squash_commits(&[first, second]);
+        assert!(err.is_err(), "staged changes must block squash");
     }
 
     fn setup_standard_repo(root: &Path) {

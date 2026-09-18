@@ -151,6 +151,36 @@ pub enum Action {
     /// `/` — open the file-tree search prompt.
     FileTreeSearch,
 
+    // Merge conflict view
+    /// Accept the "ours" side of the focused conflict (`o`).
+    MergeTakeOurs,
+    /// Accept the "theirs" side of the focused conflict (`t`).
+    MergeTakeTheirs,
+    /// Keep both sides, ours first (`b`).
+    MergeTakeBoth,
+    /// Reset the focused conflict to unresolved (`u`).
+    MergeUnresolve,
+    /// Jump to the next conflict in the file (`n` / `]`).
+    MergeNextConflict,
+    /// Jump to the previous conflict in the file (`N` / `[`).
+    MergePrevConflict,
+    /// Switch to the next conflicted file (`}` / Tab).
+    MergeNextFile,
+    /// Switch to the previous conflicted file (`{` / Shift-Tab).
+    MergePrevFile,
+    /// Write the current file's resolutions; stages when fully resolved (`w`).
+    MergeSaveFile,
+    /// Write current picks and open the file in `$EDITOR` (`e`).
+    MergeEditFile,
+
+    // Commit selector history operations
+    /// Cherry-pick the selected commits onto the current branch (`p`).
+    SelectorCherryPick,
+    /// Rebase the current branch onto the cursor commit (`b`).
+    SelectorRebase,
+    /// Squash the selected commits into one (`s`).
+    SelectorSquash,
+
     // No-op
     None,
 }
@@ -170,6 +200,7 @@ pub fn map_key_to_action(key: KeyEvent, mode: InputMode, leader_key: char) -> Ac
         InputMode::Confirm => map_confirm_mode(key),
         InputMode::CommitSelect => map_commit_select_mode(key),
         InputMode::VisualSelect => map_visual_mode(key),
+        InputMode::MergeConflict => map_merge_conflict_mode(key),
         InputMode::SubmitResolver => map_submit_resolver_mode(key),
         InputMode::SubmitConfirm => map_submit_confirm_mode(key),
         InputMode::SubmitActionPicker => map_submit_action_picker_mode(key),
@@ -442,6 +473,9 @@ fn map_commit_select_mode(key: KeyEvent) -> Action {
         (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => Action::CommitSelectUp,
         (KeyCode::Char(' '), KeyModifiers::NONE) => Action::ToggleCommitSelect,
         (KeyCode::Enter, KeyModifiers::NONE) => Action::ConfirmCommitSelect,
+        (KeyCode::Char('p'), KeyModifiers::NONE) => Action::SelectorCherryPick,
+        (KeyCode::Char('b'), KeyModifiers::NONE) => Action::SelectorRebase,
+        (KeyCode::Char('s'), KeyModifiers::NONE) => Action::SelectorSquash,
         (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
         (KeyCode::Char('q'), KeyModifiers::NONE) => Action::Quit,
         (KeyCode::Char(':'), _) => Action::EnterCommandMode,
@@ -503,6 +537,36 @@ pub fn map_target_filter_mode(key: KeyEvent) -> Action {
         (KeyCode::Char('w'), KeyModifiers::CONTROL) => Action::DeleteWord,
         (KeyCode::Backspace, mods) if mods.contains(KeyModifiers::ALT) => Action::DeleteWord,
         (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => Action::InsertChar(c),
+        _ => Action::None,
+    }
+}
+
+fn map_merge_conflict_mode(key: KeyEvent) -> Action {
+    match (key.code, key.modifiers) {
+        (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => Action::CursorDown(1),
+        (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => Action::CursorUp(1),
+        (KeyCode::Char('d'), KeyModifiers::CONTROL) => Action::HalfPageDown,
+        (KeyCode::Char('u'), KeyModifiers::CONTROL) => Action::HalfPageUp,
+        (KeyCode::Char('f'), KeyModifiers::CONTROL) => Action::PageDown,
+        (KeyCode::Char('b'), KeyModifiers::CONTROL) => Action::PageUp,
+        (KeyCode::PageDown, KeyModifiers::NONE) => Action::PageDown,
+        (KeyCode::PageUp, KeyModifiers::NONE) => Action::PageUp,
+        (KeyCode::Char('g'), KeyModifiers::NONE) => Action::GoToTop,
+        (KeyCode::Char('G'), _) => Action::GoToBottom,
+        (KeyCode::Char('n') | KeyCode::Char(']'), KeyModifiers::NONE) => Action::MergeNextConflict,
+        (KeyCode::Char('N'), _) | (KeyCode::Char('['), KeyModifiers::NONE) => {
+            Action::MergePrevConflict
+        }
+        (KeyCode::Char('}'), _) | (KeyCode::Tab, KeyModifiers::NONE) => Action::MergeNextFile,
+        (KeyCode::Char('{'), _) | (KeyCode::BackTab, _) => Action::MergePrevFile,
+        (KeyCode::Char('o'), KeyModifiers::NONE) => Action::MergeTakeOurs,
+        (KeyCode::Char('t'), KeyModifiers::NONE) => Action::MergeTakeTheirs,
+        (KeyCode::Char('b'), KeyModifiers::NONE) => Action::MergeTakeBoth,
+        (KeyCode::Char('u'), KeyModifiers::NONE) => Action::MergeUnresolve,
+        (KeyCode::Char('w'), KeyModifiers::NONE) => Action::MergeSaveFile,
+        (KeyCode::Char('e'), KeyModifiers::NONE) => Action::MergeEditFile,
+        (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
+        (KeyCode::Char('q'), KeyModifiers::NONE) => Action::Quit,
         _ => Action::None,
     }
 }

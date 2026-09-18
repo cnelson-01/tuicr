@@ -74,11 +74,308 @@ fn normal_commit(id: &str) -> CommitInfo {
         id: id.to_string(),
         short_id: id.to_string(),
         branch_name: None,
+        parent_ids: Vec::new(),
         summary: "Test commit".to_string(),
         body: None,
         author: "Test".to_string(),
         time: Utc::now(),
     }
+}
+
+fn install_merge_view(app: &mut App) {
+    let content = "top\n<<<<<<< HEAD\nours1\n=======\ntheirs1\n>>>>>>> x\nmid\n<<<<<<< HEAD\nours2\n=======\ntheirs2\n>>>>>>> x\n";
+    let file = crate::vcs::parse_conflict_file(content);
+    let resolutions = vec![ConflictResolution::Unresolved; file.conflict_count()];
+    app.merge_view = Some(MergeView {
+        files: vec![MergeFileState {
+            path: PathBuf::from("a.txt"),
+            file,
+            resolutions,
+            dirty: false,
+            staged: false,
+            load_error: None,
+        }],
+        current_file: 0,
+        current_conflict: 0,
+        scroll_offset: 0,
+        viewport_height: 20,
+        return_mode: InputMode::CommitSelect,
+        discard_armed: false,
+        ours_label: "main".to_string(),
+        theirs_label: "feature".to_string(),
+        ours_commit: None,
+        theirs_commit: None,
+    });
+    app.input_mode = InputMode::MergeConflict;
+}
+
+#[test]
+fn commit_limit_scales_with_terminal_rows_within_bounds() {
+    // small/unknown terminals keep the historical page size
+    assert_eq!(commit_limit_for_rows(0), VISIBLE_COMMIT_COUNT);
+    assert_eq!(commit_limit_for_rows(12), VISIBLE_COMMIT_COUNT);
+    // a fullscreen terminal fills its body
+    assert_eq!(commit_limit_for_rows(40), 34);
+    assert_eq!(commit_limit_for_rows(60), 54);
+    // bounded above
+    assert_eq!(commit_limit_for_rows(10_000), MAX_INITIAL_COMMITS);
+}
+
+#[test]
+fn fill_commit_viewport_reveals_loaded_commits_up_to_capacity() {
+    // given 30 loaded commits with only 10 visible
+    let commits: Vec<CommitInfo> = (0..30).map(|i| normal_commit(&format!("c{i}"))).collect();
+    let mut app = build_app(commits);
+    app.visible_commit_count = 10;
+
+    // when the terminal grows to fit ~24 rows of body
+    app.fill_commit_viewport(30);
+
+    // then visibility grows toward capacity (page-at-a-time)
+    assert!(
+        app.visible_commit_count >= 24,
+        "got {}",
+        app.visible_commit_count
+    );
+    assert!(app.visible_commit_count <= 30);
+
+    // and a huge resize reveals everything that exists (DummyVcs has
+    // no further pages)
+    app.fill_commit_viewport(200);
+    assert_eq!(app.visible_commit_count, 30);
+    assert!(!app.has_more_commit);
+}
+
+#[test]
+fn selector_action_ids_use_picks_oldest_first() {
+    // given a selector list with a pseudo row and all rows picked
+    let mut app = build_app(vec![
+        App::staged_commit_entry(),
+        normal_commit("aaa"),
+        normal_commit("bbb"),
+    ]);
+    app.commit_picks.extend([0, 1, 2]);
+    // when / then: pseudo rows drop out, order flips to oldest-first
+    assert_eq!(
+        app.selector_action_commit_ids(),
+        vec!["bbb".to_string(), "aaa".to_string()]
+    );
+    // and without picks the cursor row is used
+    app.commit_picks.clear();
+    app.commit_list_cursor = 1;
+    assert_eq!(app.selector_action_commit_ids(), vec!["aaa".to_string()]);
+    // pseudo cursor rows produce no ids
+    app.commit_list_cursor = 0;
+    assert!(app.selector_action_commit_ids().is_empty());
+}
+
+#[test]
+fn selector_picks_support_non_contiguous_commits() {
+    // given commits interleaved across branches
+    let mut app = build_app(vec![
+        normal_commit("newest"),
+        normal_commit("other-branch"),
+        normal_commit("mine"),
+    ]);
+
+    // when picking rows 0 and 2 with space (skipping row 1)
+    app.toggle_commit_selection_and_advance(); // picks 0, cursor -> 1
+    app.commit_list_cursor = 2;
+    app.toggle_commit_selection_and_advance(); // picks 2
+
+    // then the action set is exactly those two, oldest first
+    assert_eq!(
+        app.selector_action_commit_ids(),
+        vec!["mine".to_string(), "newest".to_string()]
+    );
+
+    // and space on a picked row unpicks it
+    app.commit_list_cursor = 0;
+    app.toggle_commit_selection_and_advance();
+    assert_eq!(app.selector_action_commit_ids(), vec!["mine".to_string()]);
+}
+
+#[test]
+fn confirm_refuses_non_contiguous_picks_for_review() {
+    // given a gap in the picks
+    let mut app = build_app(vec![
+        normal_commit("a"),
+        normal_commit("b"),
+        normal_commit("c"),
+    ]);
+    app.commit_picks.extend([0, 2]);
+    // when confirming
+    app.confirm_commit_selection()
+        .expect("confirm should not error");
+    // then we stay in the selector with a hint instead of reviewing a
+    // range that would silently include the unpicked middle commit
+    assert_eq!(app.input_mode, InputMode::CommitSelect);
+    assert!(app.message.is_some());
+}
+
+#[test]
+fn merge_resolve_marks_dirty_and_advances_to_next_unresolved() {
+    // given a merge view with two unresolved conflicts
+    let mut app = build_app(vec![]);
+    install_merge_view(&mut app);
+
+    // when the first conflict takes ours
+    app.merge_resolve_current(ConflictResolution::Ours);
+
+    // then the resolution is recorded, the file is dirty, and focus
+    // sweeps forward to the remaining unresolved conflict
+    let view = app.merge_view.as_ref().unwrap();
+    let file = view.current_file_state().unwrap();
+    assert_eq!(file.resolutions[0], ConflictResolution::Ours);
+    assert!(file.dirty);
+    assert_eq!(view.current_conflict, 1);
+    assert_eq!(file.unresolved_count(), 1);
+}
+
+#[test]
+fn merge_unresolve_restores_conflict() {
+    // given
+    let mut app = build_app(vec![]);
+    install_merge_view(&mut app);
+    app.merge_resolve_current(ConflictResolution::Theirs);
+
+    // when the user moves back and undoes the pick
+    app.merge_prev_conflict();
+    app.merge_resolve_current(ConflictResolution::Unresolved);
+
+    // then
+    let view = app.merge_view.as_ref().unwrap();
+    let file = view.current_file_state().unwrap();
+    assert_eq!(file.resolutions[0], ConflictResolution::Unresolved);
+    assert_eq!(file.unresolved_count(), 2);
+}
+
+#[test]
+fn merge_close_requires_second_esc_when_dirty() {
+    // given unsaved resolutions
+    let mut app = build_app(vec![]);
+    install_merge_view(&mut app);
+    app.merge_resolve_current(ConflictResolution::Ours);
+
+    // when Esc is pressed once
+    app.close_merge_view();
+
+    // then the view stays open with the discard warning armed
+    assert_eq!(app.input_mode, InputMode::MergeConflict);
+    assert!(app.merge_view.as_ref().unwrap().discard_armed);
+
+    // and a second Esc returns to the originating mode
+    app.close_merge_view();
+    assert_eq!(app.input_mode, InputMode::CommitSelect);
+    assert!(app.merge_view.is_none());
+}
+
+#[test]
+fn merge_prompt_triggers_only_when_everything_is_resolved_and_staged() {
+    // given a merge view with two conflicts
+    let mut app = build_app(vec![]);
+    install_merge_view(&mut app);
+    assert!(!app.merge_all_resolved_and_staged());
+
+    // when everything is resolved, written, and staged
+    {
+        let view = app.merge_view.as_mut().unwrap();
+        let file = view.files.get_mut(0).unwrap();
+        file.resolutions = vec![ConflictResolution::Ours, ConflictResolution::Theirs];
+        file.dirty = false;
+        file.staged = true;
+    }
+    // then the prompt condition holds (DummyVcs reports no conflicts)
+    assert!(app.merge_all_resolved_and_staged());
+}
+
+#[test]
+fn merge_commit_prompt_no_returns_to_merge_view() {
+    // given the commit prompt is up
+    let mut app = build_app(vec![]);
+    install_merge_view(&mut app);
+    app.enter_confirm_mode(ConfirmAction::ContinueMergeOperation);
+    assert_eq!(app.input_mode, InputMode::Confirm);
+
+    // when the user declines
+    crate::handler::handle_confirm_action(&mut app, crate::input::Action::ConfirmNo);
+
+    // then we are back in the merge view, not quitting
+    assert_eq!(app.input_mode, InputMode::MergeConflict);
+    assert!(!app.should_quit);
+    assert!(app.merge_view.is_some());
+}
+
+#[test]
+fn merge_commit_prompt_yes_surfaces_backend_error() {
+    // given a backend that cannot continue (DummyVcs default)
+    let mut app = build_app(vec![]);
+    install_merge_view(&mut app);
+    app.enter_confirm_mode(ConfirmAction::ContinueMergeOperation);
+
+    // when the user confirms
+    crate::handler::handle_confirm_action(&mut app, crate::input::Action::ConfirmYes);
+
+    // then the failure is surfaced and the merge view stays open
+    assert_eq!(app.input_mode, InputMode::MergeConflict);
+    assert!(app.merge_view.is_some());
+    assert!(app.message.is_some(), "an error message should be shown");
+}
+
+#[test]
+fn merge_reload_resets_resolutions_from_new_content() {
+    // given a merge view with picks already made
+    let mut app = build_app(vec![]);
+    install_merge_view(&mut app);
+    app.merge_resolve_current(ConflictResolution::Ours);
+
+    // when the file is reloaded with one conflict hand-resolved
+    let edited = "top\nhand resolved\nmid\n<<<<<<< HEAD\nours2\n=======\ntheirs2\n>>>>>>> x\n";
+    app.merge_apply_reloaded_content(edited);
+
+    // then only the remaining marker is a conflict, unresolved again
+    let view = app.merge_view.as_ref().unwrap();
+    let file = view.current_file_state().unwrap();
+    assert_eq!(file.file.conflict_count(), 1);
+    assert_eq!(file.resolutions, vec![ConflictResolution::Unresolved]);
+    assert!(!file.dirty);
+    assert!(!file.staged);
+    assert_eq!(view.current_conflict, 0);
+}
+
+#[test]
+fn merge_edit_queues_editor_at_focused_conflict() {
+    // given a merge view whose file lives in a real directory
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut app = build_app(vec![]);
+    app.vcs_info.root_path = dir.path().to_path_buf();
+    install_merge_view(&mut app);
+
+    // when the user asks to edit
+    app.merge_edit_current_file();
+
+    // then current picks are written and the editor targets the
+    // first conflict's marker line
+    let target = app.take_pending_editor_target().expect("editor target");
+    assert_eq!(target.path, dir.path().join("a.txt"));
+    assert_eq!(target.line, Some(2));
+    let written = std::fs::read_to_string(dir.path().join("a.txt")).expect("written file");
+    assert!(
+        written.starts_with("top\n<<<<<<< HEAD\n"),
+        "got: {written:?}"
+    );
+}
+
+#[test]
+fn merge_close_without_changes_returns_immediately() {
+    // given
+    let mut app = build_app(vec![]);
+    install_merge_view(&mut app);
+    // when
+    app.close_merge_view();
+    // then
+    assert_eq!(app.input_mode, InputMode::CommitSelect);
+    assert!(app.merge_view.is_none());
 }
 
 #[test]

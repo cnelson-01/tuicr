@@ -199,6 +199,7 @@ In command mode,
 | `:diff` | Toggle diff view (unified / side-by-side) |
 | `:vim` / `:novim` (`:set vim` / `:set novim`) | Enable/toggle/disable vim modal editing in the comment box (overrides `comment_vim`) |
 | `:commits` | Select commits to review |
+| `:merge` (`:conflicts`) | Open the side-by-side merge conflict view |
 | `:submit` | Open submit picker (Comment / Approve / Request changes / Draft) |
 | `:submit comment` | Submit a Comment review |
 | `:submit approve` | Submit an Approve review |
@@ -238,15 +239,64 @@ losing their reviewed state.
 
 ## Commit selection / review target selector
 
+The Local tab draws a commit graph across all local branches: each branch gets a
+colored track, with branch chips on tips. When the repository has unresolved
+merge conflicts, a `· conflicts ·` row appears at the top — `Enter` on it opens
+the merge conflict view.
+
+History operations run on the current branch: `p` cherry-picks the selected
+commits (or the cursor commit) onto it, `b` rebases it onto the cursor commit,
+and `s` squashes a space-selected range into one commit (the range must be a
+contiguous run ending at HEAD; messages are combined oldest-first). If an
+operation stops on conflicts the merge conflict view opens automatically;
+resolve and write, then run `git cherry-pick --continue` /
+`git rebase --continue` from your shell.
+
+The Local tab lists commits in date order (`git log --date-order`): newest
+first, with children always above their parents so the graph stays coherent.
+
 | Key | Action |
 |-----|--------|
 | `Tab` / `Shift-Tab` | Switch between Local and Pull Requests tabs |
 | `j` / `k` | Move selection |
-| `Space` | Toggle local commit selection |
-| `Enter` | Confirm local commit range, open PR, or load more PRs |
+| `Space` | Toggle the commit under the cursor in the pick set (non-contiguous picks allowed — pull in single commits from other branches; consecutive presses still sweep a run) |
+| `Enter` | Review the picked commits (must be a contiguous run), open PR, load more PRs, or open merge conflicts |
+| `p` | Cherry-pick the picked (or cursor) commits onto the current branch — works with non-contiguous picks |
+| `b` | Rebase the current branch onto the cursor commit |
+| `s` | Squash the selected range (must end at HEAD) into one commit |
 | `/` | Filter currently loaded PR rows locally |
 | `r` | In Pull Requests tab, toggle all open PRs / PRs requesting your review |
 | `q` / `Esc` | Quit / return |
+
+## Merge conflict view
+
+Three-pane resolution for an in-progress merge (also cherry-pick/rebase
+stops): **ours | result | theirs**. The outer panes are titled with the
+branch and commit their content comes from (e.g. `ours · main · c713b11
+Tune retry count`); the middle pane previews the resolved file as you pick.
+Open it from the conflicts row in the selector or with `:merge`. Writing a
+fully resolved file also stages it (the VCS “mark resolved” gesture);
+unresolved conflicts are written back with their original markers.
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` | Scroll |
+| `Ctrl-d` / `Ctrl-u`, `Ctrl-f` / `Ctrl-b` | Half-page / full-page scroll |
+| `g` / `G` | Top / bottom |
+| `n` / `N` (or `]` / `[`) | Next / previous conflict |
+| `}` / `{` (or `Tab` / `Shift-Tab`) | Next / previous conflicted file |
+| `o` | Take ours for the focused conflict |
+| `t` | Take theirs |
+| `b` | Take both (ours first) |
+| `u` | Reset the focused conflict to unresolved |
+| `e` | Write current picks, then open the file in `$EDITOR` at the focused conflict; on exit the view re-parses the file |
+| `w` | Write the file; stages it once fully resolved |
+| `Esc` | Back (press twice to discard unsaved picks) |
+| `q` | Quit |
+
+Once the last conflict is written and staged, a **commit now?** prompt
+appears: `y` commits the merge (or runs `cherry-pick/rebase/revert
+--continue` with the prepared message), `n`/`Esc` returns to the view.
 
 ## Inline commit selector
 

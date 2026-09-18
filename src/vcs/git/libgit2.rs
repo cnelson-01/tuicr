@@ -8,7 +8,8 @@ use crate::syntax::SyntaxHighlighter;
 
 use super::{context, diff, repository, staging};
 use crate::vcs::traits::{
-    ChangeKind, CommitInfo, DiffWhitespaceMode, ResolvedRevisionRange, VcsBackend, VcsInfo, VcsType,
+    ChangeKind, CommitInfo, ConflictCommit, DiffWhitespaceMode, MergeConflictInfo,
+    ResolvedRevisionRange, VcsBackend, VcsInfo, VcsType,
 };
 
 /// Git backend implementation using the git2/libgit2 library.
@@ -26,6 +27,48 @@ pub struct Libgit2Backend {
 /// bare clone with that setting — tuicr would surface as "Not a repository"
 /// while plain `git status` works fine. Path resolution for relative
 /// `gitdir:` pointers already works in libgit2; only the safety gate refuses.
+/// Short id + summary for a commit, used to attribute merge-view panes.
+fn commit_brief(commit: &git2::Commit<'_>) -> ConflictCommit {
+    let id = commit.id().to_string();
+    ConflictCommit {
+        short_id: id[..7.min(id.len())].to_string(),
+        summary: commit.summary().unwrap_or("(no message)").to_string(),
+    }
+}
+
+/// Friendly label and commit identity for the incoming side of an
+/// in-progress merge, cherry-pick, rebase, or revert: a local branch
+/// pointing at the incoming commit when one exists, else the short commit
+/// id, else "incoming".
+fn incoming_head_info(repo: &Repository) -> (String, Option<ConflictCommit>) {
+    for head in [
+        "MERGE_HEAD",
+        "CHERRY_PICK_HEAD",
+        "REBASE_HEAD",
+        "REVERT_HEAD",
+    ] {
+        let Ok(reference) = repo.find_reference(head) else {
+            continue;
+        };
+        let Some(oid) = reference.target() else {
+            continue;
+        };
+        let commit = repo.find_commit(oid).ok().map(|c| commit_brief(&c));
+        if let Ok(branches) = repo.branches(Some(git2::BranchType::Local)) {
+            for (branch, _) in branches.flatten() {
+                if branch.get().target() == Some(oid)
+                    && let Ok(Some(name)) = branch.name()
+                {
+                    return (name.to_string(), commit);
+                }
+            }
+        }
+        let id = oid.to_string();
+        return (id[..7.min(id.len())].to_string(), commit);
+    }
+    ("incoming".to_string(), None)
+}
+
 fn register_supported_extensions() {
     static REGISTER: Once = Once::new();
     REGISTER.call_once(|| {
@@ -90,6 +133,18 @@ impl Libgit2Backend {
     }
 }
 
+impl Libgit2Backend {
+    /// Refresh the in-memory index from disk. `Repository::index()` hands
+    /// back the same refcounted git_index every time, so one `read`
+    /// refreshes every future user of the cache. Needed whenever the git
+    /// CLI rewrites `.git/index` behind libgit2's back (history ops).
+    pub(super) fn reload_index(&self) {
+        if let Ok(mut index) = self.repo.index() {
+            let _ = index.read(false);
+        }
+    }
+}
+
 impl VcsBackend for Libgit2Backend {
     fn info(&self) -> &VcsInfo {
         &self.info
@@ -150,6 +205,7 @@ impl VcsBackend for Libgit2Backend {
                 id: c.id,
                 short_id: c.short_id,
                 branch_name: c.branch_name,
+                parent_ids: c.parent_ids,
                 summary: c.summary,
                 body: c.body,
                 author: c.author,
@@ -183,6 +239,7 @@ impl VcsBackend for Libgit2Backend {
                 id: c.id,
                 short_id: c.short_id,
                 branch_name: c.branch_name,
+                parent_ids: c.parent_ids,
                 summary: c.summary,
                 body: c.body,
                 author: c.author,
@@ -206,6 +263,56 @@ impl VcsBackend for Libgit2Backend {
 
     fn stage_file(&self, path: &Path) -> Result<()> {
         staging::stage_file(&self.repo, path)
+    }
+
+    fn get_merge_conflicts(&self) -> Result<Option<MergeConflictInfo>> {
+        let mut index = self.repo.index()?;
+        // The Repository caches its index in memory; a cherry-pick/rebase
+        // run after startup (selector `p`/`b`) rewrites it on disk, so
+        // re-read or the new conflict entries are invisible.
+        index.read(false)?;
+        if !index.has_conflicts() {
+            return Ok(None);
+        }
+
+        let mut paths: Vec<PathBuf> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for conflict in index.conflicts()? {
+            let conflict = conflict?;
+            let entry = conflict
+                .our
+                .as_ref()
+                .or(conflict.their.as_ref())
+                .or(conflict.ancestor.as_ref());
+            let Some(entry) = entry else { continue };
+            let path = String::from_utf8_lossy(&entry.path).to_string();
+            if seen.insert(path.clone()) {
+                paths.push(PathBuf::from(path));
+            }
+        }
+        if paths.is_empty() {
+            return Ok(None);
+        }
+
+        let ours_label = self
+            .info
+            .branch_name
+            .clone()
+            .unwrap_or_else(|| "HEAD".to_string());
+        let ours_commit = self
+            .repo
+            .head()
+            .ok()
+            .and_then(|h| h.peel_to_commit().ok())
+            .map(|c| commit_brief(&c));
+        let (theirs_label, theirs_commit) = incoming_head_info(&self.repo);
+        Ok(Some(MergeConflictInfo {
+            ours_label,
+            theirs_label,
+            ours_commit,
+            theirs_commit,
+            paths,
+        }))
     }
 }
 

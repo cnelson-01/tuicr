@@ -180,7 +180,8 @@ impl App {
         let has_staged_changes = change_status.staged;
         let has_unstaged_changes = change_status.unstaged;
 
-        let commits = self.vcs.get_recent_commits(0, VISIBLE_COMMIT_COUNT)?;
+        let commit_limit = initial_commit_limit();
+        let commits = self.vcs.get_recent_commits(0, commit_limit)?;
         let no_local_targets = commits.is_empty() && !has_staged_changes && !has_unstaged_changes;
         // Allow opening the selector on the Pull Requests tab even when there
         // are no local commits or changes — the PR tab is the user's reason
@@ -191,7 +192,7 @@ impl App {
         }
 
         // Check if there might be more commits
-        self.has_more_commit = commits.len() >= VISIBLE_COMMIT_COUNT;
+        self.has_more_commit = commits.len() >= commit_limit;
         self.commit_list = commits;
         if has_staged_changes {
             self.commit_list.insert(0, Self::staged_commit_entry());
@@ -202,6 +203,7 @@ impl App {
         self.commit_list_cursor = 0;
         self.commit_list_scroll_offset = 0;
         self.commit_selection_range = None;
+        self.commit_picks.clear();
         self.visible_commit_count = self.commit_list.len();
         self.input_mode = InputMode::CommitSelect;
 
@@ -356,16 +358,26 @@ impl App {
         }
     }
 
-    /// Toggle the cursor commit's membership in the selection range, then
-    /// (only if the cursor commit was newly added to the selection) move the
-    /// cursor past the end of the range. Lets the user press Enter/Space
-    /// repeatedly to sweep a contiguous run of commits.
-    ///
-    /// Other toggle outcomes leave the cursor in place: edge presses
-    /// (deselect the cursor commit), middle presses (truncate the range
-    /// without unselecting the cursor commit), and clearing the last
-    /// selection. Those aren't "sweep" actions, so advancing would surprise.
+    /// Space in a selector. The fullscreen selector toggles the cursor row
+    /// in the pick set — picks may be non-contiguous, so single commits
+    /// from other branches can be pulled in without dragging their
+    /// neighbours along. Newly picking a row advances the cursor so
+    /// repeated Space still sweeps a run. The inline selector keeps the
+    /// contiguous-range behavior (PR subsets need contiguity).
     pub fn toggle_commit_selection_and_advance(&mut self) {
+        if self.input_mode == InputMode::CommitSelect {
+            let cursor = self.commit_list_cursor;
+            if cursor >= self.commit_list.len() {
+                return;
+            }
+            if !self.commit_picks.insert(cursor) {
+                self.commit_picks.remove(&cursor);
+                return;
+            }
+            self.commit_select_down();
+            return;
+        }
+
         let cursor = self.commit_list_cursor;
         let was_selected = self.is_commit_selected(cursor);
         self.toggle_commit_selection();
@@ -384,6 +396,584 @@ impl App {
         }
     }
 
+    // Selector history operations (cherry-pick / rebase)
+
+    /// Commits the selector action applies to: the picked rows when any
+    /// exist, else the cursor row — pseudo rows excluded, oldest first
+    /// (picks iterate descending index; larger index = older commit).
+    pub(in crate::app) fn selector_action_commit_ids(&self) -> Vec<String> {
+        let indices: Vec<usize> = if self.commit_picks.is_empty() {
+            vec![self.commit_list_cursor]
+        } else {
+            self.commit_picks.iter().rev().copied().collect()
+        };
+        indices
+            .into_iter()
+            .filter_map(|i| self.commit_list.get(i))
+            .filter(|c| !Self::is_special_commit(c))
+            .map(|c| c.id.clone())
+            .collect()
+    }
+
+    /// Cherry-pick the selected commits (or the cursor commit) onto the
+    /// current branch. Conflicts open the merge view automatically.
+    pub fn selector_cherry_pick(&mut self) {
+        let ids = self.selector_action_commit_ids();
+        if ids.is_empty() {
+            self.set_message("Move the cursor onto a commit to cherry-pick");
+            return;
+        }
+        match self.vcs.cherry_pick(&ids) {
+            Ok(()) => {
+                self.refresh_commit_selector_rows();
+                self.set_message(format!(
+                    "Cherry-picked {} commit{} onto {}",
+                    ids.len(),
+                    if ids.len() == 1 { "" } else { "s" },
+                    self.vcs_info.branch_name.as_deref().unwrap_or("HEAD"),
+                ));
+            }
+            Err(err) => self.handle_history_op_failure("cherry-pick", err),
+        }
+    }
+
+    /// Rebase the current branch onto the commit under the cursor.
+    /// Conflicts open the merge view automatically.
+    pub fn selector_rebase_onto_cursor(&mut self) {
+        let commit_id = self
+            .commit_list
+            .get(self.commit_list_cursor)
+            .filter(|c| !Self::is_special_commit(c))
+            .map(|c| c.id.clone());
+        let Some(commit_id) = commit_id else {
+            self.set_message("Move the cursor onto a commit to rebase onto");
+            return;
+        };
+        match self.vcs.rebase_onto(&commit_id) {
+            Ok(()) => {
+                self.refresh_commit_selector_rows();
+                self.set_message(format!(
+                    "Rebased {} onto {}",
+                    self.vcs_info.branch_name.as_deref().unwrap_or("HEAD"),
+                    &commit_id[..7.min(commit_id.len())],
+                ));
+            }
+            Err(err) => self.handle_history_op_failure("rebase", err),
+        }
+    }
+
+    /// Squash the selected commits (space-selected range) into one commit.
+    pub fn selector_squash(&mut self) {
+        let ids = self.selector_action_commit_ids();
+        if ids.len() < 2 {
+            self.set_message("Select at least two commits to squash (space, then s)");
+            return;
+        }
+        match self.vcs.squash_commits(&ids) {
+            Ok(()) => {
+                let count = ids.len();
+                self.refresh_commit_selector_rows();
+                self.set_message(format!("Squashed {count} commits into one"));
+            }
+            Err(err) => {
+                let err = err.to_string();
+                self.set_error(format!("Squash failed: {}", err.trim()));
+            }
+        }
+    }
+
+    /// A failed history operation either stopped on conflicts (open the
+    /// merge view so the user can resolve, then `--continue` from a shell)
+    /// or genuinely failed (surface the VCS error).
+    fn handle_history_op_failure(&mut self, op: &str, err: TuicrError) {
+        if let Ok(Some(_)) = self.vcs.get_merge_conflicts() {
+            if let Err(open_err) = self.open_merge_view(InputMode::CommitSelect) {
+                self.set_error(format!("{op} stopped on conflicts: {open_err}"));
+                return;
+            }
+            self.set_message(format!(
+                "{op} stopped on conflicts \u{2014} resolve + w, then `git {op} --continue`"
+            ));
+        } else {
+            let err = err.to_string();
+            let err = err.trim();
+            self.set_error(format!("{op} failed: {err}"));
+        }
+    }
+
+    /// Re-probe the repository and rebuild the selector rows (pseudo rows
+    /// included). Used after history operations and when leaving the merge
+    /// view, where HEAD or the conflict state may have changed.
+    fn refresh_commit_selector_rows(&mut self) {
+        let commit_limit = initial_commit_limit();
+        let commits = self
+            .vcs
+            .get_recent_commits(0, commit_limit)
+            .unwrap_or_default();
+        let highlighter = self.theme.syntax_highlighter();
+        let change_status = Self::get_change_status_with_ignore(
+            self.vcs.as_ref(),
+            &self.vcs_info.root_path,
+            highlighter,
+            self.path_filter.as_deref(),
+        )
+        .unwrap_or_default();
+        let merge_conflicts = self.vcs.get_merge_conflicts().ok().flatten();
+
+        self.has_more_commit = commits.len() >= commit_limit;
+        let mut commit_list = commits;
+        if change_status.staged {
+            commit_list.insert(0, Self::staged_commit_entry());
+        }
+        if change_status.unstaged {
+            commit_list.insert(0, Self::unstaged_commit_entry());
+        }
+        if let Some(info) = &merge_conflicts {
+            commit_list.insert(0, Self::merge_commit_entry(info));
+        }
+        self.commit_list = commit_list;
+        self.commit_list_cursor = 0;
+        self.commit_list_scroll_offset = 0;
+        self.commit_selection_range = None;
+        self.commit_picks.clear();
+        self.visible_commit_count = self.commit_list.len();
+    }
+
+    // Merge conflict view methods
+
+    /// Open the fullscreen merge conflict screen. Shows a message and stays
+    /// in the current mode when the repository has no conflicted paths.
+    pub fn open_merge_view(&mut self, return_mode: InputMode) -> Result<()> {
+        let Some(info) = self.vcs.get_merge_conflicts()? else {
+            self.set_message("No merge conflicts detected");
+            return Ok(());
+        };
+
+        let root = self.vcs_info.root_path.clone();
+        let files: Vec<MergeFileState> = info
+            .paths
+            .iter()
+            .map(|path| match std::fs::read_to_string(root.join(path)) {
+                Ok(content) => {
+                    let file = crate::vcs::parse_conflict_file(&content);
+                    let resolutions = vec![ConflictResolution::Unresolved; file.conflict_count()];
+                    MergeFileState {
+                        path: path.clone(),
+                        file,
+                        resolutions,
+                        dirty: false,
+                        staged: false,
+                        load_error: None,
+                    }
+                }
+                Err(err) => MergeFileState {
+                    path: path.clone(),
+                    file: ConflictFile::default(),
+                    resolutions: Vec::new(),
+                    dirty: false,
+                    staged: false,
+                    load_error: Some(err.to_string()),
+                },
+            })
+            .collect();
+
+        let mut view = MergeView {
+            files,
+            current_file: 0,
+            current_conflict: 0,
+            scroll_offset: 0,
+            viewport_height: 0,
+            return_mode,
+            discard_armed: false,
+            ours_label: info.ours_label,
+            theirs_label: info.theirs_label,
+            ours_commit: info.ours_commit,
+            theirs_commit: info.theirs_commit,
+        };
+        view.scroll_to_current_conflict();
+        self.merge_view = Some(view);
+        self.input_mode = InputMode::MergeConflict;
+        Ok(())
+    }
+
+    /// Esc from the merge view. Unsaved resolutions require a second Esc.
+    pub fn close_merge_view(&mut self) {
+        let Some(view) = self.merge_view.as_mut() else {
+            self.input_mode = InputMode::Normal;
+            return;
+        };
+        if view.files.iter().any(|f| f.dirty) && !view.discard_armed {
+            view.discard_armed = true;
+            self.set_message("Unsaved conflict resolutions \u{2014} press Esc again to discard");
+            return;
+        }
+        let return_mode = view.return_mode;
+        self.input_mode = return_mode;
+        self.merge_view = None;
+        if return_mode == InputMode::CommitSelect {
+            self.refresh_commit_selector_rows();
+        }
+    }
+
+    /// Any key other than Esc cancels a pending discard warning.
+    pub fn merge_disarm_discard(&mut self) {
+        if let Some(view) = self.merge_view.as_mut() {
+            view.discard_armed = false;
+        }
+    }
+
+    pub fn merge_half_page(&self) -> usize {
+        self.merge_view
+            .as_ref()
+            .map(|v| (v.viewport_height / 2).max(1))
+            .unwrap_or(1)
+    }
+
+    pub fn merge_full_page(&self) -> usize {
+        self.merge_view
+            .as_ref()
+            .map(|v| v.viewport_height.max(1))
+            .unwrap_or(1)
+    }
+
+    pub fn merge_scroll_down(&mut self, n: usize) {
+        if let Some(view) = self.merge_view.as_mut() {
+            view.scroll_offset = (view.scroll_offset + n).min(view.max_scroll());
+        }
+    }
+
+    pub fn merge_scroll_up(&mut self, n: usize) {
+        if let Some(view) = self.merge_view.as_mut() {
+            view.scroll_offset = view.scroll_offset.saturating_sub(n);
+        }
+    }
+
+    pub fn merge_scroll_to_top(&mut self) {
+        if let Some(view) = self.merge_view.as_mut() {
+            view.scroll_offset = 0;
+        }
+    }
+
+    pub fn merge_scroll_to_bottom(&mut self) {
+        if let Some(view) = self.merge_view.as_mut() {
+            view.scroll_offset = view.max_scroll();
+        }
+    }
+
+    pub fn merge_next_conflict(&mut self) {
+        let message = {
+            let Some(view) = self.merge_view.as_mut() else {
+                return;
+            };
+            let count = view
+                .current_file_state()
+                .map(|f| f.file.conflict_count())
+                .unwrap_or(0);
+            if count == 0 {
+                Some("No conflicts in this file".to_string())
+            } else if view.current_conflict + 1 >= count {
+                Some("Already at the last conflict".to_string())
+            } else {
+                view.current_conflict += 1;
+                view.scroll_to_current_conflict();
+                None
+            }
+        };
+        if let Some(msg) = message {
+            self.set_message(msg);
+        }
+    }
+
+    pub fn merge_prev_conflict(&mut self) {
+        let message = {
+            let Some(view) = self.merge_view.as_mut() else {
+                return;
+            };
+            let count = view
+                .current_file_state()
+                .map(|f| f.file.conflict_count())
+                .unwrap_or(0);
+            if count == 0 {
+                Some("No conflicts in this file".to_string())
+            } else if view.current_conflict == 0 {
+                Some("Already at the first conflict".to_string())
+            } else {
+                view.current_conflict -= 1;
+                view.scroll_to_current_conflict();
+                None
+            }
+        };
+        if let Some(msg) = message {
+            self.set_message(msg);
+        }
+    }
+
+    pub fn merge_next_file(&mut self) {
+        if let Some(view) = self.merge_view.as_mut()
+            && view.current_file + 1 < view.files.len()
+        {
+            view.current_file += 1;
+            view.current_conflict = 0;
+            view.scroll_offset = 0;
+            view.scroll_to_current_conflict();
+        }
+    }
+
+    pub fn merge_prev_file(&mut self) {
+        if let Some(view) = self.merge_view.as_mut()
+            && view.current_file > 0
+        {
+            view.current_file -= 1;
+            view.current_conflict = 0;
+            view.scroll_offset = 0;
+            view.scroll_to_current_conflict();
+        }
+    }
+
+    /// Apply a resolution to the focused conflict, then advance to the next
+    /// unresolved conflict in the file so repeated picks sweep forward.
+    pub fn merge_resolve_current(&mut self, resolution: ConflictResolution) {
+        let message = {
+            let Some(view) = self.merge_view.as_mut() else {
+                return;
+            };
+            let current_conflict = view.current_conflict;
+            let Some(file) = view.files.get_mut(view.current_file) else {
+                return;
+            };
+            if file.resolutions.is_empty() {
+                Some("No conflicts to resolve in this file".to_string())
+            } else {
+                let idx = current_conflict.min(file.resolutions.len() - 1);
+                if file.resolutions[idx] != resolution {
+                    file.resolutions[idx] = resolution;
+                    file.dirty = true;
+                    file.staged = false;
+                }
+                if resolution == ConflictResolution::Unresolved {
+                    None
+                } else if let Some(next) = file
+                    .resolutions
+                    .iter()
+                    .enumerate()
+                    .skip(idx + 1)
+                    .find(|(_, r)| matches!(r, ConflictResolution::Unresolved))
+                    .map(|(i, _)| i)
+                {
+                    view.current_conflict = next;
+                    view.scroll_to_current_conflict();
+                    None
+                } else if file.unresolved_count() == 0 {
+                    Some("All conflicts resolved \u{00b7} press w to write".to_string())
+                } else {
+                    None
+                }
+            }
+        };
+        if let Some(msg) = message {
+            self.set_message(msg);
+        }
+    }
+
+    /// Write the current file's resolutions to the working tree; stage it
+    /// when every conflict is resolved (the VCS "mark resolved" gesture).
+    pub fn merge_save_current_file(&mut self) -> Result<()> {
+        let root = self.vcs_info.root_path.clone();
+        let load_error = self
+            .merge_view
+            .as_ref()
+            .and_then(MergeView::current_file_state)
+            .and_then(|f| f.load_error.clone());
+        if let Some(err) = load_error {
+            self.set_error(format!("Cannot write this file: {err}"));
+            return Ok(());
+        }
+
+        let (path, unresolved) = {
+            let Some(view) = self.merge_view.as_mut() else {
+                return Ok(());
+            };
+            let Some(file) = view.files.get_mut(view.current_file) else {
+                return Ok(());
+            };
+            let content = apply_resolutions(&file.file, &file.resolutions);
+            std::fs::write(root.join(&file.path), content)?;
+            file.dirty = false;
+            (file.path.clone(), file.unresolved_count())
+        };
+
+        if unresolved > 0 {
+            self.set_message(format!(
+                "Wrote {} \u{00b7} {unresolved} conflict{} remaining",
+                path.display(),
+                if unresolved == 1 { "" } else { "s" }
+            ));
+            return Ok(());
+        }
+
+        match self.vcs.stage_file(&path) {
+            Ok(()) => {
+                if let Some(view) = self.merge_view.as_mut()
+                    && let Some(file) = view.files.get_mut(view.current_file)
+                {
+                    file.staged = true;
+                }
+                if self.merge_all_resolved_and_staged() {
+                    // Hand off to the Y/N prompt; the dialog renders on
+                    // top of the merge view.
+                    self.enter_confirm_mode(ConfirmAction::ContinueMergeOperation);
+                } else {
+                    self.set_message(format!(
+                        "Wrote {} \u{00b7} resolved and staged",
+                        path.display()
+                    ));
+                }
+            }
+            Err(err) => {
+                self.set_error(format!(
+                    "Wrote {} but staging failed: {err}",
+                    path.display()
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Hand the current conflicted file to `$EDITOR`: write the picks made
+    /// so far (unresolved conflicts keep their markers), then queue the
+    /// editor at the focused conflict's line. The main loop performs the
+    /// terminal hand-off and calls [`Self::merge_reload_current_file`]
+    /// when the editor exits.
+    pub fn merge_edit_current_file(&mut self) {
+        enum Outcome {
+            Queue(EditorTarget),
+            WriteFailed(String),
+            NotEditable,
+        }
+
+        let root = self.vcs_info.root_path.clone();
+        let outcome = {
+            let Some(view) = self.merge_view.as_mut() else {
+                return;
+            };
+            let current_conflict = view.current_conflict;
+            let Some(file) = view.files.get_mut(view.current_file) else {
+                return;
+            };
+            if file.load_error.is_some() {
+                Outcome::NotEditable
+            } else {
+                let content = crate::vcs::apply_resolutions(&file.file, &file.resolutions);
+                match std::fs::write(root.join(&file.path), content) {
+                    Ok(()) => {
+                        file.dirty = false;
+                        file.staged = false;
+                        let line = crate::vcs::conflict::conflict_output_line(
+                            &file.file,
+                            &file.resolutions,
+                            current_conflict,
+                        );
+                        Outcome::Queue(EditorTarget {
+                            path: root.join(&file.path),
+                            line: line.map(|l| l as u32),
+                        })
+                    }
+                    Err(err) => Outcome::WriteFailed(format!("{}: {err}", file.path.display())),
+                }
+            }
+        };
+        match outcome {
+            Outcome::Queue(target) => self.pending_editor_target = Some(target),
+            Outcome::WriteFailed(err) => self.set_error(format!("Cannot write {err}")),
+            Outcome::NotEditable => self.set_error("Cannot edit this file"),
+        }
+    }
+
+    /// Re-parse the current file after an external edit: markers still
+    /// present become unresolved conflicts again; everything else is
+    /// settled content.
+    pub fn merge_reload_current_file(&mut self) {
+        let root = self.vcs_info.root_path.clone();
+        let path = self
+            .merge_view
+            .as_ref()
+            .and_then(MergeView::current_file_state)
+            .map(|f| f.path.clone());
+        let Some(path) = path else {
+            return;
+        };
+        match std::fs::read_to_string(root.join(&path)) {
+            Ok(content) => {
+                self.merge_apply_reloaded_content(&content);
+                let remaining = self
+                    .merge_view
+                    .as_ref()
+                    .and_then(MergeView::current_file_state)
+                    .map(|f| f.file.conflict_count())
+                    .unwrap_or(0);
+                if remaining == 0 {
+                    self.set_message(format!(
+                        "Reloaded {} \u{00b7} no conflicts remain \u{00b7} press w to stage",
+                        path.display()
+                    ));
+                } else {
+                    self.set_message(format!(
+                        "Reloaded {} \u{00b7} {remaining} conflict{} remaining",
+                        path.display(),
+                        if remaining == 1 { "" } else { "s" }
+                    ));
+                }
+            }
+            Err(err) => self.set_error(format!("Reload failed: {err}")),
+        }
+    }
+
+    /// Pure half of [`Self::merge_reload_current_file`], split for tests.
+    pub(in crate::app) fn merge_apply_reloaded_content(&mut self, content: &str) {
+        let Some(view) = self.merge_view.as_mut() else {
+            return;
+        };
+        let Some(file) = view.files.get_mut(view.current_file) else {
+            return;
+        };
+        file.file = crate::vcs::parse_conflict_file(content);
+        file.resolutions = vec![ConflictResolution::Unresolved; file.file.conflict_count()];
+        file.dirty = false;
+        file.staged = false;
+        view.current_conflict = view
+            .current_conflict
+            .min(file.resolutions.len().saturating_sub(1));
+        view.scroll_to_current_conflict();
+    }
+
+    /// True once every file in the merge view is conflict-free, written,
+    /// and staged — confirmed against the VCS, which is authoritative
+    /// (paths conflicted outside this view would still block).
+    pub(in crate::app) fn merge_all_resolved_and_staged(&self) -> bool {
+        let view_done = self.merge_view.as_ref().is_some_and(|view| {
+            view.files.iter().all(|f| {
+                f.load_error.is_none() && f.unresolved_count() == 0 && !f.dirty && f.staged
+            })
+        });
+        view_done && matches!(self.vcs.get_merge_conflicts(), Ok(None))
+    }
+
+    /// Yes-path of the commit prompt: commit/continue the operation, then
+    /// leave the merge view. On failure, return to the merge view with the
+    /// error surfaced.
+    pub fn confirm_continue_merge_operation(&mut self) {
+        match self.vcs.continue_merge_operation() {
+            Ok(op) => {
+                self.close_merge_view();
+                self.set_message(format!("\u{2713} {op} committed"));
+            }
+            Err(err) => {
+                self.input_mode = InputMode::MergeConflict;
+                self.set_error(format!("Commit failed: {err}"));
+            }
+        }
+    }
+
     // Check if cursor is on the commit expand row
     pub fn is_on_expand_row(&self) -> bool {
         self.can_show_more_commits() && self.commit_list_cursor == self.visible_commit_count
@@ -395,15 +985,23 @@ impl App {
 
     // Expand the commit list to show more commits
     pub fn expand_commit(&mut self) -> Result<()> {
+        if !self.grow_commit_list()? {
+            self.set_message("No more commits");
+        }
+        Ok(())
+    }
+
+    /// Silent page-grow shared by the expand row and viewport filling.
+    /// Returns whether anything new became visible.
+    fn grow_commit_list(&mut self) -> Result<bool> {
         if self.visible_commit_count < self.commit_list.len() {
             self.visible_commit_count =
                 (self.visible_commit_count + self.commit_page_size).min(self.commit_list.len());
-            return Ok(());
+            return Ok(true);
         }
 
         if !self.has_more_commit {
-            self.set_message("No more commits");
-            return Ok(());
+            return Ok(false);
         }
 
         let offset = self.loaded_history_commit_count();
@@ -411,21 +1009,36 @@ impl App {
 
         let new_commits = self.vcs.get_recent_commits(offset, limit)?;
 
-        if new_commits.is_empty() {
-            self.has_more_commit = false;
-            self.set_message("No more commits");
-            return Ok(());
-        }
-
         if new_commits.len() < limit {
             self.has_more_commit = false;
-            self.set_message("No more commits");
+        }
+        if new_commits.is_empty() {
+            return Ok(false);
         }
 
         self.commit_list.extend(new_commits);
         self.visible_commit_count = self.commit_list.len();
+        Ok(true)
+    }
 
-        Ok(())
+    /// Load enough commits to fill a selector body of `terminal_rows`
+    /// total height. Called on terminal resize so growing the window
+    /// (e.g. full-screening) reveals more history instead of dead space.
+    pub fn fill_commit_viewport(&mut self, terminal_rows: usize) {
+        if self.input_mode != InputMode::CommitSelect {
+            return;
+        }
+        let capacity = commit_limit_for_rows(terminal_rows);
+        let mut guard = 0usize;
+        while self.visible_commit_count < capacity
+            && self.can_show_more_commits()
+            && guard < MAX_INITIAL_COMMITS
+        {
+            match self.grow_commit_list() {
+                Ok(true) => guard += 1,
+                _ => break,
+            }
+        }
     }
 
     pub fn toggle_commit_selection(&mut self) {
@@ -472,8 +1085,13 @@ impl App {
         }
     }
 
-    /// Check if a commit at the given index is selected
+    /// Check if a commit at the given index is selected. The fullscreen
+    /// selector renders the pick set; the inline selector keeps the
+    /// contiguous range.
     pub fn is_commit_selected(&self, index: usize) -> bool {
+        if self.input_mode == InputMode::CommitSelect {
+            return self.commit_picks.contains(&index);
+        }
         match self.commit_selection_range {
             Some((start, end)) => index >= start && index <= end,
             None => false,
@@ -665,23 +1283,40 @@ impl App {
     }
 
     fn confirm_commit_selection_inner(&mut self) -> Result<()> {
-        let (start, end) = match self.commit_selection_range {
-            Some(range) => range,
-            None => {
-                let cursor = self.commit_list_cursor;
-                (cursor, cursor)
-            }
+        // With no picks, Enter reviews the cursor commit on its own.
+        let picks: Vec<usize> = if self.commit_picks.is_empty() {
+            vec![self.commit_list_cursor]
+        } else {
+            self.commit_picks.iter().copied().collect()
         };
 
-        // Collect selected entries in order from oldest to newest (end..start).
-        let selected_commits: Vec<CommitInfo> = (start..=end)
+        // Collect picked entries in order from oldest to newest (picks
+        // iterate ascending index = newest first, so reverse).
+        let selected_commits: Vec<CommitInfo> = picks
+            .iter()
             .rev()
-            .filter_map(|i| self.commit_list.get(i))
+            .filter_map(|i| self.commit_list.get(*i))
             .cloned()
             .collect();
 
         if selected_commits.is_empty() {
-            self.set_message("Select at least one commit");
+            self.set_message("Select at least one commit (space)");
+            return Ok(());
+        }
+
+        if selected_commits.iter().any(Self::is_merge_conflicts_commit) {
+            return self.open_merge_view(InputMode::CommitSelect);
+        }
+
+        // Reviewing materializes one diff from the oldest pick's parent to
+        // the newest pick, so gaps would silently include unpicked commits.
+        // History ops have no such constraint (`p` cherry-picks any set).
+        let min = *picks.first().expect("picks not empty");
+        let max = *picks.last().expect("picks not empty");
+        if max - min + 1 != picks.len() {
+            self.set_message(
+                "Review needs a contiguous selection \u{2014} p cherry-picks the exact set",
+            );
             return Ok(());
         }
 
@@ -785,6 +1420,7 @@ impl App {
         self.show_commit_selector = self.review_commits.len() > 1;
         self.commit_diff_cache.clear();
         self.saved_inline_selection = None;
+        self.commit_picks.clear();
 
         // `initial_commit_selection = oldest` opens scoped to a single commit; narrow
         // the loaded diff to it. Otherwise finalize the full-range diff.

@@ -317,7 +317,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  Space     ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Toggle local commit selection (no-op on PR tab)"),
+            Span::raw("Toggle pick \u{00b7} non-contiguous picks OK (no-op on PR tab)"),
         ]),
         Line::from(vec![
             Span::styled(
@@ -325,6 +325,27 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Open selected target or load more"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  p         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Cherry-pick selected/cursor commits onto current branch"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  b         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Rebase current branch onto the cursor commit"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  s         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Squash selected range (ending at HEAD) into one commit"),
         ]),
         Line::from(vec![
             Span::styled(
@@ -346,6 +367,61 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Quit / return"),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Merge Conflicts (`:merge`, or Enter on the conflicts row)",
+            Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                "  n/N or ]/[",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" Next/previous conflict"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  }/{       ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Next/previous conflicted file"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  o / t / b ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Take ours / theirs / both for the focused conflict"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  u         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Reset the focused conflict to unresolved"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  e         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Hand-edit in $EDITOR (writes picks, reloads on exit)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  w         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Write file; stages when resolved, then prompts to commit"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  Esc       ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Back (press twice to discard unsaved picks)"),
         ]),
         Line::from(""),
         Line::from(Span::styled(
@@ -788,6 +864,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Open the selector on Pull Requests"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :merge    ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Open the merge conflict view (alias `:conflicts`)"),
         ]),
         Line::from(vec![
             Span::styled(

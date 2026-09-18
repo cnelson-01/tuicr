@@ -15,9 +15,10 @@ use tuicr::editor::{EditorCommand, EditorError, EditorLaunch, EditorSurface, Edi
 use tuicr::handler::{
     handle_command_action, handle_comment_action, handle_comment_navigator_action,
     handle_commit_select_action, handle_commit_selector_action, handle_confirm_action,
-    handle_diff_action, handle_file_list_action, handle_help_action, handle_mouse_event,
-    handle_search_action, handle_submit_action_picker_action, handle_submit_confirm_action,
-    handle_submit_resolver_action, handle_summary_action, handle_visual_action,
+    handle_diff_action, handle_file_list_action, handle_help_action, handle_merge_conflict_action,
+    handle_mouse_event, handle_search_action, handle_submit_action_picker_action,
+    handle_submit_confirm_action, handle_submit_resolver_action, handle_summary_action,
+    handle_visual_action,
 };
 use tuicr::input::{
     Action, map_file_tree_mode, map_file_tree_prompt_mode, map_key_to_action,
@@ -49,13 +50,39 @@ fn event_drain_timeout(drained: usize) -> Option<Duration> {
     }
 }
 
+/// Where panics are persisted: the tuicr data dir (`~/.local/share/tuicr`
+/// on Unix), since the on-screen message is often unreadable.
+fn panic_log_path() -> Option<std::path::PathBuf> {
+    directories::ProjectDirs::from("", "", "tuicr").map(|dirs| dirs.data_dir().join("panic.log"))
+}
+
 fn main() -> anyhow::Result<()> {
     profile::init_from_env();
 
-    // Setup panic hook to restore terminal on panic
+    // Setup panic hook to restore terminal on panic. Also persist the
+    // panic to a log file: a panic mid-draw can be invisible in the
+    // terminal (alternate screen teardown races the message), and the log
+    // is then the only evidence of what happened.
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
         tuicr::terminal_state::restore_stdio_best_effort();
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        if let Some(path) = panic_log_path() {
+            let _ = std::fs::create_dir_all(path.parent().unwrap_or(&path));
+            if let Ok(mut log) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+            {
+                use std::io::Write as _;
+                let _ = writeln!(
+                    log,
+                    "==== tuicr v{} panic ====\n{panic_info}\n{backtrace}\n",
+                    env!("CARGO_PKG_VERSION")
+                );
+            }
+            eprintln!("tuicr panicked; details logged to {}", path.display());
+        }
         original_hook(panic_info);
     }));
 
@@ -755,7 +782,12 @@ fn main() -> anyhow::Result<()> {
                                 app.set_message(format!("Opened {}{hint}", target.path.display()));
                             }
                             Ok(Ok(EditorOutcome::Finished)) => {
-                                if app.diff_source.includes_worktree_changes() {
+                                if app.input_mode == InputMode::MergeConflict {
+                                    // Merge-view edit: re-parse the file so
+                                    // hand-resolved markers disappear and
+                                    // remaining ones become conflicts again.
+                                    app.merge_reload_current_file();
+                                } else if app.diff_source.includes_worktree_changes() {
                                     match app.reload_diff_files() {
                                         Ok((count, invalidated)) => {
                                             let invalidated_suffix = if invalidated > 0 {
@@ -784,6 +816,11 @@ fn main() -> anyhow::Result<()> {
                     }
                 }
                 Event::Mouse(mouse_event) => handle_mouse_event(&mut app, mouse_event),
+                Event::Resize(_, rows) => {
+                    // Growing the window (e.g. full-screening the terminal)
+                    // should reveal more history, not dead space.
+                    app.fill_commit_viewport(rows as usize);
+                }
                 Event::Paste(text) => {
                     // Bracketed-paste payload — route to whichever handler is
                     // currently accepting text input. Other modes ignore.
@@ -840,6 +877,7 @@ fn dispatch_action(app: &mut App, action: Action) {
         InputMode::Confirm => handle_confirm_action(app, action),
         InputMode::CommitSelect => handle_commit_select_action(app, action),
         InputMode::VisualSelect => handle_visual_action(app, action),
+        InputMode::MergeConflict => handle_merge_conflict_action(app, action),
         InputMode::SubmitResolver => handle_submit_resolver_action(app, action),
         InputMode::SubmitConfirm => handle_submit_confirm_action(app, action),
         InputMode::SubmitActionPicker => handle_submit_action_picker_action(app, action),

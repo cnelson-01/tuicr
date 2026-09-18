@@ -6,6 +6,7 @@ impl App {
             id: STAGED_SELECTION_ID.to_string(),
             short_id: "STAGED".to_string(),
             branch_name: None,
+            parent_ids: Vec::new(),
             summary: "Staged changes".to_string(),
             body: None,
             author: String::new(),
@@ -18,6 +19,7 @@ impl App {
             id: UNSTAGED_SELECTION_ID.to_string(),
             short_id: "UNSTAGED".to_string(),
             branch_name: None,
+            parent_ids: Vec::new(),
             summary: "Unstaged changes".to_string(),
             body: None,
             author: String::new(),
@@ -96,6 +98,36 @@ impl App {
         self.session.add_diff_file(&self.diff_files[0]);
     }
 
+    pub(in crate::app) fn merge_commit_entry(info: &MergeConflictInfo) -> CommitInfo {
+        let n = info.paths.len();
+        CommitInfo {
+            id: MERGE_SELECTION_ID.to_string(),
+            short_id: "MERGE".to_string(),
+            branch_name: None,
+            parent_ids: Vec::new(),
+            summary: format!(
+                "Resolve merge conflicts \u{00b7} {n} file{} ({} \u{2192} {})",
+                if n == 1 { "" } else { "s" },
+                info.theirs_label,
+                info.ours_label
+            ),
+            body: None,
+            author: String::new(),
+            time: Utc::now(),
+        }
+    }
+
+    pub(in crate::app) fn is_merge_conflicts_commit(commit: &CommitInfo) -> bool {
+        commit.id == MERGE_SELECTION_ID
+    }
+
+    /// Whether the selector cursor sits on the merge conflicts pseudo row.
+    pub fn cursor_on_merge_row(&self) -> bool {
+        self.commit_list
+            .get(self.commit_list_cursor)
+            .is_some_and(Self::is_merge_conflicts_commit)
+    }
+
     pub(in crate::app) fn is_staged_commit(commit: &CommitInfo) -> bool {
         commit.id == STAGED_SELECTION_ID
     }
@@ -105,7 +137,9 @@ impl App {
     }
 
     pub(in crate::app) fn is_special_commit(commit: &CommitInfo) -> bool {
-        Self::is_staged_commit(commit) || Self::is_unstaged_commit(commit)
+        Self::is_staged_commit(commit)
+            || Self::is_unstaged_commit(commit)
+            || Self::is_merge_conflicts_commit(commit)
     }
 
     pub(in crate::app) fn special_commit_count(&self) -> usize {
@@ -921,6 +955,7 @@ impl App {
         self.show_commit_selector = self.review_commits.len() > 1;
         self.commit_diff_cache.clear();
         self.saved_inline_selection = None;
+        self.commit_picks.clear();
 
         // `initial_commit_selection = oldest` opens scoped to a single commit; narrow
         // the loaded diff to it. Otherwise finalize the full-range diff.

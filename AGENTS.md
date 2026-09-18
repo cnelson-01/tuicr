@@ -34,7 +34,8 @@ src/
 │
 ├── vcs/                 # VCS abstraction layer
 │   ├── mod.rs           # detect_vcs(): auto-detect VCS (jj first, then git, then hg)
-│   ├── traits.rs        # VcsBackend trait, VcsInfo, VcsType, CommitInfo
+│   ├── traits.rs        # VcsBackend trait, VcsInfo, VcsType, CommitInfo, MergeConflictInfo
+│   ├── conflict.rs      # Conflict-marker parser (<<<<<<< blocks) + apply_resolutions()
 │   ├── diff_parser.rs   # Strict, count-driven hunk parser over structured FilePatch values
 │   ├── git/             # Git backend selector (libgit2 by default, CLI for sparse/opt-in)
 │   │   ├── mod.rs       # GitBackend wrapper, backend preference, repo mode detection
@@ -106,6 +107,8 @@ src/
     ├── help_popup.rs    # Help overlay (? key)
     ├── summary_popup.rs # :summary view of pending local-draft comments
     ├── comment_panel.rs # Comment input dialog, confirm dialog
+    ├── commit_graph.rs  # JetBrains-style lane layout + track rendering for the selector
+    ├── merge_conflict.rs # Fullscreen tri-pane (ours|result|theirs) merge conflict screen
     └── styles.rs        # Color constants and style helper functions
 ```
 
@@ -127,7 +130,9 @@ Repository-managed agent integrations:
 **VcsBackend** (`src/vcs/traits.rs`):
 
 - Trait abstracting VCS operations
-- Methods: `info()`, `get_working_tree_diff()`, `fetch_context_lines()`, `get_recent_commits()`, `get_commit_range_diff()`
+- Methods: `info()`, `get_working_tree_diff()`, `fetch_context_lines()`, `get_recent_commits()`, `get_commit_range_diff()`, `get_merge_conflicts()`, `cherry_pick()`, `rebase_onto()`, `squash_commits()`, `continue_merge_operation()` (history ops shell out to the git CLI on both backends; selector keys `p`/`b`/`s`)
+- `get_recent_commits()` returns `git log --date-order --branches HEAD` semantics: newest first by commit date, children always before parents
+- `get_recent_commits()` walks **all local branches** in topo order (children before parents) and populates `CommitInfo.parent_ids`; the selector's commit graph (`src/ui/commit_graph.rs`) relies on both. Backends without parent data (hg/jj) return empty `parent_ids`, which collapses the graph gutter.
 - Capability hooks: `supports_sparse_checkout()` advertises whether the selected backend can operate on Git sparse-checkout repos
 - Implementations: `GitBackend`, `HgBackend`, `JjBackend` (all always compiled)
 
@@ -172,6 +177,7 @@ Repository-managed agent integrations:
 - `Confirm` - Y/N confirmation dialog
 - `CommitSelect` - selecting commits to review
 - `VisualSelect` - visual mode for range comments
+- `MergeConflict` - fullscreen side-by-side merge conflict screen (state in `App::merge_view: Option<MergeView>`; opened from the selector's `· conflicts ·` pseudo-row or `:merge`; `w` writes resolutions and stages fully resolved files)
 
 **ReviewSession** (`src/model/review.rs`):
 

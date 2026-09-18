@@ -23,17 +23,38 @@ use crate::syntax::SyntaxHighlighter;
 use crate::theme::Theme;
 use crate::update::UpdateInfo;
 use crate::vcs::git::calculate_gap;
-use crate::vcs::traits::VcsType;
+use crate::vcs::traits::{ConflictCommit, VcsType};
 use crate::vcs::{
-    ChangeKind, CommitInfo, DiffWhitespaceMode, FileBackend, GitBackendPreference, PrNoopVcs,
-    ResolvedRevisionRange, RevisionDiffTarget, VcsBackend, VcsChangeStatus, VcsInfo, detect_vcs,
+    ChangeKind, CommitInfo, ConflictFile, ConflictResolution, DiffWhitespaceMode, FileBackend,
+    GitBackendPreference, MergeConflictInfo, PrNoopVcs, ResolvedRevisionRange, RevisionDiffTarget,
+    VcsBackend, VcsChangeStatus, VcsInfo, apply_resolutions, detect_vcs,
 };
 
 const VISIBLE_COMMIT_COUNT: usize = 10;
 const COMMIT_PAGE_SIZE: usize = 10;
+/// Upper bound for the terminal-height-derived initial commit fetch.
+const MAX_INITIAL_COMMITS: usize = 200;
+
+/// How many commits to load for a selector of `terminal_rows` total height:
+/// enough to fill the body (top bar, borders, footer, and a couple of
+/// pseudo rows subtracted), floored at the historical page size.
+fn commit_limit_for_rows(terminal_rows: usize) -> usize {
+    terminal_rows
+        .saturating_sub(6)
+        .clamp(VISIBLE_COMMIT_COUNT, MAX_INITIAL_COMMITS)
+}
+
+/// Terminal-aware initial fetch size; falls back to the historical page
+/// size when the terminal size is unknown (tests, pipes).
+fn initial_commit_limit() -> usize {
+    crossterm::terminal::size()
+        .map(|(_, rows)| commit_limit_for_rows(rows as usize))
+        .unwrap_or(VISIBLE_COMMIT_COUNT)
+}
 pub const DEFAULT_REVIEW_WATCH_INTERVAL_MS: u64 = 1000;
 pub const STAGED_SELECTION_ID: &str = "__tuicr_staged__";
 pub const UNSTAGED_SELECTION_ID: &str = "__tuicr_unstaged__";
+pub const MERGE_SELECTION_ID: &str = "__tuicr_merge__";
 pub const GAP_EXPAND_BATCH: usize = 20;
 
 /// Create a forge backend for the given repository.
@@ -404,6 +425,7 @@ pub fn pr_commit_to_commit_info(commit: &crate::forge::traits::PullRequestCommit
         id: commit.oid.clone(),
         short_id: commit.short_oid.clone(),
         branch_name: None,
+        parent_ids: Vec::new(),
         summary: commit.summary.clone(),
         body: None,
         author: commit.author.clone(),
@@ -583,6 +605,8 @@ pub enum InputMode {
     Confirm,
     CommitSelect,
     VisualSelect,
+    /// Fullscreen side-by-side merge conflict resolution screen.
+    MergeConflict,
     /// Modal listing comments that cannot be mapped to GitHub inline review
     /// comments. The user toggles between "move to summary" / "omit" for
     /// each row, then `s` advances to `SubmitConfirm`.
@@ -594,6 +618,88 @@ pub enum InputMode {
     /// no `SubmitConfirm` follows (resolver still runs if any comment is
     /// unmappable).
     SubmitActionPicker,
+}
+
+/// State for the fullscreen side-by-side merge conflict screen.
+#[derive(Debug)]
+pub struct MergeView {
+    pub files: Vec<MergeFileState>,
+    pub current_file: usize,
+    /// Index of the focused conflict within the current file.
+    pub current_conflict: usize,
+    pub scroll_offset: usize,
+    /// Body rows available, refreshed each render.
+    pub viewport_height: usize,
+    /// Mode restored when the user leaves with Esc.
+    pub return_mode: InputMode,
+    /// First Esc with unsaved resolutions arms a discard warning; the
+    /// second Esc (with nothing else pressed in between) leaves anyway.
+    pub discard_armed: bool,
+    pub ours_label: String,
+    pub theirs_label: String,
+    /// Commit behind the "ours" pane (HEAD), for pane attribution.
+    pub ours_commit: Option<ConflictCommit>,
+    /// Commit behind the "theirs" pane (incoming), for pane attribution.
+    pub theirs_commit: Option<ConflictCommit>,
+}
+
+impl MergeView {
+    pub fn current_file_state(&self) -> Option<&MergeFileState> {
+        self.files.get(self.current_file)
+    }
+
+    fn max_scroll(&self) -> usize {
+        let total = self
+            .current_file_state()
+            .map(MergeFileState::display_row_count)
+            .unwrap_or(0);
+        total.saturating_sub(self.viewport_height.max(1))
+    }
+
+    fn scroll_to_current_conflict(&mut self) {
+        let Some(file) = self.files.get(self.current_file) else {
+            return;
+        };
+        let headers = file.conflict_header_rows();
+        let Some(&row) = headers.get(self.current_conflict) else {
+            return;
+        };
+        // Before the first render the viewport height is unknown; assume a
+        // small screen so opening a file still leaves leading context.
+        let lead = self.viewport_height.max(12) / 4;
+        self.scroll_offset = row.saturating_sub(lead).min(self.max_scroll());
+    }
+}
+
+/// One conflicted file inside the merge view.
+#[derive(Debug)]
+pub struct MergeFileState {
+    pub path: PathBuf,
+    pub file: ConflictFile,
+    /// One entry per conflict block, in file order.
+    pub resolutions: Vec<ConflictResolution>,
+    /// Resolution edits not yet written to disk.
+    pub dirty: bool,
+    /// Written to disk and staged with every conflict resolved.
+    pub staged: bool,
+    pub load_error: Option<String>,
+}
+
+impl MergeFileState {
+    pub fn unresolved_count(&self) -> usize {
+        self.resolutions
+            .iter()
+            .filter(|r| matches!(r, ConflictResolution::Unresolved))
+            .count()
+    }
+
+    pub fn display_row_count(&self) -> usize {
+        self.file.display_row_count(&self.resolutions)
+    }
+
+    pub fn conflict_header_rows(&self) -> Vec<usize> {
+        self.file.conflict_header_rows(&self.resolutions)
+    }
 }
 
 /// CommandCompletionState keeps one Tab-completion run anchored to the text
@@ -697,6 +803,9 @@ impl PullRequestDiffSource {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfirmAction {
     CopyAndQuit,
+    /// Every conflict is resolved and staged — commit/continue the
+    /// in-progress merge operation?
+    ContinueMergeOperation,
 }
 
 /// Push a `MappedComment` onto the appropriate bucket. Free function so the
@@ -1175,6 +1284,13 @@ pub struct App {
 
     // Commit selection state
     pub commit_list: Vec<CommitInfo>,
+    /// Fullscreen merge conflict screen state; `Some` while it is open.
+    pub merge_view: Option<MergeView>,
+    /// Individually picked rows in the fullscreen selector. Unlike the
+    /// contiguous `commit_selection_range` (which the inline selector and
+    /// PR subsets still use), picks may skip rows — e.g. cherry-picking
+    /// single commits from interleaved branches.
+    pub commit_picks: std::collections::BTreeSet<usize>,
     pub commit_list_cursor: usize,
     pub commit_list_scroll_offset: usize,
     pub commit_list_viewport_height: usize,

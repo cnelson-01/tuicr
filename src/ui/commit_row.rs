@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
-use crate::app::{STAGED_SELECTION_ID, UNSTAGED_SELECTION_ID};
+use crate::app::{MERGE_SELECTION_ID, STAGED_SELECTION_ID, UNSTAGED_SELECTION_ID};
 use crate::theme::Theme;
 use crate::ui::styles;
 use crate::ui::text_utils::{truncate_or_pad, truncate_str};
@@ -20,12 +20,59 @@ pub const UNSELECTED_BOX_GLYPH: &str = "\u{25a2}"; // ▢
 pub const REVIEWED_GLYPH: &str = "\u{2713}"; // ✓
 pub const REVIEWED_LABEL: &str = "✓ ";
 
-// Fixed column widths so author/date land at the same x across every row.
-// Branch column gets `[branch_name]` padded to width including brackets and a
-// trailing space; rows without a branch render the same number of blanks.
-const BRANCH_COL_WIDTH: usize = 16;
-const SUMMARY_COL_WIDTH: usize = 50;
-const AUTHOR_COL_WIDTH: usize = 12;
+/// Per-list column widths so author/date land at the same x across every
+/// row. Branch column gets `[branch_name]` padded to width including
+/// brackets and a trailing space; rows without a branch render the same
+/// number of blanks. Defaults match a ~120-column terminal; wide terminals
+/// grow the flexible columns via [`CommitRowLayout::fit`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommitRowLayout {
+    pub branch_width: usize,
+    pub summary_width: usize,
+    pub author_width: usize,
+}
+
+impl Default for CommitRowLayout {
+    fn default() -> Self {
+        Self {
+            branch_width: 16,
+            summary_width: 50,
+            author_width: 12,
+        }
+    }
+}
+
+// Sane maxima for the flexible columns on very wide terminals.
+const MAX_SUMMARY_WIDTH: usize = 100;
+const MAX_BRANCH_WIDTH: usize = 24;
+const MAX_AUTHOR_WIDTH: usize = 20;
+// cursor(2) + range bar(2) + checkbox(2) + hash(8) + time slot(~12)
+const FIXED_ROW_WIDTH: usize = 26;
+
+impl CommitRowLayout {
+    /// Distribute `total_width` (the row area) across the flexible
+    /// columns: floors are the defaults, spare width grows the summary
+    /// first, then the branch chip, then the author, up to sane maxima.
+    pub fn fit(total_width: usize, graph_width: usize) -> Self {
+        let mut layout = Self::default();
+        let used = FIXED_ROW_WIDTH
+            + graph_width
+            + layout.branch_width
+            + layout.summary_width
+            + layout.author_width;
+        let mut extra = total_width.saturating_sub(used);
+
+        fn grow(width: &mut usize, max: usize, extra: &mut usize) {
+            let inc = max.saturating_sub(*width).min(*extra);
+            *width += inc;
+            *extra -= inc;
+        }
+        grow(&mut layout.summary_width, MAX_SUMMARY_WIDTH, &mut extra);
+        grow(&mut layout.branch_width, MAX_BRANCH_WIDTH, &mut extra);
+        grow(&mut layout.author_width, MAX_AUTHOR_WIDTH, &mut extra);
+        layout
+    }
+}
 
 pub struct CommitRowSpec<'a> {
     pub commit: &'a CommitInfo,
@@ -33,6 +80,12 @@ pub struct CommitRowSpec<'a> {
     pub is_selected: bool,
     pub is_reviewed: bool,
     pub theme: &'a Theme,
+    /// Pre-rendered commit-graph gutter cells (two chars per lane), shared
+    /// width across all rows of a list. `None` hides the gutter (inline
+    /// selector, lists without parent data).
+    pub graph: Option<Vec<Span<'static>>>,
+    /// Column widths shared by every row of the list.
+    pub layout: CommitRowLayout,
 }
 
 pub fn render_commit_row<'a>(spec: &CommitRowSpec<'a>) -> Line<'a> {
@@ -88,6 +141,21 @@ pub fn render_commit_row<'a>(spec: &CommitRowSpec<'a>) -> Line<'a> {
         },
     ));
 
+    // Graph gutter sits between the checkbox and the hash so the track
+    // column lines up across every row (pseudo rows get blank cells).
+    if let Some(graph) = &spec.graph {
+        spans.extend(graph.iter().cloned());
+    }
+
+    if spec.commit.id == MERGE_SELECTION_ID {
+        spans.push(Span::styled(
+            " \u{00b7} conflicts \u{00b7} ",
+            styles::error_inline_style(theme),
+        ));
+        spans.push(Span::styled(spec.commit.summary.clone(), row_text_style));
+        return Line::from(spans);
+    }
+
     if spec.commit.id == STAGED_SELECTION_ID || spec.commit.id == UNSTAGED_SELECTION_ID {
         let tag = if spec.commit.id == STAGED_SELECTION_ID {
             " \u{00b7} staged \u{00b7}   "
@@ -104,21 +172,23 @@ pub fn render_commit_row<'a>(spec: &CommitRowSpec<'a>) -> Line<'a> {
         styles::hash_style(theme),
     ));
 
-    // Branch column: always BRANCH_COL_WIDTH cells. With a branch we render
-    // `[<name>]` padded out with trailing spaces; without one we render
-    // BRANCH_COL_WIDTH spaces so the summary column starts at the same x.
+    // Branch column: always layout.branch_width cells. With a branch we
+    // render `[<name>]` padded out with trailing spaces; without one we
+    // render the same number of blanks so the summary column starts at the
+    // same x.
+    let layout = spec.layout;
     if let Some(branch_name) = &spec.commit.branch_name {
-        let chip = format!("[{}]", truncate_str(branch_name, BRANCH_COL_WIDTH - 3));
+        let chip = format!("[{}]", truncate_str(branch_name, layout.branch_width - 3));
         spans.push(Span::styled(
-            truncate_or_pad(&chip, BRANCH_COL_WIDTH),
+            truncate_or_pad(&chip, layout.branch_width),
             styles::branch_style(theme),
         ));
     } else {
-        spans.push(Span::raw(" ".repeat(BRANCH_COL_WIDTH)));
+        spans.push(Span::raw(" ".repeat(layout.branch_width)));
     }
 
     spans.push(Span::styled(
-        truncate_or_pad(&spec.commit.summary, SUMMARY_COL_WIDTH),
+        truncate_or_pad(&spec.commit.summary, layout.summary_width),
         row_text_style,
     ));
 
@@ -126,7 +196,7 @@ pub fn render_commit_row<'a>(spec: &CommitRowSpec<'a>) -> Line<'a> {
     spans.push(Span::styled(
         format!(
             "  {} \u{00b7} {}",
-            truncate_or_pad(&spec.commit.author, AUTHOR_COL_WIDTH),
+            truncate_or_pad(&spec.commit.author, layout.author_width),
             when
         ),
         Style::default().fg(theme.fg_secondary),
@@ -175,6 +245,7 @@ mod tests {
             id: id.to_string(),
             short_id: id[..7.min(id.len())].to_string(),
             branch_name: branch.map(|s| s.to_string()),
+            parent_ids: Vec::new(),
             summary: summary.to_string(),
             body: None,
             author: "alice".to_string(),
@@ -201,6 +272,8 @@ mod tests {
             is_selected: false,
             is_reviewed: false,
             theme: &theme,
+            graph: None,
+            layout: CommitRowLayout::default(),
         });
         // then
         let text = line_text(&line);
@@ -219,6 +292,8 @@ mod tests {
             is_selected: true,
             is_reviewed: false,
             theme: &theme,
+            graph: None,
+            layout: CommitRowLayout::default(),
         });
         // then
         let text = line_text(&line);
@@ -238,6 +313,8 @@ mod tests {
             is_selected: false,
             is_reviewed: false,
             theme: &theme,
+            graph: None,
+            layout: CommitRowLayout::default(),
         });
         // then
         let text = line_text(&line);
@@ -257,6 +334,8 @@ mod tests {
             is_selected: false,
             is_reviewed: true,
             theme: &theme,
+            graph: None,
+            layout: CommitRowLayout::default(),
         });
         // then
         let text = line_text(&line);
@@ -275,6 +354,8 @@ mod tests {
             is_selected: false,
             is_reviewed: false,
             theme: &theme,
+            graph: None,
+            layout: CommitRowLayout::default(),
         });
         // then
         let text = line_text(&line);
@@ -295,10 +376,65 @@ mod tests {
             is_selected: false,
             is_reviewed: false,
             theme: &theme,
+            graph: None,
+            layout: CommitRowLayout::default(),
         });
         // then
         let text = line_text(&line);
         assert!(text.contains("[feat/foo]"), "got: {text:?}");
+    }
+
+    #[test]
+    fn should_render_graph_gutter_between_checkbox_and_hash() {
+        // given
+        let theme = Theme::dark();
+        let c = commit("abc1234", "Add feature", None);
+        // when
+        let line = render_commit_row(&CommitRowSpec {
+            commit: &c,
+            is_cursor: false,
+            is_selected: false,
+            is_reviewed: false,
+            theme: &theme,
+            graph: Some(vec![Span::raw("\u{25cf} ")]),
+            layout: CommitRowLayout::default(),
+        });
+        // then the node glyph lands immediately before the hash
+        let text = line_text(&line);
+        assert!(text.contains("\u{25cf} abc1234"), "got: {text:?}");
+    }
+
+    #[test]
+    fn should_keep_default_layout_on_narrow_terminals() {
+        // given terminals at or below the historical break-even width
+        // (fixed columns + defaults + a 2-lane gutter = 108 cells)
+        for width in [60, 100, 108] {
+            let layout = CommitRowLayout::fit(width, 4);
+            // then the defaults are the floor — columns never shrink
+            assert_eq!(layout, CommitRowLayout::default(), "width {width}");
+        }
+    }
+
+    #[test]
+    fn should_grow_summary_first_then_branch_then_author_when_wide() {
+        // given a fullscreen-wide terminal
+        let layout = CommitRowLayout::fit(220, 4);
+        // then summary takes the spare width first, capped at its maximum
+        assert_eq!(layout.summary_width, 100);
+        assert!(layout.branch_width > CommitRowLayout::default().branch_width);
+        // and nothing exceeds the sane maxima
+        assert!(layout.branch_width <= 24);
+        assert!(layout.author_width <= 20);
+    }
+
+    #[test]
+    fn should_cap_all_columns_at_maxima_on_ultrawide() {
+        // given an absurdly wide terminal
+        let layout = CommitRowLayout::fit(500, 0);
+        // then
+        assert_eq!(layout.summary_width, 100);
+        assert_eq!(layout.branch_width, 24);
+        assert_eq!(layout.author_width, 20);
     }
 
     #[test]

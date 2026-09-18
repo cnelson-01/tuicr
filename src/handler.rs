@@ -68,6 +68,7 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     CommandSpec::new(&["diff"], CommandKind::Diff),
     CommandSpec::new(&["focus", "f"], CommandKind::Focus),
     CommandSpec::new(&["stage"], CommandKind::Stage),
+    CommandSpec::new(&["merge", "conflicts"], CommandKind::Merge),
     CommandSpec::new(
         &["commits", "targets"],
         CommandKind::Targets(TargetTab::Local),
@@ -149,6 +150,7 @@ enum CommandKind {
     Focus,
     Stage,
     Targets(TargetTab),
+    Merge,
     SubmitPicker,
     Submit(SubmitEvent),
     Comments(PrCommentsVisibility),
@@ -182,6 +184,13 @@ pub fn handle_mouse_event(app: &mut App, event: MouseEvent) {
             match app.input_mode {
                 InputMode::Help | InputMode::MessageDetails => handle_help_action(app, action),
                 InputMode::Summary => handle_summary_action(app, action),
+                InputMode::MergeConflict => {
+                    if scroll_up {
+                        app.merge_scroll_up(WHEEL_LINES);
+                    } else {
+                        app.merge_scroll_down(WHEEL_LINES);
+                    }
+                }
                 InputMode::CommitSelect | InputMode::Normal if over_commit_list => {
                     wheel_commit_list(app, scroll_up);
                 }
@@ -953,6 +962,16 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
             app.stage_reviewed_files();
             CommandAfterDispatch::ExitCommandMode
         }
+        CommandKind::Merge => {
+            if let Err(e) = app.open_merge_view(InputMode::Normal) {
+                app.set_error(format!("Failed to open merge view: {e}"));
+            }
+            if app.input_mode == InputMode::MergeConflict {
+                CommandAfterDispatch::KeepMode
+            } else {
+                CommandAfterDispatch::ExitCommandMode
+            }
+        }
         CommandKind::Targets(tab) => {
             let result = app.enter_target_selector(tab);
             match (tab, result) {
@@ -1191,6 +1210,23 @@ pub fn handle_comment_action(app: &mut App, action: Action) {
 
 /// Handle actions in Confirm mode (Y/N prompts)
 pub fn handle_confirm_action(app: &mut App, action: Action) {
+    // The merge-commit prompt returns to the merge view instead of
+    // quitting, so route it before the quit-flow arms below.
+    if app.pending_confirm == Some(app::ConfirmAction::ContinueMergeOperation) {
+        match action {
+            Action::ConfirmYes => {
+                app.pending_confirm = None;
+                app.confirm_continue_merge_operation();
+            }
+            Action::ConfirmNo => {
+                app.pending_confirm = None;
+                app.input_mode = InputMode::MergeConflict;
+            }
+            _ => {}
+        }
+        return;
+    }
+
     match action {
         Action::ConfirmYes => {
             if let Some(app::ConfirmAction::CopyAndQuit) = app.pending_confirm {
@@ -1295,9 +1331,22 @@ fn handle_local_target_action(app: &mut App, action: Action) {
                 if let Err(e) = app.expand_commit() {
                     app.set_error(format!("Failed to load commits: {e}"));
                 }
+            } else if app.cursor_on_merge_row() {
+                if let Err(e) = app.open_merge_view(InputMode::CommitSelect) {
+                    app.set_error(format!("Failed to open merge view: {e}"));
+                }
             } else if let Err(e) = app.confirm_commit_selection() {
                 app.set_error(format!("Failed to load commits: {e}"));
             }
+        }
+        Action::SelectorCherryPick if !app.is_on_expand_row() => {
+            app.selector_cherry_pick();
+        }
+        Action::SelectorRebase if !app.is_on_expand_row() => {
+            app.selector_rebase_onto_cursor();
+        }
+        Action::SelectorSquash if !app.is_on_expand_row() => {
+            app.selector_squash();
         }
         _ => {}
     }
@@ -1382,6 +1431,44 @@ pub fn handle_commit_selector_action(app: &mut App, action: Action) {
 }
 
 /// Handle actions in VisualSelect mode
+/// Handle actions on the fullscreen merge conflict screen.
+pub fn handle_merge_conflict_action(app: &mut App, action: Action) {
+    use crate::vcs::ConflictResolution;
+
+    // Any action other than Esc cancels a pending discard warning.
+    if action != Action::ExitMode {
+        app.merge_disarm_discard();
+    }
+
+    match action {
+        Action::CursorDown(n) => app.merge_scroll_down(n),
+        Action::CursorUp(n) => app.merge_scroll_up(n),
+        Action::HalfPageDown => app.merge_scroll_down(app.merge_half_page()),
+        Action::HalfPageUp => app.merge_scroll_up(app.merge_half_page()),
+        Action::PageDown => app.merge_scroll_down(app.merge_full_page()),
+        Action::PageUp => app.merge_scroll_up(app.merge_full_page()),
+        Action::GoToTop => app.merge_scroll_to_top(),
+        Action::GoToBottom => app.merge_scroll_to_bottom(),
+        Action::MergeNextConflict => app.merge_next_conflict(),
+        Action::MergePrevConflict => app.merge_prev_conflict(),
+        Action::MergeNextFile => app.merge_next_file(),
+        Action::MergePrevFile => app.merge_prev_file(),
+        Action::MergeTakeOurs => app.merge_resolve_current(ConflictResolution::Ours),
+        Action::MergeTakeTheirs => app.merge_resolve_current(ConflictResolution::Theirs),
+        Action::MergeTakeBoth => app.merge_resolve_current(ConflictResolution::Both),
+        Action::MergeUnresolve => app.merge_resolve_current(ConflictResolution::Unresolved),
+        Action::MergeSaveFile => {
+            if let Err(e) = app.merge_save_current_file() {
+                app.set_error(format!("Failed to write file: {e}"));
+            }
+        }
+        Action::MergeEditFile => app.merge_edit_current_file(),
+        Action::ExitMode => app.close_merge_view(),
+        Action::Quit => app.should_quit = true,
+        _ => {}
+    }
+}
+
 pub fn handle_visual_action(app: &mut App, action: Action) {
     match action {
         Action::CursorDown(n) => {

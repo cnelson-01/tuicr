@@ -219,6 +219,10 @@ fn activate_writer<W: Write>(writer: &mut W, features: TerminalFeatures) -> anyh
 }
 
 fn deactivate_writer<W: Write>(writer: &mut W, mouse_enabled: bool) -> anyhow::Result<()> {
+    // A panic between Begin/EndSynchronizedUpdate would otherwise leave
+    // the terminal pinned on the last frame — an invisible crash that
+    // looks like a freeze. Ending sync mode is a no-op when not active.
+    let _ = execute!(writer, crossterm::terminal::EndSynchronizedUpdate);
     let _ = execute!(writer, PopKeyboardEnhancementFlags);
     let _ = execute!(writer, DisableBracketedPaste);
     if mouse_enabled {

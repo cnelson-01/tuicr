@@ -5,10 +5,10 @@ window. Phases land in order, each as its own commit(s). Tick items as they ship
 
 ## Phase 1: land the feature branch on current main
 
-- [ ] Merge `feature/merge-view-and-commit-graph` onto main; re-home the
+- [x] Merge `feature/merge-view-and-commit-graph` onto main; re-home the
       `src/app.rs` changes into the `src/app/*` submodules
-- [ ] Build, clippy, and tests green
-- [ ] KEYBINDINGS / AGENTS docs merged
+- [x] Build, clippy, and tests green
+- [x] KEYBINDINGS / AGENTS docs merged
 
 ## Phase 2: persistent log pane
 

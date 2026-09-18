@@ -344,12 +344,18 @@ impl App {
             // diff loads when the user picks one (load_staged_selection /
             // load_unstaged_selection / load_staged_and_unstaged_selection).
 
+            let commit_limit = initial_commit_limit();
             let commits = crate::profile::time_with(
                 "startup.recent_commits",
-                || vcs.get_recent_commits(0, VISIBLE_COMMIT_COUNT),
+                || vcs.get_recent_commits(0, commit_limit),
                 profile_commit_result,
             )?;
-            if !has_staged_changes && !has_unstaged_changes && commits.is_empty() {
+            let merge_conflicts = vcs.get_merge_conflicts().ok().flatten();
+            if !has_staged_changes
+                && !has_unstaged_changes
+                && commits.is_empty()
+                && merge_conflicts.is_none()
+            {
                 return Err(TuicrError::NoChanges);
             }
 
@@ -359,6 +365,9 @@ impl App {
             }
             if has_unstaged_changes {
                 commit_list.insert(0, Self::unstaged_commit_entry());
+            }
+            if let Some(info) = &merge_conflicts {
+                commit_list.insert(0, Self::merge_commit_entry(info));
             }
 
             let diff_source = if has_staged_changes && has_unstaged_changes {
@@ -399,7 +408,7 @@ impl App {
             )?
             .with_vcs_open_options(options.vcs_open_options());
 
-            app.has_more_commit = commits.len() >= VISIBLE_COMMIT_COUNT;
+            app.has_more_commit = commits.len() >= commit_limit;
             app.visible_commit_count = app.commit_list.len();
             Ok(app)
         }
@@ -522,6 +531,8 @@ impl App {
             mouse_drag_active: false,
             comment_line_range: None,
             commit_list,
+            merge_view: None,
+            commit_picks: std::collections::BTreeSet::new(),
             commit_list_cursor: 0,
             commit_list_scroll_offset: 0,
             commit_list_viewport_height: 0,

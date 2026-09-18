@@ -81,3 +81,8 @@ git2 = { version = "0.20", default-features = false }
 # Static Linux builds need a target-native zlib instead of the host library.
 [target.'cfg(target_env = "musl")'.dependencies]
 git2 = { version = "0.20", default-features = false, features = ["zlib-ng-compat"] }
+
+[profile.release]
+# Underflow wrapping in render math turns into invisible hangs (huge
+# repeat counts) instead of crashes; a checked panic is logged and safe.
+overflow-checks = true
