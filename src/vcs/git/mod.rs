@@ -6,7 +6,9 @@ pub(crate) mod raw;
 pub mod repository;
 pub mod staging;
 
-use crate::vcs::traits::{BranchInfo, CommitQuery, HunkScope, StashEntry};
+use crate::vcs::traits::{BlameLine, BranchInfo, CommitQuery, HunkScope, StashEntry};
+use chrono::{DateTime, TimeZone, Utc};
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
@@ -628,6 +630,74 @@ impl VcsBackend for GitBackend {
         let selector = format!("stash@{{{index}}}");
         run_git_command(&self.info().root_path, &["stash", "drop", "-q", &selector]).map(|_| ())
     }
+
+    fn blame_file(&self, path: &Path, revision: Option<&str>) -> Result<Vec<Option<BlameLine>>> {
+        let path = path.to_string_lossy();
+        let mut args = vec!["blame", "--porcelain"];
+        if let Some(rev) = revision {
+            args.push(rev);
+        }
+        args.extend(["--", &path]);
+        let output = run_git_command(&self.info().root_path, &args)?;
+        Ok(parse_blame_porcelain(&output))
+    }
+}
+
+/// `git blame --porcelain`: each group starts with `<sha> <orig> <final>
+/// [<n>]`, carries `author` / `author-time` the first time a sha appears,
+/// and ends with a tab-prefixed content line. Uncommitted lines blame to the
+/// all-zero sha and are reported as `None`.
+fn parse_blame_porcelain(output: &str) -> Vec<Option<BlameLine>> {
+    let mut authors: HashMap<String, (String, DateTime<Utc>)> = HashMap::new();
+    let mut lines: Vec<Option<BlameLine>> = Vec::new();
+    let mut current: Option<(String, usize)> = None;
+    let mut pending_author: Option<String> = None;
+    let mut pending_time: Option<DateTime<Utc>> = None;
+    for line in output.lines() {
+        if let Some(content) = line.strip_prefix('\t') {
+            let _ = content;
+            if let Some((sha, final_line)) = current.take() {
+                if let (Some(author), Some(time)) = (pending_author.take(), pending_time.take()) {
+                    authors.insert(sha.clone(), (author, time));
+                }
+                if lines.len() < final_line {
+                    lines.resize(final_line, None);
+                }
+                let entry = if sha.chars().all(|c| c == '0') {
+                    None
+                } else {
+                    authors.get(&sha).map(|(author, time)| BlameLine {
+                        sha: sha.clone(),
+                        author: author.clone(),
+                        time: *time,
+                    })
+                };
+                if final_line >= 1 {
+                    lines[final_line - 1] = entry;
+                }
+            }
+            continue;
+        }
+        if current.is_none() {
+            let mut fields = line.split(' ');
+            if let (Some(sha), Some(_orig), Some(final_line)) =
+                (fields.next(), fields.next(), fields.next())
+                && sha.len() >= 40
+                && let Ok(final_line) = final_line.parse::<usize>()
+            {
+                current = Some((sha.to_string(), final_line));
+            }
+            continue;
+        }
+        if let Some(author) = line.strip_prefix("author ") {
+            pending_author = Some(author.to_string());
+        } else if let Some(ts) = line.strip_prefix("author-time ")
+            && let Ok(ts) = ts.trim().parse::<i64>()
+        {
+            pending_time = Utc.timestamp_opt(ts, 0).single();
+        }
+    }
+    lines
 }
 
 /// Run git with `input` on stdin (patches for `git apply`).
@@ -1589,6 +1659,65 @@ mod tests {
         backend.stash_apply(0, true).expect("pop");
         assert_eq!(fs::read_to_string(&file).expect("read"), "stashed two\n");
         assert!(backend.stash_list().expect("list").is_empty());
+    }
+
+    #[test]
+    fn blame_porcelain_parses_authors_times_and_uncommitted_lines() {
+        let sha_a = "a".repeat(40);
+        let sha_b = "b".repeat(40);
+        let zero = "0".repeat(40);
+        let output = format!(
+            "{sha_a} 1 1 2\nauthor Kim\nauthor-mail <k@x>\nauthor-time 1700000000\nfilename f\n\tline one\n\
+             {sha_a} 2 2\n\tline two\n\
+             {sha_b} 1 3 1\nauthor Lee\nauthor-time 1700100000\nfilename f\n\tline three\n\
+             {zero} 4 4 1\nauthor Not Committed Yet\nauthor-time 1700200000\nfilename f\n\tline four\n"
+        );
+        let lines = parse_blame_porcelain(&output);
+        assert_eq!(lines.len(), 4);
+        assert_eq!(lines[0].as_ref().map(|l| l.author.as_str()), Some("Kim"));
+        assert_eq!(
+            lines[1].as_ref().map(|l| l.sha.as_str()),
+            Some(sha_a.as_str())
+        );
+        assert_eq!(lines[2].as_ref().map(|l| l.author.as_str()), Some("Lee"));
+        assert_eq!(
+            lines[2].as_ref().map(|l| l.time.timestamp()),
+            Some(1_700_100_000)
+        );
+        assert!(lines[3].is_none(), "uncommitted lines carry no blame");
+    }
+
+    #[test]
+    fn blame_file_reads_the_working_tree_and_a_revision() {
+        let temp_dir = tempdir().expect("failed to create temp dir");
+        let root = temp_dir.path();
+        setup_standard_repo(root);
+        let backend = GitBackend::discover_from(
+            root,
+            GitBackendPreference::Libgit2,
+            DiffWhitespaceMode::Normal,
+        )
+        .expect("failed to discover backend");
+        let first = git_id(root, "HEAD");
+        fs::write(root.join("src/file.txt"), "one\ntwo\n").expect("write");
+        run_git_command(root, &["commit", "-qam", "add two"]).expect("commit");
+        fs::write(root.join("src/file.txt"), "one\ntwo\nthree\n").expect("write");
+
+        let tree = backend
+            .blame_file(Path::new("src/file.txt"), None)
+            .expect("blame");
+        assert_eq!(tree.len(), 3);
+        assert_eq!(
+            tree[0].as_ref().map(|l| l.sha.as_str()),
+            Some(first.as_str())
+        );
+        assert!(tree[1].is_some());
+        assert!(tree[2].is_none(), "the unsaved third line has no commit");
+
+        let at_first = backend
+            .blame_file(Path::new("src/file.txt"), Some(&first))
+            .expect("blame at revision");
+        assert_eq!(at_first.len(), 1);
     }
 
     fn is_dirty(root: &Path) -> bool {

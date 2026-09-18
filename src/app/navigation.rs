@@ -620,7 +620,8 @@ impl App {
         } else {
             0
         };
-        lineno_width(hunk_max.max(cache_max).max(relative_max))
+        // Blame borrows the lead of the number column for its label.
+        lineno_width(hunk_max.max(cache_max).max(relative_max)) + self.blame_width()
     }
 
     pub fn pane_geometry(&self, inner: ratatui::layout::Rect, side: LineSide) -> PaneGeom {

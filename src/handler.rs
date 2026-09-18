@@ -72,6 +72,13 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     CommandSpec::new(&["stash pop"], CommandKind::StashPop),
     CommandSpec::new(&["stashes", "stash list"], CommandKind::StashPicker),
     CommandSpec::new(&["find", "grep"], CommandKind::FindResults),
+    CommandSpec::new(
+        &["blame", "set blame!", "annotate"],
+        CommandKind::ToggleBlame,
+    ),
+    CommandSpec::new(&["set blame"], CommandKind::SetBlame(true)),
+    CommandSpec::new(&["set noblame"], CommandKind::SetBlame(false)),
+    CommandSpec::new(&["history"], CommandKind::FileHistory),
     CommandSpec::new(&["set reviewed"], CommandKind::SetShowReviewed(true)),
     CommandSpec::new(&["set noreviewed"], CommandKind::SetShowReviewed(false)),
     CommandSpec::new(
@@ -168,6 +175,9 @@ enum CommandKind {
     StashPop,
     StashPicker,
     FindResults,
+    ToggleBlame,
+    SetBlame(bool),
+    FileHistory,
     SetShowReviewed(bool),
     ToggleShowReviewed,
     Diff,
@@ -1066,6 +1076,19 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
             } else {
                 CommandAfterDispatch::ExitCommandMode
             }
+        }
+        CommandKind::ToggleBlame => {
+            app.toggle_blame();
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::SetBlame(enabled) => {
+            app.set_blame_enabled(enabled);
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::FileHistory => {
+            app.exit_command_mode();
+            app.show_file_history();
+            CommandAfterDispatch::KeepMode
         }
         CommandKind::FindResults => {
             app.reopen_find_results();

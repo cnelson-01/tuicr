@@ -119,6 +119,7 @@ considers files that pass the active filters.
 | `<leader>+` / `<leader>-` | Grow / shrink the log pane (also `:set logheight N`) |
 | `<leader>b` | Open the branch picker (also `:branches`) |
 | `<leader>F` | Find in files: opens the command line with `find ` |
+| `<leader>a` | Toggle the blame gutter (also `:blame`, `:set blame!`) |
 | `Enter` | Select file (when file list is focused) |
 
 ## Comment navigator
@@ -233,6 +234,8 @@ In command mode,
 | `:stashes` / `:stash list` | Open the stash picker |
 | `:find <text>` / `:grep <text>` | Search the working tree and show the hits in place of the diff |
 | `:find` | Bring the last results back (or prompt when there are none) |
+| `:blame` / `:annotate` / `:set blame!` | Toggle the blame gutter; `:set blame` / `:set noblame` set it |
+| `:history` | Show the commits touching the file under the cursor in the log pane |
 | `:set reviewed` | Show files already marked reviewed |
 | `:set noreviewed` | Hide files already marked reviewed |
 | `:set reviewed!` / `:reviewed` | Toggle files already marked reviewed |
@@ -257,6 +260,18 @@ losing their reviewed state.
 
 `draft` applies to GitHub only. `comment` and `approve` work on GitHub, GitLab, and Bitbucket.
 `request-changes` works on GitHub and GitLab, but not Bitbucket yet.
+
+## Blame and history
+
+`:blame` (or `<leader>a`) widens the line-number gutter and prefixes every new-side line
+with `sha author age` for the commit that last touched it, like Annotate in an IDE. Blame
+is read one file at a time starting with the file under the cursor, so a big diff fills in
+over a moment; lines that are not committed yet stay blank. Commit-range reviews blame at the
+range's newest commit, working-tree reviews at the working tree. Not available for PR reviews.
+
+`:history` opens the log pane filtered to the commits that touched the file under the
+cursor (`path:` filter); resting the cursor on one previews it, and `Esc` in the pane clears
+the filter again.
 
 ## Find in files
 

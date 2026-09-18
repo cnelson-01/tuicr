@@ -160,6 +160,14 @@ pub enum HunkScope {
     Staged,
 }
 
+/// Who last touched a line, for the blame gutter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlameLine {
+    pub sha: String,
+    pub author: String,
+    pub time: DateTime<Utc>,
+}
+
 /// One `git stash list` row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StashEntry {
@@ -598,6 +606,14 @@ pub trait VcsBackend: Send {
     fn stash_drop(&self, _index: usize) -> Result<()> {
         Err(crate::error::TuicrError::UnsupportedOperation(
             "Stashing is not supported for this VCS".into(),
+        ))
+    }
+
+    /// Blame `path` at `revision` (the working tree when `None`): one entry
+    /// per line, index 0 = line 1, `None` for lines without a commit.
+    fn blame_file(&self, _path: &Path, _revision: Option<&str>) -> Result<Vec<Option<BlameLine>>> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Blame is not supported for this VCS".into(),
         ))
     }
 }

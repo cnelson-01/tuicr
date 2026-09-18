@@ -294,6 +294,30 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(""),
         Line::from(Span::styled(
+            "Blame and History",
+            Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                "  <leader>a ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(
+                "Toggle the blame gutter: `sha author age` on every line (also `:blame`, `:set blame!`)",
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :history  ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(
+                "Commits touching the file under the cursor, in the log pane (Esc there clears)",
+            ),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
             "Find in Files",
             Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
         )),

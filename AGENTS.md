@@ -23,7 +23,8 @@ src/
 │   ├── branches.rs      # Branch picker, checkout with dirty-tree guard / stash-and-switch, :branch, abort
 │   ├── commit_filter.rs # Log filter prompt (`/`): CommitQuery over message / author / path, filtered paging
 │   ├── local_changes.rs # Stage/unstage file+hunk, discard (confirmed), commit/amend via the composer, stash picker
-│   └── find.rs          # Find in files (`:find`): rg / git grep runner, results state, jump-or-edit
+│   ├── find.rs          # Find in files (`:find`): rg / git grep runner, results state, jump-or-edit
+│   └── blame.rs         # Blame gutter (`:blame`, lazy per-file cache keyed by content hash) + `:history`
 ├── error.rs             # Error types (TuicrError enum)
 ├── editor.rs            # External $EDITOR command construction and launch helpers
 ├── review_store.rs      # Library API for session listing/loading and shared comment insertion

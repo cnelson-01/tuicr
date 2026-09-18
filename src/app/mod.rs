@@ -635,6 +635,7 @@ pub enum InputMode {
     FindResults,
 }
 
+pub use blame::{BLAME_WIDTH, BlameState, overlay_label};
 pub use branches::BranchPicker;
 pub use find::{FIND_MAX_HITS, FindHit, FindState};
 pub use local_changes::{CommitComposer, DiscardTarget, StashPicker};
@@ -1579,6 +1580,8 @@ pub struct App {
     pub stash_picker: Option<StashPicker>,
     /// Last find-in-files search and its hits (`:find`).
     pub find: FindState,
+    /// Blame gutter state (`:blame`).
+    pub blame: BlameState,
     /// Display order for the inline commit selector (presentation only).
     pub commit_order: CommitOrder,
     /// Which commits are selected when a multi-commit review first opens.
@@ -1946,6 +1949,7 @@ impl AppStartupOptions<'_> {
 }
 
 mod annotations;
+mod blame;
 mod branches;
 mod comment_vim;
 mod comments;

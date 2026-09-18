@@ -46,5 +46,5 @@ window. Phases land in order, each as its own commit(s). Tick items as they ship
 
 ## Phase 7: annotate and history
 
-- [ ] Blame gutter toggle
-- [ ] Per-file history view
+- [x] Blame gutter toggle
+- [x] Per-file history view

@@ -120,6 +120,8 @@ fn pad_spans_to_width(
 
 struct SideSpec {
     lineno: Option<u32>,
+    /// Blame label to overlay on the number's blank lead (new side only).
+    blame: Option<String>,
     marker: &'static str,
     marker_style: Style,
 }
@@ -140,6 +142,8 @@ fn sbs_row_prefixes(
         .lineno
         .map(|n| format!("{n:>lw$}"))
         .unwrap_or_else(|| " ".repeat(lw));
+    let new_num =
+        crate::app::overlay_label(new_num, right.blame.as_deref(), crate::app::BLAME_WIDTH - 1);
 
     let left_prefix = vec![
         Span::styled(indicator, styles::current_line_indicator_style(theme)),
@@ -1255,6 +1259,9 @@ fn render_context_line_side_by_side(
             .display_lineno(diff_line.new_lineno, line_idx)
             .map(|n| format!("{n:>w$}"))
             .unwrap_or_else(|| " ".repeat(w));
+        let new_line_num = ctx
+            .app
+            .blame_overlay_idx(file_idx, diff_line.new_lineno, new_line_num);
 
         let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
 
@@ -1308,11 +1315,13 @@ fn render_context_line_side_by_side(
             indicator,
             SideSpec {
                 lineno: ctx.display_lineno(diff_line.old_lineno, line_idx),
+                blame: None,
                 marker: " ",
                 marker_style: ctx_style,
             },
             SideSpec {
                 lineno: ctx.display_lineno(diff_line.new_lineno, line_idx),
+                blame: None,
                 marker: " ",
                 marker_style: ctx_style,
             },
@@ -1476,11 +1485,15 @@ fn render_deletion_addition_pair_side_by_side(
                 indicator,
                 SideSpec {
                     lineno: left_lineno,
+                    blame: None,
                     marker: left_marker,
                     marker_style: left_marker_style,
                 },
                 SideSpec {
                     lineno: right_lineno,
+                    blame: ctx
+                        .app
+                        .blame_label_for(file_idx, add_opt.and_then(|al| al.new_lineno)),
                     marker: right_marker,
                     marker_style: right_marker_style,
                 },
@@ -1608,11 +1621,13 @@ fn render_standalone_addition_side_by_side(
             indicator,
             SideSpec {
                 lineno: None,
+                blame: None,
                 marker: " ",
                 marker_style: Style::default(),
             },
             SideSpec {
                 lineno: ctx.display_lineno(diff_line.new_lineno, line_idx),
+                blame: None,
                 marker: "▌",
                 marker_style: styles::diff_add_style(ctx.theme),
             },

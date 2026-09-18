@@ -610,6 +610,8 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                         } else {
                             crate::ui::diff_view::unified_line_number_field(diff_line, lw)
                         };
+                        let line_num_str =
+                            app.blame_overlay(file, diff_line.new_lineno, line_num_str);
                         let prefix = crate::ui::diff_view::unified_line_origin_marker(diff_line);
 
                         let indicator = cursor_indicator(line_idx, current_line_idx);

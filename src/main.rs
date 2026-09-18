@@ -458,6 +458,7 @@ fn main() -> anyhow::Result<()> {
         needs_redraw |= app.poll_diff_watch_changes();
         needs_redraw |= app.poll_log_preview();
         needs_redraw |= app.poll_log_pane_autoshow();
+        needs_redraw |= app.poll_blame();
         needs_redraw |= pr_pending;
 
         if needs_redraw {
@@ -685,6 +686,11 @@ fn main() -> anyhow::Result<()> {
                             // `<leader>F` prompts a find-in-files search.
                             crossterm::event::KeyCode::Char('F') => {
                                 app.start_find_prompt();
+                                continue;
+                            }
+                            // `<leader>a` toggles the blame (annotate) gutter.
+                            crossterm::event::KeyCode::Char('a') => {
+                                app.toggle_blame();
                                 continue;
                             }
                             _ => {}
