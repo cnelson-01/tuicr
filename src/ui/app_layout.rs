@@ -12,7 +12,8 @@ use crate::ui::inline_commit_selector::render_inline_commit_selector;
 use crate::ui::log_pane::render_log_pane;
 use crate::ui::selector::render_commit_select;
 use crate::ui::{
-    comment_panel, help_popup, merge_conflict, status_bar, styles, submit_modals, summary_popup,
+    branch_picker, comment_panel, help_popup, merge_conflict, status_bar, styles, submit_modals,
+    summary_popup,
 };
 
 const FILE_LIST_MIN_HEIGHT: u16 = 4;
@@ -35,7 +36,12 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             && app.command_return_mode == InputMode::CommitSelect)
         || (app.input_mode == InputMode::Help
             && app.overlay_return_mode == InputMode::CommitSelect)
-        || (app.searching_help() && app.overlay_return_mode == InputMode::CommitSelect);
+        || (app.searching_help() && app.overlay_return_mode == InputMode::CommitSelect)
+        || (app.input_mode == InputMode::BranchPicker
+            && app
+                .branch_picker
+                .as_ref()
+                .is_some_and(|p| p.return_mode == InputMode::CommitSelect));
     if selector_background {
         render_commit_select(frame, app);
         let area = frame.area();
@@ -51,6 +57,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         }
         if app.input_mode == InputMode::Help || app.searching_help() {
             help_popup::render_help(frame, app);
+        }
+        if app.input_mode == InputMode::BranchPicker {
+            branch_picker::render_branch_picker(frame, app);
         }
         return;
     }
@@ -92,6 +101,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // Keep help visible while its search prompt is active.
     if app.input_mode == InputMode::Help || app.searching_help() {
         help_popup::render_help(frame, app);
+    }
+
+    if app.input_mode == InputMode::BranchPicker {
+        branch_picker::render_branch_picker(frame, app);
     }
 
     // Comment input is now rendered inline in the diff view

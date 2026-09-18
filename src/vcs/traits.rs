@@ -69,10 +69,49 @@ pub struct CommitInfo {
     /// track gutter in the selector; empty when the backend doesn't
     /// report parents (hg/jj, pseudo entries).
     pub parent_ids: Vec<String>,
+    /// Every ref pointing at this commit: local branches, remote-tracking
+    /// branches, and tags, in that order. Rendered as chips in the log.
+    /// Empty for backends that only report `branch_name`.
+    pub refs: Vec<RefLabel>,
+    /// Whether HEAD points at this commit.
+    pub is_head: bool,
     pub summary: String,
     pub body: Option<String>,
     pub author: String,
     pub time: DateTime<Utc>,
+}
+
+/// A ref that points at a commit, for the log's label chips.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefLabel {
+    pub name: String,
+    pub kind: RefKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefKind {
+    /// `refs/heads/*`
+    Local,
+    /// `refs/remotes/*`
+    Remote,
+    /// `refs/tags/*`
+    Tag,
+}
+
+/// One row of the branch picker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BranchInfo {
+    /// Short name: `main`, or `origin/main` for remote-tracking branches.
+    pub name: String,
+    pub tip_id: String,
+    pub is_current: bool,
+    pub is_remote: bool,
+    /// Upstream short name for a local branch that tracks one.
+    pub upstream: Option<String>,
+    pub ahead: usize,
+    pub behind: usize,
+    /// The tracked upstream no longer exists.
+    pub upstream_gone: bool,
 }
 
 /// ResolvedRevisionRange is the VCS boundary's parsed form of a user-provided
@@ -347,6 +386,52 @@ pub trait VcsBackend: Send {
             "Squashing is not supported for this VCS".into(),
         ))
     }
+
+    /// Local and remote-tracking branches, local ones first, each sorted
+    /// by name, with tracking state for the local ones.
+    fn list_branches(&self) -> Result<Vec<BranchInfo>> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Listing branches is not supported for this VCS".into(),
+        ))
+    }
+
+    /// Check out a branch name or a commit (detached). A bare name that only
+    /// exists as a remote-tracking branch creates the local tracking branch,
+    /// like `git checkout` does.
+    fn checkout(&self, _target: &str) -> Result<()> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Checkout is not supported for this VCS".into(),
+        ))
+    }
+
+    /// Create `name` at `start_point` (HEAD when `None`) and switch to it.
+    fn create_branch(&self, _name: &str, _start_point: Option<&str>) -> Result<()> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Creating branches is not supported for this VCS".into(),
+        ))
+    }
+
+    /// Stash the working tree (untracked files included) so a checkout can
+    /// proceed; [`stash_pop`](Self::stash_pop) restores it.
+    fn stash_push(&self, _message: &str) -> Result<()> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Stashing is not supported for this VCS".into(),
+        ))
+    }
+
+    fn stash_pop(&self) -> Result<()> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Stashing is not supported for this VCS".into(),
+        ))
+    }
+
+    /// Abort the conflicted operation (merge, cherry-pick, rebase, revert)
+    /// and restore the pre-operation state. Returns the operation's name.
+    fn abort_merge_operation(&self) -> Result<String> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Aborting a merge is not supported for this VCS".into(),
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -412,6 +497,8 @@ mod tests {
             short_id: "abc123d".to_string(),
             branch_name: Some("main".to_string()),
             parent_ids: Vec::new(),
+            refs: Vec::new(),
+            is_head: false,
             summary: "Fix bug".to_string(),
             body: None,
             author: "Test User".to_string(),

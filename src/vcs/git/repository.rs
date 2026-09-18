@@ -1,3 +1,4 @@
+use crate::vcs::traits::{RefKind, RefLabel};
 use chrono::{DateTime, TimeZone, Utc};
 use git2::{BranchType, Oid, Repository};
 use std::collections::HashMap;
@@ -13,6 +14,8 @@ pub struct CommitInfo {
     pub short_id: String,
     pub branch_name: Option<String>,
     pub parent_ids: Vec<String>,
+    pub refs: Vec<RefLabel>,
+    pub is_head: bool,
     pub summary: String,
     pub body: Option<String>,
     pub author: String,
@@ -64,6 +67,69 @@ fn get_branch_tip_names(repo: &Repository) -> HashMap<Oid, Vec<String>> {
     names_by_tip
 }
 
+/// Every ref pointing at each commit plus HEAD, the libgit2 twin of the
+/// CLI backend's ref index. Annotated tags are peeled to their commit.
+struct RefIndex {
+    labels: HashMap<Oid, Vec<RefLabel>>,
+    head: Option<Oid>,
+}
+
+impl RefIndex {
+    fn build(repo: &Repository) -> Self {
+        let mut labels: HashMap<Oid, Vec<RefLabel>> = HashMap::new();
+        if let Ok(references) = repo.references() {
+            for reference in references.flatten() {
+                let kind = if reference.is_branch() {
+                    RefKind::Local
+                } else if reference.is_remote() {
+                    RefKind::Remote
+                } else if reference.is_tag() {
+                    RefKind::Tag
+                } else {
+                    continue;
+                };
+                let Some(short) = reference.shorthand() else {
+                    continue;
+                };
+                if kind == RefKind::Remote && short.ends_with("/HEAD") {
+                    continue;
+                }
+                let Ok(commit) = reference.peel_to_commit() else {
+                    continue;
+                };
+                labels.entry(commit.id()).or_default().push(RefLabel {
+                    name: short.to_string(),
+                    kind,
+                });
+            }
+        }
+        for refs in labels.values_mut() {
+            refs.sort_by(|a, b| {
+                ref_kind_rank(a.kind)
+                    .cmp(&ref_kind_rank(b.kind))
+                    .then_with(|| a.name.cmp(&b.name))
+            });
+        }
+        let head = repo.head().ok().and_then(|head| head.target());
+        Self { labels, head }
+    }
+
+    fn apply(&self, oid: Oid, commit: &mut CommitInfo) {
+        if let Some(labels) = self.labels.get(&oid) {
+            commit.refs = labels.clone();
+        }
+        commit.is_head = self.head == Some(oid);
+    }
+}
+
+fn ref_kind_rank(kind: RefKind) -> u8 {
+    match kind {
+        RefKind::Local => 0,
+        RefKind::Remote => 1,
+        RefKind::Tag => 2,
+    }
+}
+
 pub fn get_recent_commits(
     repo: &Repository,
     offset: usize,
@@ -103,6 +169,7 @@ pub fn get_recent_commits(
     }
     revwalk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)?;
 
+    let ref_index = RefIndex::build(repo);
     let mut commits = Vec::new();
     for oid in revwalk.skip(offset).take(limit) {
         let oid = oid?;
@@ -122,16 +189,20 @@ pub fn get_recent_commits(
             .single()
             .unwrap_or_else(Utc::now);
 
-        commits.push(CommitInfo {
+        let mut info = CommitInfo {
             id,
             short_id,
             branch_name,
             parent_ids,
+            refs: Vec::new(),
+            is_head: false,
             summary,
             body,
             author,
             time,
-        });
+        };
+        ref_index.apply(oid, &mut info);
+        commits.push(info);
     }
 
     Ok(commits)
@@ -169,6 +240,8 @@ pub fn get_commits_info(repo: &Repository, ids: &[String]) -> Result<Vec<CommitI
             short_id,
             branch_name,
             parent_ids,
+            refs: Vec::new(),
+            is_head: false,
             summary,
             body,
             author,

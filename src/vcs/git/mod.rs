@@ -6,6 +6,7 @@ pub(crate) mod raw;
 pub mod repository;
 pub mod staging;
 
+use crate::vcs::traits::BranchInfo;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
@@ -436,6 +437,106 @@ impl VcsBackend for GitBackend {
         let result = self.continue_merge_operation_inner();
         self.refresh_after_cli_op(result)
     }
+
+    fn list_branches(&self) -> Result<Vec<BranchInfo>> {
+        let output = run_git_command(
+            &self.info().root_path,
+            &[
+                "for-each-ref",
+                "--format=%(refname)%00%(refname:short)%00%(objectname)%00%(upstream:short)%00%(upstream:track)%00%(HEAD)",
+                "refs/heads",
+                "refs/remotes",
+            ],
+        )?;
+        Ok(parse_branch_list(&output))
+    }
+
+    fn checkout(&self, target: &str) -> Result<()> {
+        let result = run_git_command(&self.info().root_path, &["checkout", target]).map(|_| ());
+        self.refresh_after_cli_op(result)
+    }
+
+    fn create_branch(&self, name: &str, start_point: Option<&str>) -> Result<()> {
+        let mut args = vec!["checkout", "-b", name];
+        if let Some(start) = start_point {
+            args.push(start);
+        }
+        let result = run_git_command(&self.info().root_path, &args).map(|_| ());
+        self.refresh_after_cli_op(result)
+    }
+
+    fn stash_push(&self, message: &str) -> Result<()> {
+        let result = run_git_command(
+            &self.info().root_path,
+            &["stash", "push", "--include-untracked", "-m", message],
+        )
+        .map(|_| ());
+        self.refresh_after_cli_op(result)
+    }
+
+    fn stash_pop(&self) -> Result<()> {
+        let result = run_git_command(&self.info().root_path, &["stash", "pop"]).map(|_| ());
+        self.refresh_after_cli_op(result)
+    }
+
+    fn abort_merge_operation(&self) -> Result<String> {
+        let result = self.abort_merge_operation_inner();
+        self.refresh_after_cli_op(result)
+    }
+}
+
+/// Parse `for-each-ref` output over `refs/heads` and `refs/remotes` (see
+/// [`GitBackend::list_branches`] for the format). `origin/HEAD` aliases are
+/// dropped; local branches come first, each group sorted by name.
+fn parse_branch_list(output: &str) -> Vec<BranchInfo> {
+    let mut branches: Vec<BranchInfo> = output
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\0');
+            let full = fields.next()?;
+            let name = fields.next()?.to_string();
+            let tip_id = fields.next()?.to_string();
+            let upstream = fields.next().unwrap_or("").to_string();
+            let track = fields.next().unwrap_or("");
+            let head = fields.next().unwrap_or("");
+            let is_remote = full.starts_with("refs/remotes/");
+            if is_remote && name.ends_with("/HEAD") {
+                return None;
+            }
+            let (ahead, behind) = parse_track_counts(track);
+            Some(BranchInfo {
+                name,
+                tip_id,
+                is_current: head == "*",
+                is_remote,
+                upstream: (!upstream.is_empty()).then_some(upstream),
+                ahead,
+                behind,
+                upstream_gone: track.contains("gone"),
+            })
+        })
+        .collect();
+    branches.sort_by(|a, b| {
+        a.is_remote
+            .cmp(&b.is_remote)
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    branches
+}
+
+/// `[ahead 1, behind 2]`, `[ahead 3]`, `[behind 1]`, `[gone]` or empty.
+fn parse_track_counts(track: &str) -> (usize, usize) {
+    let mut ahead = 0;
+    let mut behind = 0;
+    for part in track.trim_matches(|c| c == '[' || c == ']').split(',') {
+        let part = part.trim();
+        if let Some(n) = part.strip_prefix("ahead ") {
+            ahead = n.trim().parse().unwrap_or(0);
+        } else if let Some(n) = part.strip_prefix("behind ") {
+            behind = n.trim().parse().unwrap_or(0);
+        }
+    }
+    (ahead, behind)
 }
 
 impl GitBackend {
@@ -511,6 +612,35 @@ impl GitBackend {
             return Err(err);
         }
         Ok(())
+    }
+
+    fn abort_merge_operation_inner(&self) -> Result<String> {
+        let root = &self.info().root_path;
+        let in_progress = |head: &str| {
+            run_git_command(root, &["rev-parse", "--verify", "--quiet", head])
+                .map(|out| !out.trim().is_empty())
+                .unwrap_or(false)
+        };
+        let git_dir = run_git_command(root, &["rev-parse", "--git-dir"])
+            .map(|out| root.join(out.trim()))
+            .unwrap_or_else(|_| root.join(".git"));
+        let rebasing =
+            git_dir.join("rebase-merge").is_dir() || git_dir.join("rebase-apply").is_dir();
+        let op = if in_progress("MERGE_HEAD") {
+            "merge"
+        } else if rebasing || in_progress("REBASE_HEAD") {
+            "rebase"
+        } else if in_progress("CHERRY_PICK_HEAD") {
+            "cherry-pick"
+        } else if in_progress("REVERT_HEAD") {
+            "revert"
+        } else {
+            return Err(TuicrError::VcsCommand(
+                "No merge operation in progress".into(),
+            ));
+        };
+        run_git_command(root, &[op, "--abort"])?;
+        Ok(op.to_string())
     }
 
     fn continue_merge_operation_inner(&self) -> Result<String> {
@@ -945,6 +1075,127 @@ mod tests {
         // when / then
         let err = backend.squash_commits(&[first, second]);
         assert!(err.is_err(), "staged changes must block squash");
+    }
+
+    #[test]
+    fn parse_branch_list_classifies_rows() {
+        let output = "refs/heads/main\0main\0aaa\0origin/main\0[ahead 1, behind 2]\0*\n\
+                      refs/heads/dev\0dev\0bbb\0\0\0 \n\
+                      refs/remotes/origin/HEAD\0origin/HEAD\0aaa\0\0\0 \n\
+                      refs/remotes/origin/main\0origin/main\0aaa\0\0\0 \n\
+                      refs/heads/old\0old\0ccc\0origin/old\0[gone]\0 \n";
+        let branches = parse_branch_list(output);
+        let names: Vec<&str> = branches.iter().map(|b| b.name.as_str()).collect();
+        // locals first (by name), then remotes; origin/HEAD dropped
+        assert_eq!(names, ["dev", "main", "old", "origin/main"]);
+        let main = &branches[1];
+        assert!(main.is_current);
+        assert!(!main.is_remote);
+        assert_eq!(main.upstream.as_deref(), Some("origin/main"));
+        assert_eq!((main.ahead, main.behind), (1, 2));
+        assert!(branches[2].upstream_gone);
+        assert!(branches[3].is_remote);
+        assert!(!branches[0].is_current);
+    }
+
+    #[test]
+    fn parse_track_counts_reads_ahead_and_behind() {
+        assert_eq!(parse_track_counts(""), (0, 0));
+        assert_eq!(parse_track_counts("[ahead 3]"), (3, 0));
+        assert_eq!(parse_track_counts("[behind 4]"), (0, 4));
+        assert_eq!(parse_track_counts("[ahead 1, behind 2]"), (1, 2));
+        assert_eq!(parse_track_counts("[gone]"), (0, 0));
+    }
+
+    #[test]
+    fn branch_ops_create_checkout_and_stash_round_trip() {
+        // given a fresh repo
+        let temp_dir = tempdir().expect("failed to create temp dir");
+        let root = temp_dir.path();
+        setup_standard_repo(root);
+        let backend = GitBackend::discover_from(
+            root,
+            GitBackendPreference::Libgit2,
+            DiffWhitespaceMode::Normal,
+        )
+        .expect("failed to discover backend");
+        let current = |b: &GitBackend| {
+            b.list_branches()
+                .expect("list branches")
+                .into_iter()
+                .find(|b| b.is_current)
+                .map(|b| b.name)
+        };
+        let initial = current(&backend).expect("initial branch");
+        let start = git_id(root, "HEAD");
+
+        // when a branch is created at HEAD, it is checked out
+        backend
+            .create_branch("feature", Some(&start))
+            .expect("create branch");
+        assert_eq!(current(&backend).as_deref(), Some("feature"));
+
+        // and a dirty tree can be stashed around a switch back
+        fs::write(root.join("src/file.txt"), "dirty\n").expect("write");
+        assert!(is_dirty(root));
+        backend.stash_push("tuicr test").expect("stash push");
+        assert!(!is_dirty(root));
+        backend.checkout(&initial).expect("checkout back");
+        assert_eq!(current(&backend).as_deref(), Some(initial.as_str()));
+        backend.stash_pop().expect("stash pop");
+        assert!(is_dirty(root));
+
+        // and a commit checks out detached
+        backend.checkout(&start).expect("detached checkout");
+        assert!(
+            current(&backend).is_none(),
+            "detached HEAD has no current branch"
+        );
+    }
+
+    #[test]
+    fn abort_cherry_pick_restores_head() {
+        // given a conflicting cherry-pick stopped on trunk
+        let temp_dir = tempdir().expect("failed to create temp dir");
+        let root = temp_dir.path();
+        setup_standard_repo(root);
+        run_git_command(root, &["checkout", "-b", "trunk"]).expect("branch trunk");
+        run_git_command(root, &["branch", "pick"]).expect("branch pick");
+        fs::write(root.join("src/file.txt"), "trunk version\n").expect("write");
+        run_git_command(root, &["commit", "-am", "trunk change"]).expect("commit");
+        run_git_command(root, &["checkout", "pick"]).expect("checkout pick");
+        fs::write(root.join("src/file.txt"), "pick version\n").expect("write");
+        run_git_command(root, &["commit", "-am", "pick change"]).expect("commit");
+        let pick_id = git_id(root, "HEAD");
+        run_git_command(root, &["checkout", "trunk"]).expect("checkout trunk");
+        let backend = GitBackend::discover_from(
+            root,
+            GitBackendPreference::Libgit2,
+            DiffWhitespaceMode::Normal,
+        )
+        .expect("failed to discover backend");
+        let head_before = git_id(root, "HEAD");
+        assert!(backend.cherry_pick(&[pick_id]).is_err());
+        assert!(backend.get_merge_conflicts().expect("probe").is_some());
+
+        // when
+        let op = backend.abort_merge_operation().expect("abort");
+
+        // then the operation is gone and HEAD is back where it was
+        assert_eq!(op, "cherry-pick");
+        assert!(backend.get_merge_conflicts().expect("probe").is_none());
+        assert_eq!(git_id(root, "HEAD"), head_before);
+        assert!(
+            backend.abort_merge_operation().is_err(),
+            "nothing left to abort"
+        );
+    }
+
+    fn is_dirty(root: &Path) -> bool {
+        !run_git_command(root, &["status", "--porcelain"])
+            .expect("git status")
+            .trim()
+            .is_empty()
     }
 
     fn setup_standard_repo(root: &Path) {

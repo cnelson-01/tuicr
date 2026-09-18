@@ -293,6 +293,8 @@ mod tests {
             short_id: id[..7.min(id.len())].to_string(),
             branch_name: None,
             parent_ids: parents.iter().map(|p| p.to_string()).collect(),
+            refs: Vec::new(),
+            is_head: false,
             summary: format!("commit {id}"),
             body: None,
             author: "tester".to_string(),

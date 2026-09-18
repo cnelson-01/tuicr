@@ -432,6 +432,8 @@ pub fn pr_commit_to_commit_info(commit: &crate::forge::traits::PullRequestCommit
         short_id: commit.short_oid.clone(),
         branch_name: None,
         parent_ids: Vec::new(),
+        refs: Vec::new(),
+        is_head: false,
         summary: commit.summary.clone(),
         body: None,
         author: commit.author.clone(),
@@ -624,7 +626,12 @@ pub enum InputMode {
     /// no `SubmitConfirm` follows (resolver still runs if any comment is
     /// unmappable).
     SubmitActionPicker,
+    /// Branch picker modal (`<leader>b`, `:branches`): filter by typing,
+    /// Enter checks out.
+    BranchPicker,
 }
+
+pub use branches::BranchPicker;
 
 /// State for the fullscreen side-by-side merge conflict screen.
 #[derive(Debug)]
@@ -1545,6 +1552,10 @@ pub struct App {
     pub log_pane_height: u16,
     /// `show_log = true`: open the pane as soon as a review is on screen.
     pub log_pane_wanted: bool,
+    /// Branch picker modal state; `Some` while `input_mode == BranchPicker`.
+    pub branch_picker: Option<BranchPicker>,
+    /// Start point for the next `:branch <name>`, set by `n` in a selector.
+    pub pending_branch_start: Option<String>,
     /// Display order for the inline commit selector (presentation only).
     pub commit_order: CommitOrder,
     /// Which commits are selected when a multi-commit review first opens.
@@ -1912,6 +1923,7 @@ impl AppStartupOptions<'_> {
 }
 
 mod annotations;
+mod branches;
 mod comment_vim;
 mod comments;
 mod commits;

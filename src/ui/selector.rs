@@ -560,6 +560,8 @@ mod selector_render_snapshot_tests {
             short_id: format!("abc{i}"),
             branch_name: None,
             parent_ids: Vec::new(),
+            refs: Vec::new(),
+            is_head: false,
             summary: format!("commit {i}"),
             body: None,
             author: "tester".to_string(),

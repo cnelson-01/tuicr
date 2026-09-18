@@ -62,6 +62,8 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     CommandSpec::new(&["set log"], CommandKind::SetLogVisible(true)),
     CommandSpec::new(&["set nolog"], CommandKind::SetLogVisible(false)),
     CommandSpec::new(&["log", "set log!"], CommandKind::ToggleLog),
+    CommandSpec::new(&["branches", "branch"], CommandKind::BranchPicker),
+    CommandSpec::new(&["abort"], CommandKind::AbortOperation),
     CommandSpec::new(&["set reviewed"], CommandKind::SetShowReviewed(true)),
     CommandSpec::new(&["set noreviewed"], CommandKind::SetShowReviewed(false)),
     CommandSpec::new(
@@ -149,6 +151,8 @@ enum CommandKind {
     ToggleCommits,
     SetLogVisible(bool),
     ToggleLog,
+    BranchPicker,
+    AbortOperation,
     SetShowReviewed(bool),
     ToggleShowReviewed,
     Diff,
@@ -668,6 +672,13 @@ pub fn handle_command_action(app: &mut App, action: Action) {
             } else if let Some(rows) = parse_log_height_command(&cmd) {
                 app.set_log_pane_height(rows);
                 CommandAfterDispatch::ExitCommandMode
+            } else if let Some((target, smart)) = parse_checkout_command(&cmd) {
+                app.checkout_target(target, smart);
+                CommandAfterDispatch::ExitCommandMode
+            } else if let Some(name) = cmd.strip_prefix("branch ") {
+                let name = name.to_string();
+                app.create_branch(&name);
+                CommandAfterDispatch::ExitCommandMode
             } else {
                 app.set_message(format!("Unknown command: {cmd}"));
                 CommandAfterDispatch::ExitCommandMode
@@ -968,6 +979,22 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
             app.toggle_log_pane();
             CommandAfterDispatch::ExitCommandMode
         }
+        CommandKind::BranchPicker => {
+            app.open_branch_picker();
+            if app.input_mode == InputMode::BranchPicker {
+                CommandAfterDispatch::KeepMode
+            } else {
+                CommandAfterDispatch::ExitCommandMode
+            }
+        }
+        CommandKind::AbortOperation => {
+            app.abort_operation();
+            if app.input_mode == InputMode::MergeConflict {
+                CommandAfterDispatch::KeepMode
+            } else {
+                CommandAfterDispatch::ExitCommandMode
+            }
+        }
         CommandKind::SetShowReviewed(show) => {
             app.set_show_reviewed(show);
             CommandAfterDispatch::ExitCommandMode
@@ -1131,6 +1158,17 @@ fn complete_command(app: &mut App, direction: CompletionDirection) {
 
 /// Parse `:<n>` (new-side) or `:o<n>` (old-side) jump targets. The leading `:`
 /// has already been stripped by the time we get here.
+/// `:checkout <target>` / `:checkout! <target>` — the target and whether to
+/// stash a dirty tree around the switch.
+fn parse_checkout_command(cmd: &str) -> Option<(&str, bool)> {
+    if let Some(rest) = cmd.strip_prefix("checkout! ") {
+        let target = rest.trim();
+        return (!target.is_empty()).then_some((target, true));
+    }
+    let target = cmd.strip_prefix("checkout ")?.trim();
+    (!target.is_empty()).then_some((target, false))
+}
+
 /// `:set logheight N` — the log pane height in rows, borders included.
 fn parse_log_height_command(cmd: &str) -> Option<u16> {
     let rest = cmd.strip_prefix("set logheight")?.trim();
@@ -1381,6 +1419,16 @@ fn handle_local_target_action(app: &mut App, action: Action) {
         Action::SelectorSquash if !app.is_on_expand_row() => {
             app.selector_squash();
         }
+        Action::SelectorCheckout => match app.cursor_checkout_target() {
+            Some(target) => app.checkout_target(&target, false),
+            None => app.set_message("Move the cursor onto a commit to check out"),
+        },
+        Action::SelectorNewBranch => {
+            let start = app.cursor_commit_id();
+            app.start_new_branch_prompt(start);
+        }
+        Action::AbortOperation => app.abort_operation(),
+        Action::OpenBranchPicker => app.open_branch_picker(),
         _ => {}
     }
 }
@@ -1427,6 +1475,32 @@ fn handle_pr_filter_action(app: &mut App, action: Action) {
 }
 
 /// Handle actions when inline commit selector panel is focused
+/// Keys in the branch picker modal.
+pub fn handle_branch_picker_action(app: &mut App, action: Action) {
+    match action {
+        Action::BranchPickerDown => app.branch_picker_down(),
+        Action::BranchPickerUp => app.branch_picker_up(),
+        Action::BranchPickerConfirm => app.branch_picker_confirm(false),
+        Action::BranchPickerConfirmSmart => app.branch_picker_confirm(true),
+        Action::InsertChar(c) => app.branch_picker_push(c),
+        Action::DeleteChar => app.branch_picker_pop(),
+        Action::ClearLine => app.branch_picker_clear(),
+        Action::ExitMode => {
+            // Esc clears an active filter first, then closes.
+            if app
+                .branch_picker
+                .as_ref()
+                .is_some_and(|p| !p.filter.is_empty())
+            {
+                app.branch_picker_clear();
+            } else {
+                app.close_branch_picker();
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Keys while the persistent log pane holds focus (Normal mode). Movement
 /// schedules a preview of the cursor commit; Space builds a pick set; Enter
 /// loads it as the review; `p` / `b` / `s` run the history operations.
@@ -1461,6 +1535,18 @@ fn handle_log_pane_action(app: &mut App, action: Action) {
         Action::SelectorCherryPick => app.log_pane_history_op(|a| a.selector_cherry_pick()),
         Action::SelectorRebase => app.log_pane_history_op(|a| a.selector_rebase_onto_cursor()),
         Action::SelectorSquash => app.log_pane_history_op(|a| a.selector_squash()),
+        // Read the cursor row inside the swap, act on it outside: the
+        // post-checkout refresh touches the pane's own state.
+        Action::SelectorCheckout => match app.with_log_state(|a| a.cursor_checkout_target()) {
+            Some(target) => app.checkout_target(&target, false),
+            None => app.set_message("Move the cursor onto a commit to check out"),
+        },
+        Action::SelectorNewBranch => {
+            let start = app.with_log_state(|a| a.cursor_commit_id());
+            app.start_new_branch_prompt(start);
+        }
+        Action::AbortOperation => app.abort_operation(),
+        Action::OpenBranchPicker => app.open_branch_picker(),
         Action::ExitMode => app.focused_panel = FocusedPanel::Diff,
         _ => handle_shared_normal_action(app, action),
     }
@@ -1517,6 +1603,7 @@ pub fn handle_merge_conflict_action(app: &mut App, action: Action) {
     }
 
     match action {
+        Action::AbortOperation => app.abort_operation(),
         Action::CursorDown(n) => app.merge_scroll_down(n),
         Action::CursorUp(n) => app.merge_scroll_up(n),
         Action::HalfPageDown => app.merge_scroll_down(app.merge_half_page()),

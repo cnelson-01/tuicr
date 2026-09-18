@@ -327,6 +327,8 @@ fn dummy_commit(id: &str) -> CommitInfo {
         short_id: id.to_string(),
         branch_name: None,
         parent_ids: Vec::new(),
+        refs: Vec::new(),
+        is_head: false,
         summary: format!("commit {id}"),
         body: None,
         author: "tester".to_string(),

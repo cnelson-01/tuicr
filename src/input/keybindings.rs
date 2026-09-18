@@ -180,6 +180,22 @@ pub enum Action {
     SelectorRebase,
     /// Squash the selected commits into one (`s`).
     SelectorSquash,
+    /// Check out the cursor row's branch, or the commit detached (`c`).
+    SelectorCheckout,
+    /// Prompt for a new branch name starting at the cursor commit (`n`).
+    SelectorNewBranch,
+    /// Abort the in-progress merge / cherry-pick / rebase / revert (`a`).
+    AbortOperation,
+    /// Open the branch picker (`B` in a selector, `<leader>b`, `:branches`).
+    OpenBranchPicker,
+
+    // Branch picker
+    BranchPickerDown,
+    BranchPickerUp,
+    /// Check out the highlighted branch (Enter).
+    BranchPickerConfirm,
+    /// Stash, check out, and pop (Ctrl-s).
+    BranchPickerConfirmSmart,
 
     // No-op
     None,
@@ -204,6 +220,7 @@ pub fn map_key_to_action(key: KeyEvent, mode: InputMode, leader_key: char) -> Ac
         InputMode::SubmitResolver => map_submit_resolver_mode(key),
         InputMode::SubmitConfirm => map_submit_confirm_mode(key),
         InputMode::SubmitActionPicker => map_submit_action_picker_mode(key),
+        InputMode::BranchPicker => map_branch_picker_mode(key),
     }
 }
 
@@ -456,6 +473,24 @@ fn map_submit_confirm_mode(key: KeyEvent) -> Action {
     }
 }
 
+/// Branch picker: printable keys filter, arrows (or Ctrl-n / Ctrl-p) move,
+/// Enter checks out, Ctrl-s stashes around the checkout.
+fn map_branch_picker_mode(key: KeyEvent) -> Action {
+    match (key.code, key.modifiers) {
+        (KeyCode::Down, _) => Action::BranchPickerDown,
+        (KeyCode::Up, _) => Action::BranchPickerUp,
+        (KeyCode::Char('n'), KeyModifiers::CONTROL) => Action::BranchPickerDown,
+        (KeyCode::Char('p'), KeyModifiers::CONTROL) => Action::BranchPickerUp,
+        (KeyCode::Char('s'), KeyModifiers::CONTROL) => Action::BranchPickerConfirmSmart,
+        (KeyCode::Char('u'), KeyModifiers::CONTROL) => Action::ClearLine,
+        (KeyCode::Enter, _) => Action::BranchPickerConfirm,
+        (KeyCode::Esc, _) => Action::ExitMode,
+        (KeyCode::Backspace, _) => Action::DeleteChar,
+        (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => Action::InsertChar(c),
+        _ => Action::None,
+    }
+}
+
 fn map_submit_action_picker_mode(key: KeyEvent) -> Action {
     match (key.code, key.modifiers) {
         (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => Action::SubmitPickerDown,
@@ -476,6 +511,10 @@ fn map_commit_select_mode(key: KeyEvent) -> Action {
         (KeyCode::Char('p'), KeyModifiers::NONE) => Action::SelectorCherryPick,
         (KeyCode::Char('b'), KeyModifiers::NONE) => Action::SelectorRebase,
         (KeyCode::Char('s'), KeyModifiers::NONE) => Action::SelectorSquash,
+        (KeyCode::Char('c'), KeyModifiers::NONE) => Action::SelectorCheckout,
+        (KeyCode::Char('n'), KeyModifiers::NONE) => Action::SelectorNewBranch,
+        (KeyCode::Char('a'), KeyModifiers::NONE) => Action::AbortOperation,
+        (KeyCode::Char('B'), _) => Action::OpenBranchPicker,
         (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
         (KeyCode::Char('q'), KeyModifiers::NONE) => Action::Quit,
         (KeyCode::Char(':'), _) => Action::EnterCommandMode,
@@ -499,6 +538,10 @@ pub fn map_log_pane_mode(key: KeyEvent, leader_key: char) -> Action {
         (KeyCode::Char('p'), KeyModifiers::NONE) => Action::SelectorCherryPick,
         (KeyCode::Char('b'), KeyModifiers::NONE) => Action::SelectorRebase,
         (KeyCode::Char('s'), KeyModifiers::NONE) => Action::SelectorSquash,
+        (KeyCode::Char('c'), KeyModifiers::NONE) => Action::SelectorCheckout,
+        (KeyCode::Char('n'), KeyModifiers::NONE) => Action::SelectorNewBranch,
+        (KeyCode::Char('a'), KeyModifiers::NONE) => Action::AbortOperation,
+        (KeyCode::Char('B'), _) => Action::OpenBranchPicker,
         (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
         _ => map_normal_mode(key, leader_key),
     }
@@ -560,6 +603,7 @@ pub fn map_target_filter_mode(key: KeyEvent) -> Action {
 
 fn map_merge_conflict_mode(key: KeyEvent) -> Action {
     match (key.code, key.modifiers) {
+        (KeyCode::Char('a'), KeyModifiers::NONE) => Action::AbortOperation,
         (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => Action::CursorDown(1),
         (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => Action::CursorUp(1),
         (KeyCode::Char('d'), KeyModifiers::CONTROL) => Action::HalfPageDown,

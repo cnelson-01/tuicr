@@ -15,7 +15,7 @@ use crate::vcs::git::raw::{
     pair_metadata_with_patch, parse_raw_metadata_from_patch_output, parse_raw_patch_output,
     patch_text_from_raw_patch_output, split_patch_blocks,
 };
-use crate::vcs::traits::ConflictCommit;
+use crate::vcs::traits::{ConflictCommit, RefKind, RefLabel};
 use crate::vcs::{
     ChangeKind, CommitInfo, DiffWhitespaceMode, MergeConflictInfo, ResolvedRevisionRange,
     RevisionDiffTarget, VcsBackend, VcsChangeStatus, VcsInfo,
@@ -328,7 +328,12 @@ impl VcsBackend for GitCliBackend {
             ],
         )?;
 
-        Ok(parse_commit_records(&output, &branch_tip_names))
+        let mut commits = parse_commit_records(&output, &branch_tip_names);
+        let refs = get_ref_index(&self.root_path);
+        for commit in &mut commits {
+            refs.apply(commit);
+        }
+        Ok(commits)
     }
 
     fn resolve_revision_range(&self, revisions: &str) -> Result<ResolvedRevisionRange<'static>> {
@@ -1115,6 +1120,80 @@ fn read_git_object(workdir: &Path, spec: &str) -> Option<String> {
     run_git_command(workdir, &["show", spec]).ok()
 }
 
+/// Every ref pointing at each commit (branches, remotes, tags) plus HEAD,
+/// for the log's label chips. Annotated tags are peeled to their commit.
+pub(super) struct RefIndex {
+    labels: HashMap<String, Vec<RefLabel>>,
+    head: Option<String>,
+}
+
+impl RefIndex {
+    pub(super) fn apply(&self, commit: &mut CommitInfo) {
+        if let Some(labels) = self.labels.get(&commit.id) {
+            commit.refs = labels.clone();
+        }
+        commit.is_head = self.head.as_deref() == Some(commit.id.as_str());
+    }
+}
+
+pub(super) fn get_ref_index(workdir: &Path) -> RefIndex {
+    let output = run_git_command(
+        workdir,
+        &[
+            "for-each-ref",
+            "--format=%(if)%(*objectname)%(then)%(*objectname)%(else)%(objectname)%(end)%00%(refname)%00%(refname:short)",
+            "refs/heads",
+            "refs/remotes",
+            "refs/tags",
+        ],
+    )
+    .unwrap_or_default();
+    let mut labels: HashMap<String, Vec<RefLabel>> = HashMap::new();
+    for line in output.lines() {
+        let mut fields = line.split('\0');
+        let (Some(oid), Some(full), Some(short)) = (fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        let kind = if full.starts_with("refs/heads/") {
+            RefKind::Local
+        } else if full.starts_with("refs/remotes/") {
+            if short.ends_with("/HEAD") {
+                continue;
+            }
+            RefKind::Remote
+        } else if full.starts_with("refs/tags/") {
+            RefKind::Tag
+        } else {
+            continue;
+        };
+        labels.entry(oid.to_string()).or_default().push(RefLabel {
+            name: short.to_string(),
+            kind,
+        });
+    }
+    for refs in labels.values_mut() {
+        refs.sort_by(|a, b| {
+            ref_kind_rank(a.kind)
+                .cmp(&ref_kind_rank(b.kind))
+                .then_with(|| a.name.cmp(&b.name))
+        });
+    }
+    let head = run_git_command(workdir, &["rev-parse", "HEAD"])
+        .ok()
+        .map(|out| out.trim().to_string())
+        .filter(|id| !id.is_empty());
+    RefIndex { labels, head }
+}
+
+fn ref_kind_rank(kind: RefKind) -> u8 {
+    match kind {
+        RefKind::Local => 0,
+        RefKind::Remote => 1,
+        RefKind::Tag => 2,
+    }
+}
+
 fn get_branch_tip_names(workdir: &Path) -> HashMap<String, Vec<String>> {
     let output = run_git_command(
         workdir,
@@ -1191,6 +1270,8 @@ fn parse_commit_record(
         short_id,
         branch_name,
         parent_ids,
+        refs: Vec::new(),
+        is_head: false,
         summary,
         body,
         author,
@@ -2066,6 +2147,54 @@ mod tests {
         cli_ids.sort_unstable();
         libgit2_ids.sort_unstable();
         assert_eq!(cli_ids, libgit2_ids);
+    }
+
+    #[test]
+    fn commit_refs_carry_branches_tags_and_head() {
+        // given a tag on the base commit and a remote-tracking ref on main
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let workdir = temp_dir.path();
+        git(workdir, &["init", "-b", "main"]);
+        git(workdir, &["config", "user.email", "test@example.com"]);
+        git(workdir, &["config", "user.name", "Test User"]);
+        write_file(workdir, "f.txt", "base\n");
+        git(workdir, &["add", "."]);
+        git(workdir, &["commit", "-m", "base"]);
+        git(workdir, &["tag", "-a", "v1", "-m", "release"]);
+        write_file(workdir, "f.txt", "next\n");
+        git(workdir, &["commit", "-am", "next"]);
+        git(workdir, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        let backend = GitCliBackend::discover_from(workdir, DiffWhitespaceMode::Normal)
+            .expect("failed to discover backend");
+
+        // when
+        let commits = backend
+            .get_recent_commits(0, 10)
+            .expect("failed to list commits");
+
+        // then labels sit on the right commits, locals before remotes, and
+        // the annotated tag is peeled to its commit
+        let labels = |c: &CommitInfo| -> Vec<(String, RefKind)> {
+            c.refs.iter().map(|r| (r.name.clone(), r.kind)).collect()
+        };
+        assert!(commits[0].is_head);
+        assert_eq!(
+            labels(&commits[0]),
+            [
+                ("main".to_string(), RefKind::Local),
+                ("origin/main".to_string(), RefKind::Remote)
+            ]
+        );
+        assert!(!commits[1].is_head);
+        assert_eq!(labels(&commits[1]), [("v1".to_string(), RefKind::Tag)]);
+
+        // and the libgit2 backend agrees
+        let repo = git2::Repository::open(workdir).expect("failed to open repo");
+        let libgit2_commits =
+            repository::get_recent_commits(&repo, 0, 10).expect("failed to list via libgit2");
+        assert!(libgit2_commits[0].is_head);
+        assert_eq!(libgit2_commits[0].refs, commits[0].refs);
+        assert_eq!(libgit2_commits[1].refs, commits[1].refs);
     }
 
     #[test]

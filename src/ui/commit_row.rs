@@ -4,7 +4,7 @@
 //! branch chip, summary, author/date) consistent across surfaces.
 
 use chrono::{DateTime, Utc};
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use crate::app::{MERGE_SELECTION_ID, STAGED_SELECTION_ID, UNSTAGED_SELECTION_ID};
@@ -12,6 +12,7 @@ use crate::theme::Theme;
 use crate::ui::styles;
 use crate::ui::text_utils::{truncate_or_pad, truncate_str};
 use crate::vcs::CommitInfo;
+use crate::vcs::traits::RefKind;
 
 pub const CURSOR_GLYPH: &str = "\u{25b8}"; // ▸
 pub const RANGE_BAR_GLYPH: &str = "\u{258c}"; // ▌
@@ -89,6 +90,67 @@ pub struct CommitRowSpec<'a> {
     pub graph: Option<Vec<Span<'static>>>,
     /// Column widths shared by every row of the list.
     pub layout: CommitRowLayout,
+}
+
+/// Label chips for the branch column: every ref on the commit (local
+/// branches, then remotes, then tags), each styled by kind, and a `HEAD`
+/// chip on a detached head. The current branch's chip is bold. Chips that
+/// do not fit are dropped behind an ellipsis and the column is padded to
+/// `width` so the summary stays aligned.
+fn ref_chip_spans<'a>(spec: &CommitRowSpec<'a>, width: usize) -> Vec<Span<'a>> {
+    let theme = spec.theme;
+    let commit = spec.commit;
+    let mut chips: Vec<(String, Style)> = Vec::new();
+    let head_style = styles::branch_style(theme).add_modifier(Modifier::BOLD);
+    if commit.is_head && !commit.refs.iter().any(|r| r.kind == RefKind::Local) {
+        chips.push(("[HEAD]".to_string(), head_style));
+    }
+    if commit.refs.is_empty() {
+        if let Some(name) = &commit.branch_name {
+            chips.push((format!("[{name}]"), styles::branch_style(theme)));
+        }
+    } else {
+        for label in &commit.refs {
+            let style = match label.kind {
+                RefKind::Local if commit.is_head => head_style,
+                RefKind::Local => styles::branch_style(theme),
+                RefKind::Remote => Style::default().fg(theme.fg_dim),
+                RefKind::Tag => styles::pseudo_commit_tag_style(theme),
+            };
+            chips.push((format!("[{}]", label.name), style));
+        }
+    }
+
+    let mut spans: Vec<Span<'a>> = Vec::with_capacity(chips.len() + 1);
+    let mut used = 0usize;
+    for (i, (text, style)) in chips.iter().enumerate() {
+        let text_width = text.chars().count();
+        let remaining = width.saturating_sub(used);
+        if text_width <= remaining {
+            spans.push(Span::styled(text.clone(), *style));
+            used += text_width;
+        } else if i == 0 {
+            // The first chip always shows, truncated to the column.
+            let inner = text.trim_matches(|c| c == '[' || c == ']');
+            let chip = format!("[{}]", truncate_str(inner, width.saturating_sub(3)));
+            spans.push(Span::styled(truncate_or_pad(&chip, width), *style));
+            used = width;
+            break;
+        } else {
+            if remaining >= 1 {
+                spans.push(Span::styled(
+                    "\u{2026}".to_string(),
+                    Style::default().fg(theme.fg_dim),
+                ));
+                used += 1;
+            }
+            break;
+        }
+    }
+    if used < width {
+        spans.push(Span::raw(" ".repeat(width - used)));
+    }
+    spans
 }
 
 pub fn render_commit_row<'a>(spec: &CommitRowSpec<'a>) -> Line<'a> {
@@ -180,15 +242,7 @@ pub fn render_commit_row<'a>(spec: &CommitRowSpec<'a>) -> Line<'a> {
     // render the same number of blanks so the summary column starts at the
     // same x.
     let layout = spec.layout;
-    if let Some(branch_name) = &spec.commit.branch_name {
-        let chip = format!("[{}]", truncate_str(branch_name, layout.branch_width - 3));
-        spans.push(Span::styled(
-            truncate_or_pad(&chip, layout.branch_width),
-            styles::branch_style(theme),
-        ));
-    } else {
-        spans.push(Span::raw(" ".repeat(layout.branch_width)));
-    }
+    spans.extend(ref_chip_spans(spec, layout.branch_width));
 
     spans.push(Span::styled(
         truncate_or_pad(&spec.commit.summary, layout.summary_width),
@@ -249,6 +303,8 @@ mod tests {
             short_id: id[..7.min(id.len())].to_string(),
             branch_name: branch.map(|s| s.to_string()),
             parent_ids: Vec::new(),
+            refs: Vec::new(),
+            is_head: false,
             summary: summary.to_string(),
             body: None,
             author: "alice".to_string(),

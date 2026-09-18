@@ -379,6 +379,8 @@ mod tests {
             short_id: "abc".to_string(),
             branch_name: Some("main".to_string()),
             parent_ids: Vec::new(),
+            refs: Vec::new(),
+            is_head: false,
             summary: "test".to_string(),
             body: None,
             author: "author".to_string(),

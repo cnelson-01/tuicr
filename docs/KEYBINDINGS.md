@@ -117,6 +117,7 @@ considers files that pass the active filters.
 | `<leader>s` | Toggle commit selector visibility (also `:set commits!`) |
 | `<leader>g` | Toggle the persistent log pane (also `:log`, `:set log!`) |
 | `<leader>+` / `<leader>-` | Grow / shrink the log pane (also `:set logheight N`) |
+| `<leader>b` | Open the branch picker (also `:branches`) |
 | `Enter` | Select file (when file list is focused) |
 
 ## Comment navigator
@@ -217,6 +218,11 @@ In command mode,
 | `:log` / `:set log!` | Toggle the persistent log pane |
 | `:set log` / `:set nolog` | Show / hide the persistent log pane |
 | `:set logheight N` | Set the log pane height to N rows (borders included) |
+| `:branches` / `:branch` | Open the branch picker |
+| `:branch <name>` | Create `<name>` and switch to it (at the commit `n` was pressed on, else HEAD) |
+| `:checkout <target>` | Check out a branch or commit; refuses when the working tree has changes |
+| `:checkout! <target>` | Stash (untracked included), check out, and pop the stash |
+| `:abort` | Abort the in-progress merge / cherry-pick / rebase / revert |
 | `:set reviewed` | Show files already marked reviewed |
 | `:set noreviewed` | Hide files already marked reviewed |
 | `:set reviewed!` / `:reviewed` | Toggle files already marked reviewed |
@@ -258,9 +264,33 @@ startup, and `log_height = N` (or `:set logheight N`) for its height.
 | `p` | Cherry-pick the picks (or cursor commit) onto the current branch |
 | `b` | Rebase the current branch onto the cursor commit |
 | `s` | Squash the picks into one commit |
+| `c` | Check out the cursor commit's branch, or the commit itself (detached) |
+| `n` | New branch at the cursor commit: opens `:branch ` for the name |
+| `a` | Abort the in-progress merge / cherry-pick / rebase / revert |
+| `B` | Open the branch picker |
 | `Tab` / `Shift-Tab`, `<leader>k` / `<leader>j` | Move focus between the pane and the other panels |
 | `Esc` | Return focus to the diff |
 | Click / wheel | Move the cursor (previews) / scroll |
+
+## Branch picker
+
+`<leader>b`, `B` in a selector, or `:branches` lists local branches (current marked `*`) and
+remote-tracking branches, with each local branch's upstream and ahead/behind counts. Log rows
+carry every ref as a chip: `[main]` local, dimmed `[origin/main]` remote, `[v1.0]` tag, and a
+bold chip (or `[HEAD]` when detached) on the checked-out commit.
+
+| Key | Action |
+|-----|--------|
+| any printable key | Filter branches by substring (case-insensitive) |
+| `↑` / `↓`, `Ctrl-p` / `Ctrl-n` | Move the cursor |
+| `Enter` | Check out the highlighted branch (a remote branch creates its local tracking branch) |
+| `Ctrl-s` | Stash the working tree, check out, then pop the stash |
+| `Backspace` / `Ctrl-u` | Edit / clear the filter |
+| `Esc` | Clear the filter, then close |
+
+A checkout refuses to run over a dirty working tree; `Ctrl-s` here or `:checkout! <target>`
+stash first (untracked files included) and restore afterwards. If the pop conflicts, the stash
+is kept and the status bar says so.
 
 ## Commit selection / review target selector
 
@@ -289,6 +319,10 @@ first, with children always above their parents so the graph stays coherent.
 | `p` | Cherry-pick the picked (or cursor) commits onto the current branch — works with non-contiguous picks |
 | `b` | Rebase the current branch onto the cursor commit |
 | `s` | Squash the selected range (must end at HEAD) into one commit |
+| `c` | Check out the cursor commit's branch, or the commit itself (detached) |
+| `n` | New branch at the cursor commit: opens `:branch ` for the name |
+| `a` | Abort the in-progress merge / cherry-pick / rebase / revert |
+| `B` | Open the branch picker |
 | `/` | Filter currently loaded PR rows locally |
 | `r` | In Pull Requests tab, toggle all open PRs / PRs requesting your review |
 | `q` / `Esc` | Quit / return |
@@ -316,6 +350,7 @@ unresolved conflicts are written back with their original markers.
 | `u` | Reset the focused conflict to unresolved |
 | `e` | Write current picks, then open the file in `$EDITOR` at the focused conflict; on exit the view re-parses the file |
 | `w` | Write the file; stages it once fully resolved |
+| `a` | Abort the operation and restore the pre-merge state |
 | `Esc` | Back (press twice to discard unsaved picks) |
 | `q` | Quit |
 

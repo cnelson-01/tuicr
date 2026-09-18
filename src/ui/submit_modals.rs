@@ -270,11 +270,11 @@ fn prompt_spans(stale: bool, event: SubmitEvent) -> Vec<Span<'static>> {
 /// The submit modals should center over the diff pane when one is visible
 /// (file list off to the side would otherwise tug the visual centre left).
 /// Falls back to the full frame when no diff area is laid out yet.
-fn modal_anchor(app: &App, fallback: Rect) -> Rect {
+pub(super) fn modal_anchor(app: &App, fallback: Rect) -> Rect {
     app.diff_area.unwrap_or(fallback)
 }
 
-fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+pub(super) fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     let vertical = Layout::vertical([Constraint::Percentage(percent_y)]).flex(Flex::Center);
     let horizontal = Layout::horizontal([Constraint::Percentage(percent_x)]).flex(Flex::Center);
     let [area] = vertical.areas(area);

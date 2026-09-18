@@ -504,7 +504,7 @@ impl App {
     /// Re-probe the repository and rebuild the selector rows (pseudo rows
     /// included). Used after history operations and when leaving the merge
     /// view, where HEAD or the conflict state may have changed.
-    fn refresh_commit_selector_rows(&mut self) {
+    pub(in crate::app) fn refresh_commit_selector_rows(&mut self) {
         let (rows, has_more) = self.log_rows_from_vcs();
         self.has_more_commit = has_more;
         self.commit_list = rows;

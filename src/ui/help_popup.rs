@@ -345,6 +345,38 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  c         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Check out the cursor commit's branch (or the commit, detached)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  n         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("New branch at the cursor commit (prompts `:branch <name>`)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  a         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(
+                "Abort the in-progress merge / cherry-pick / rebase / revert (also `:abort`)",
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  B         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(
+                "Branch picker (also `<leader>b`, `:branches`); `:checkout <name>`, `:checkout! <name>` stashes around the switch",
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  Esc       ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),

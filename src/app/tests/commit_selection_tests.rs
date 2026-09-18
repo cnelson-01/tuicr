@@ -75,6 +75,8 @@ fn normal_commit(id: &str) -> CommitInfo {
         short_id: id.to_string(),
         branch_name: None,
         parent_ids: Vec::new(),
+        refs: Vec::new(),
+        is_head: false,
         summary: "Test commit".to_string(),
         body: None,
         author: "Test".to_string(),

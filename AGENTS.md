@@ -19,7 +19,8 @@ src/
 │   └── mod.rs           # User config loading (XDG on Unix, %APPDATA% on Windows)
 ├── app.rs               # Application state (App struct, InputMode, etc.)
 │   ├── file_filter.rs   # File-tree include/exclude regex filters + `/` path search
-│   └── log_pane.rs      # Persistent log pane: own list state swapped into the selector fields per action, live preview
+│   ├── log_pane.rs      # Persistent log pane: own list state swapped into the selector fields per action, live preview
+│   └── branches.rs      # Branch picker, checkout with dirty-tree guard / stash-and-switch, :branch, abort
 ├── error.rs             # Error types (TuicrError enum)
 ├── editor.rs            # External $EDITOR command construction and launch helpers
 ├── review_store.rs      # Library API for session listing/loading and shared comment insertion
@@ -432,3 +433,4 @@ You can reference comments by number (e.g., "Regarding comment #2...").
 5. **Be concise** in your response
 6. **If unclear**, ask for clarification rather than guessing
     ├── log_pane.rs      # Persistent log pane renderer (graph above the diff)
+    ├── branch_picker.rs # Branch picker modal (filter-as-you-type, tracking state)

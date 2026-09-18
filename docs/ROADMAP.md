@@ -20,11 +20,11 @@ window. Phases land in order, each as its own commit(s). Tick items as they ship
 
 ## Phase 3: branch operations
 
-- [ ] Switch branch (`:checkout <name>` and a picker); checkout a commit (detached)
-- [ ] Create a branch at the cursor commit
-- [ ] Dirty-tree guard: stash-and-switch or refuse with a clear message
-- [ ] Abort an in-progress cherry-pick / rebase / merge / revert
-- [ ] Graph shows remote-tracking branches, tags, and a HEAD marker
+- [x] Switch branch (`:checkout <name>` and a picker); checkout a commit (detached)
+- [x] Create a branch at the cursor commit
+- [x] Dirty-tree guard: stash-and-switch or refuse with a clear message
+- [x] Abort an in-progress cherry-pick / rebase / merge / revert
+- [x] Graph shows remote-tracking branches, tags, and a HEAD marker
 
 ## Phase 4: log filter
 
