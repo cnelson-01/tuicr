@@ -6,7 +6,7 @@ pub(crate) mod raw;
 pub mod repository;
 pub mod staging;
 
-use crate::vcs::traits::BranchInfo;
+use crate::vcs::traits::{BranchInfo, CommitQuery};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
@@ -436,6 +436,17 @@ impl VcsBackend for GitBackend {
     fn continue_merge_operation(&self) -> Result<String> {
         let result = self.continue_merge_operation_inner();
         self.refresh_after_cli_op(result)
+    }
+
+    fn search_commits(
+        &self,
+        query: &CommitQuery,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<CommitInfo>> {
+        // Both backends search through the CLI: libgit2 has no message /
+        // author / path limiting in its revwalk.
+        cli::search_commits(&self.info().root_path, query, offset, limit)
     }
 
     fn list_branches(&self) -> Result<Vec<BranchInfo>> {

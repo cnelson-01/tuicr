@@ -259,6 +259,12 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             command_text,
             Style::default().fg(theme.fg_primary),
         )]
+    } else if let Some(draft) = app.commit_filter_draft.as_ref() {
+        // The log pane's filter prompt lives here, like `/` search does.
+        vec![Span::styled(
+            format!("/{draft}"),
+            Style::default().fg(theme.fg_primary),
+        )]
     } else {
         let mode_str = match app.input_mode {
             InputMode::Normal => {
@@ -305,6 +311,9 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             Cow::Borrowed("   \u{21b5} apply \u{00b7} esc cancel")
         } else {
             match app.input_mode {
+                InputMode::Normal if app.commit_filter_editing() => {
+                    Cow::Borrowed("   \u{21b5} apply \u{00b7} esc cancel")
+                }
                 InputMode::Normal if app.log_pane_focused() => Cow::Borrowed(
                     "   j/k move \u{00b7} space pick \u{00b7} \u{21b5} load \u{00b7} p cherry-pick \u{00b7} b rebase \u{00b7} s squash \u{00b7} esc diff",
                 ),

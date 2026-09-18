@@ -393,7 +393,11 @@ fn render_target_selector_footer(frame: &mut Frame, app: &App, area: Rect) {
 
     // While editing the PR filter, the footer becomes a vim-style input
     // line: left slot carries `/<draft>|`, right slot the apply/cancel hint.
-    if let Some(draft) = app.pr_filter_draft.as_ref() {
+    if let Some(draft) = app
+        .pr_filter_draft
+        .as_ref()
+        .or(app.commit_filter_draft.as_ref())
+    {
         let left = vec![Span::styled(
             format!(" /{draft}"),
             Style::default().fg(theme.fg_primary),
@@ -435,10 +439,16 @@ fn render_target_selector_footer(frame: &mut Frame, app: &App, area: Rect) {
         String::new()
     } else {
         match app.target_tab {
-            TargetTab::Local => {
-                "   j/k navigate \u{00b7} space range \u{00b7} \u{21b5} confirm \u{00b7} p pick \u{00b7} b rebase \u{00b7} s squash \u{00b7} q quit"
-                    .to_string()
-            }
+            TargetTab::Local => match app.commit_filter_summary() {
+                Some(summary) => format!(
+                    "   /{summary} \u{00b7} {} \u{00b7} / edit \u{00b7} esc clear \u{00b7} \u{21b5} confirm",
+                    app.commit_filter_match_label()
+                ),
+                None => {
+                    "   j/k navigate \u{00b7} space range \u{00b7} \u{21b5} confirm \u{00b7} / filter \u{00b7} p pick \u{00b7} b rebase \u{00b7} s squash \u{00b7} q quit"
+                        .to_string()
+                }
+            },
             TargetTab::PullRequests => {
                 let scope_hint = match app.pr_tab.scope() {
                     PullRequestListScope::Open => "r requested",

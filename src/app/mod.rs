@@ -1556,6 +1556,11 @@ pub struct App {
     pub branch_picker: Option<BranchPicker>,
     /// Start point for the next `:branch <name>`, set by `n` in a selector.
     pub pending_branch_start: Option<String>,
+    /// Active log filter (`/` in the log pane or selector); `None` shows the
+    /// full history.
+    pub commit_filter: Option<crate::vcs::CommitQuery>,
+    /// The filter prompt's buffer while it is open.
+    pub commit_filter_draft: Option<String>,
     /// Display order for the inline commit selector (presentation only).
     pub commit_order: CommitOrder,
     /// Which commits are selected when a multi-commit review first opens.
@@ -1926,6 +1931,7 @@ mod annotations;
 mod branches;
 mod comment_vim;
 mod comments;
+mod commit_filter;
 mod commits;
 mod diff_load;
 mod file_filter;

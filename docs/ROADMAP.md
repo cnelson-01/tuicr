@@ -28,8 +28,8 @@ window. Phases land in order, each as its own commit(s). Tick items as they ship
 
 ## Phase 4: log filter
 
-- [ ] Filter local commits by message text, author, and path
-- [ ] Filter prompt in the log pane with a match count
+- [x] Filter local commits by message text, author, and path
+- [x] Filter prompt in the log pane with a match count
 
 ## Phase 5: local changes
 

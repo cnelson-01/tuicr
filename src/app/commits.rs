@@ -181,7 +181,7 @@ impl App {
         let has_unstaged_changes = change_status.unstaged;
 
         let commit_limit = initial_commit_limit();
-        let commits = self.vcs.get_recent_commits(0, commit_limit)?;
+        let commits = self.fetch_history(0, commit_limit)?;
         let no_local_targets = commits.is_empty() && !has_staged_changes && !has_unstaged_changes;
         // Allow opening the selector on the Pull Requests tab even when there
         // are no local commits or changes — the PR tab is the user's reason
@@ -1001,7 +1001,7 @@ impl App {
         let offset = self.loaded_history_commit_count();
         let limit = self.commit_page_size;
 
-        let new_commits = self.vcs.get_recent_commits(offset, limit)?;
+        let new_commits = self.fetch_history(offset, limit)?;
 
         if new_commits.len() < limit {
             self.has_more_commit = false;

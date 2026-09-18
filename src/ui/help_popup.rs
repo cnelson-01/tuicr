@@ -377,6 +377,15 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  /         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(
+                "Filter the log: words match the message, `author:NAME`, `path:PATH`; Esc clears",
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  Esc       ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),

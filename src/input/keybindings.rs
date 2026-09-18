@@ -542,6 +542,7 @@ pub fn map_log_pane_mode(key: KeyEvent, leader_key: char) -> Action {
         (KeyCode::Char('n'), KeyModifiers::NONE) => Action::SelectorNewBranch,
         (KeyCode::Char('a'), KeyModifiers::NONE) => Action::AbortOperation,
         (KeyCode::Char('B'), _) => Action::OpenBranchPicker,
+        (KeyCode::Char('/'), _) => Action::BeginTargetFilter,
         (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
         _ => map_normal_mode(key, leader_key),
     }

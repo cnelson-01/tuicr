@@ -700,8 +700,9 @@ fn main() -> anyhow::Result<()> {
                     // route through the filter-specific key map so typed
                     // characters update the filter buffer rather than driving
                     // commit-list navigation.
-                    let mut action = if app.input_mode == InputMode::CommitSelect
-                        && app.pr_filter_editing()
+                    let mut action = if (app.input_mode == InputMode::CommitSelect
+                        && app.pr_filter_editing())
+                        || app.commit_filter_editing()
                     {
                         map_target_filter_mode(key)
                     } else if app.input_mode == InputMode::Normal && app.file_tree_prompt_editing()

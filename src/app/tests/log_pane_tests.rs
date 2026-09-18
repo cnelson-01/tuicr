@@ -48,6 +48,19 @@ impl VcsBackend for EndlessVcs {
             .map(|i| commit(&format!("c{i}")))
             .collect())
     }
+
+    /// Filtered pages are named after the query so tests can tell them apart.
+    fn search_commits(
+        &self,
+        query: &crate::vcs::CommitQuery,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<CommitInfo>> {
+        let tag = query.to_string().replace(' ', "_");
+        Ok((offset..offset + limit)
+            .map(|i| commit(&format!("{tag}-{i}")))
+            .collect())
+    }
 }
 
 fn commit(id: &str) -> CommitInfo {
@@ -253,4 +266,59 @@ fn autoshow_opens_in_normal_mode_without_stealing_focus() {
     assert_eq!(app.focused_panel, FocusedPanel::Diff);
     // and only once
     assert!(!app.poll_log_pane_autoshow());
+}
+
+#[test]
+fn log_filter_prompt_applies_pages_and_clears() {
+    let mut app = build_review_app(&["a"]);
+    app.enable_log_pane();
+    assert_eq!(pane(&app).commits[0].id, "c0");
+
+    // typing a query and applying it reloads the pane from the search
+    app.begin_commit_filter();
+    assert!(app.commit_filter_editing());
+    for ch in "fix author:kim".chars() {
+        app.commit_filter_insert_char(ch);
+    }
+    app.apply_commit_filter();
+    assert!(!app.commit_filter_editing());
+    assert_eq!(
+        app.commit_filter_summary().as_deref(),
+        Some("fix author:kim")
+    );
+    assert_eq!(pane(&app).commits[0].id, "fix_author:kim-0");
+    assert!(app.commit_filter_match_label().ends_with("+ matches"));
+
+    // paging through the overflow row stays on the filtered log
+    let first_page = pane(&app).commits.len();
+    app.log_pane_go_bottom();
+    app.log_pane_confirm().expect("paging");
+    assert!(pane(&app).commits.len() > first_page);
+    assert!(
+        pane(&app).commits[first_page]
+            .id
+            .starts_with("fix_author:kim-")
+    );
+
+    // reopening the prompt is pre-filled; Esc keeps the filter
+    app.begin_commit_filter();
+    assert_eq!(app.commit_filter_draft.as_deref(), Some("fix author:kim"));
+    app.cancel_commit_filter();
+    assert!(app.commit_filter.is_some());
+
+    // clearing goes back to the plain history; a second clear is a no-op
+    assert!(app.clear_commit_filter());
+    assert_eq!(pane(&app).commits[0].id, "c0");
+    assert!(app.commit_filter_summary().is_none());
+    assert!(!app.clear_commit_filter());
+
+    // an empty prompt also clears
+    app.begin_commit_filter();
+    app.commit_filter_insert_char('x');
+    app.apply_commit_filter();
+    assert!(app.commit_filter.is_some());
+    app.begin_commit_filter();
+    app.commit_filter_clear_draft();
+    app.apply_commit_filter();
+    assert!(app.commit_filter.is_none());
 }

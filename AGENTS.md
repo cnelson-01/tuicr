@@ -20,7 +20,8 @@ src/
 ├── app.rs               # Application state (App struct, InputMode, etc.)
 │   ├── file_filter.rs   # File-tree include/exclude regex filters + `/` path search
 │   ├── log_pane.rs      # Persistent log pane: own list state swapped into the selector fields per action, live preview
-│   └── branches.rs      # Branch picker, checkout with dirty-tree guard / stash-and-switch, :branch, abort
+│   ├── branches.rs      # Branch picker, checkout with dirty-tree guard / stash-and-switch, :branch, abort
+│   └── commit_filter.rs # Log filter prompt (`/`): CommitQuery over message / author / path, filtered paging
 ├── error.rs             # Error types (TuicrError enum)
 ├── editor.rs            # External $EDITOR command construction and launch helpers
 ├── review_store.rs      # Library API for session listing/loading and shared comment insertion

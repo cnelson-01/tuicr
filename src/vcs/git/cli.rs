@@ -15,7 +15,7 @@ use crate::vcs::git::raw::{
     pair_metadata_with_patch, parse_raw_metadata_from_patch_output, parse_raw_patch_output,
     patch_text_from_raw_patch_output, split_patch_blocks,
 };
-use crate::vcs::traits::{ConflictCommit, RefKind, RefLabel};
+use crate::vcs::traits::{CommitQuery, ConflictCommit, RefKind, RefLabel};
 use crate::vcs::{
     ChangeKind, CommitInfo, DiffWhitespaceMode, MergeConflictInfo, ResolvedRevisionRange,
     RevisionDiffTarget, VcsBackend, VcsChangeStatus, VcsInfo,
@@ -1120,6 +1120,49 @@ fn read_git_object(workdir: &Path, spec: &str) -> Option<String> {
     run_git_command(workdir, &["show", spec]).ok()
 }
 
+/// `git log` limited by a [`CommitQuery`]: fixed-string, case-insensitive
+/// message words (all must match), author, and path. Same walk and shape as
+/// `get_recent_commits`, so the overflow row can page through the matches.
+pub(super) fn search_commits(
+    workdir: &Path,
+    query: &CommitQuery,
+    offset: usize,
+    limit: usize,
+) -> Result<Vec<CommitInfo>> {
+    if run_git_command(workdir, &["rev-parse", "--verify", "HEAD"]).is_err() {
+        return Ok(Vec::new());
+    }
+    let mut args: Vec<String> = vec![
+        "log".into(),
+        format!("--skip={offset}"),
+        format!("--max-count={limit}"),
+        "--date-order".into(),
+        "--branches".into(),
+        "--regexp-ignore-case".into(),
+        "--fixed-strings".into(),
+        "--all-match".into(),
+    ];
+    for word in &query.text {
+        args.push(format!("--grep={word}"));
+    }
+    if let Some(author) = &query.author {
+        args.push(format!("--author={author}"));
+    }
+    args.push(COMMIT_FORMAT.into());
+    args.push("HEAD".into());
+    if let Some(path) = &query.path {
+        args.push("--".into());
+        args.push(path.clone());
+    }
+    let output = run_git_command_strings(workdir, args)?;
+    let mut commits = parse_commit_records(&output, &get_branch_tip_names(workdir));
+    let refs = get_ref_index(workdir);
+    for commit in &mut commits {
+        refs.apply(commit);
+    }
+    Ok(commits)
+}
+
 /// Every ref pointing at each commit (branches, remotes, tags) plus HEAD,
 /// for the log's label chips. Annotated tags are peeled to their commit.
 pub(super) struct RefIndex {
@@ -2147,6 +2190,50 @@ mod tests {
         cli_ids.sort_unstable();
         libgit2_ids.sort_unstable();
         assert_eq!(cli_ids, libgit2_ids);
+    }
+
+    #[test]
+    fn search_commits_filters_by_text_author_and_path() {
+        // given three commits by two authors touching two paths
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let workdir = temp_dir.path();
+        git(workdir, &["init", "-b", "main"]);
+        git(workdir, &["config", "user.email", "kim@example.com"]);
+        git(workdir, &["config", "user.name", "Kim"]);
+        write_file(workdir, "a.txt", "1\n");
+        git(workdir, &["add", "."]);
+        git(workdir, &["commit", "-m", "Add feature A"]);
+        write_file(workdir, "b.txt", "1\n");
+        git(workdir, &["add", "."]);
+        git(workdir, &["commit", "-m", "Fix retry in B"]);
+        git(workdir, &["config", "user.name", "Lee"]);
+        write_file(workdir, "a.txt", "2\n");
+        git(workdir, &["commit", "-am", "fix typo in A"]);
+
+        let summaries = |query: &str| -> Vec<String> {
+            search_commits(workdir, &CommitQuery::parse(query).expect("query"), 0, 10)
+                .expect("search")
+                .into_iter()
+                .map(|c| c.summary)
+                .collect()
+        };
+
+        // then words match the message case-insensitively, all of them
+        assert_eq!(summaries("fix"), ["fix typo in A", "Fix retry in B"]);
+        assert_eq!(summaries("fix retry"), ["Fix retry in B"]);
+        // author narrows further
+        assert_eq!(summaries("fix author:lee"), ["fix typo in A"]);
+        // path limits to commits touching it
+        assert_eq!(summaries("path:a.txt"), ["fix typo in A", "Add feature A"]);
+        // and paging walks the filtered log
+        assert_eq!(
+            search_commits(workdir, &CommitQuery::parse("fix").unwrap(), 1, 10)
+                .unwrap()
+                .into_iter()
+                .map(|c| c.summary)
+                .collect::<Vec<_>>(),
+            ["Fix retry in B"]
+        );
     }
 
     #[test]

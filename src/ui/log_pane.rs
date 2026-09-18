@@ -26,11 +26,17 @@ pub(super) fn render_log_pane(frame: &mut Frame, app: &mut App, area: Rect) {
         .as_ref()
         .map(|pane| pane.list.picks.len())
         .unwrap_or(0);
-    let title = if picked > 0 {
-        format!(" Log \u{00b7} {branch} \u{00b7} {picked} picked ")
-    } else {
-        format!(" Log \u{00b7} {branch} ")
-    };
+    let mut title = format!(" Log \u{00b7} {branch}");
+    if let Some(summary) = app.commit_filter_summary() {
+        title.push_str(&format!(
+            " \u{00b7} /{summary} \u{00b7} {}",
+            app.commit_filter_match_label()
+        ));
+    }
+    if picked > 0 {
+        title.push_str(&format!(" \u{00b7} {picked} picked"));
+    }
+    title.push(' ');
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)

@@ -98,6 +98,55 @@ pub enum RefKind {
     Tag,
 }
 
+/// A log filter. Free words match the commit message (every word must
+/// match, case-insensitively), `author:NAME` matches the author, and
+/// `path:PATH` keeps commits touching that path. Typed as one line:
+/// `fix retry author:kim path:src/net`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CommitQuery {
+    pub text: Vec<String>,
+    pub author: Option<String>,
+    pub path: Option<String>,
+}
+
+impl CommitQuery {
+    /// `None` when the input holds nothing to filter on.
+    pub fn parse(input: &str) -> Option<Self> {
+        let mut query = Self::default();
+        for word in input.split_whitespace() {
+            if let Some(author) = word.strip_prefix("author:") {
+                if !author.is_empty() {
+                    query.author = Some(author.to_string());
+                }
+            } else if let Some(path) = word.strip_prefix("path:") {
+                if !path.is_empty() {
+                    query.path = Some(path.to_string());
+                }
+            } else {
+                query.text.push(word.to_string());
+            }
+        }
+        (!query.is_empty()).then_some(query)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.text.is_empty() && self.author.is_none() && self.path.is_none()
+    }
+}
+
+impl std::fmt::Display for CommitQuery {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut parts: Vec<String> = self.text.clone();
+        if let Some(author) = &self.author {
+            parts.push(format!("author:{author}"));
+        }
+        if let Some(path) = &self.path {
+            parts.push(format!("path:{path}"));
+        }
+        f.write_str(&parts.join(" "))
+    }
+}
+
 /// One row of the branch picker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BranchInfo {
@@ -387,6 +436,19 @@ pub trait VcsBackend: Send {
         ))
     }
 
+    /// Page `offset..offset+limit` of the history that matches `query`, in
+    /// the same order and shape as [`get_recent_commits`](Self::get_recent_commits).
+    fn search_commits(
+        &self,
+        _query: &CommitQuery,
+        _offset: usize,
+        _limit: usize,
+    ) -> Result<Vec<CommitInfo>> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Searching history is not supported for this VCS".into(),
+        ))
+    }
+
     /// Local and remote-tracking branches, local ones first, each sorted
     /// by name, with tracking state for the local ones.
     fn list_branches(&self) -> Result<Vec<BranchInfo>> {
@@ -437,6 +499,17 @@ pub trait VcsBackend: Send {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn commit_query_parses_words_author_and_path() {
+        let query = CommitQuery::parse("fix  retry author:kim path:src/net").expect("query");
+        assert_eq!(query.text, ["fix", "retry"]);
+        assert_eq!(query.author.as_deref(), Some("kim"));
+        assert_eq!(query.path.as_deref(), Some("src/net"));
+        assert_eq!(query.to_string(), "fix retry author:kim path:src/net");
+        assert!(CommitQuery::parse("   ").is_none());
+        assert!(CommitQuery::parse("author: path:").is_none());
+    }
 
     #[test]
     fn vcs_type_display_git() {

@@ -268,9 +268,25 @@ startup, and `log_height = N` (or `:set logheight N`) for its height.
 | `n` | New branch at the cursor commit: opens `:branch ` for the name |
 | `a` | Abort the in-progress merge / cherry-pick / rebase / revert |
 | `B` | Open the branch picker |
+| `/` | Filter the log (see below); `Esc` clears an active filter |
 | `Tab` / `Shift-Tab`, `<leader>k` / `<leader>j` | Move focus between the pane and the other panels |
 | `Esc` | Return focus to the diff |
 | Click / wheel | Move the cursor (previews) / scroll |
+
+### Filtering the log
+
+`/` opens a one-line prompt in the log pane and on the selector's Local tab. Free words
+match the commit message (all of them, case-insensitively), `author:NAME` matches the
+author, and `path:PATH` keeps commits that touch that path:
+
+```
+/fix retry author:kim path:src/net
+```
+
+`Enter` applies and the title (or the selector footer) shows the filter and a match count;
+the overflow row keeps paging through the filtered history. `/` again reopens the prompt
+pre-filled for editing, an empty prompt clears, and `Esc` clears an active filter before
+its usual meaning. Staged, unstaged, and conflicts rows stay visible while filtering.
 
 ## Branch picker
 
@@ -323,7 +339,7 @@ first, with children always above their parents so the graph stays coherent.
 | `n` | New branch at the cursor commit: opens `:branch ` for the name |
 | `a` | Abort the in-progress merge / cherry-pick / rebase / revert |
 | `B` | Open the branch picker |
-| `/` | Filter currently loaded PR rows locally |
+| `/` | Local tab: filter the log by message / `author:` / `path:` (see the log pane section); Pull Requests tab: filter the loaded PR rows |
 | `r` | In Pull Requests tab, toggle all open PRs / PRs requesting your review |
 | `q` / `Esc` | Quit / return |
 

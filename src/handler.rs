@@ -1353,6 +1353,11 @@ pub fn handle_commit_select_action(app: &mut App, action: Action) {
         handle_pr_filter_action(app, action);
         return;
     }
+    // Same for the Local tab's log filter prompt.
+    if app.target_tab == TargetTab::Local && app.commit_filter_editing() {
+        handle_commit_filter_action(app, action);
+        return;
+    }
 
     match action {
         Action::TargetSelectorTabNext => app.cycle_target_tab(true),
@@ -1365,6 +1370,10 @@ pub fn handle_commit_select_action(app: &mut App, action: Action) {
             // commit-selection-range exit so the user isn't stuck staring
             // at a spinner.
             if app.cancel_pr_open() {
+                return;
+            }
+            // An active log filter clears before the selector closes.
+            if app.target_tab == TargetTab::Local && app.clear_commit_filter() {
                 return;
             }
             if app.commit_selection_range.is_none() {
@@ -1429,6 +1438,7 @@ fn handle_local_target_action(app: &mut App, action: Action) {
         }
         Action::AbortOperation => app.abort_operation(),
         Action::OpenBranchPicker => app.open_branch_picker(),
+        Action::BeginTargetFilter => app.begin_commit_filter(),
         _ => {}
     }
 }
@@ -1475,6 +1485,25 @@ fn handle_pr_filter_action(app: &mut App, action: Action) {
 }
 
 /// Handle actions when inline commit selector panel is focused
+/// Keys while the log filter prompt is open (log pane or the selector's
+/// Local tab). Mirrors `handle_pr_filter_action`.
+fn handle_commit_filter_action(app: &mut App, action: Action) {
+    match action {
+        Action::InsertChar(c) => app.commit_filter_insert_char(c),
+        Action::Paste(text) => {
+            for ch in text.chars().filter(|c| !c.is_control()) {
+                app.commit_filter_insert_char(ch);
+            }
+        }
+        Action::DeleteChar => app.commit_filter_delete_char(),
+        Action::DeleteWord => app.commit_filter_delete_word(),
+        Action::ClearLine => app.commit_filter_clear_draft(),
+        Action::SubmitInput => app.apply_commit_filter(),
+        Action::ExitMode => app.cancel_commit_filter(),
+        _ => {}
+    }
+}
+
 /// Keys in the branch picker modal.
 pub fn handle_branch_picker_action(app: &mut App, action: Action) {
     match action {
@@ -1505,7 +1534,12 @@ pub fn handle_branch_picker_action(app: &mut App, action: Action) {
 /// schedules a preview of the cursor commit; Space builds a pick set; Enter
 /// loads it as the review; `p` / `b` / `s` run the history operations.
 fn handle_log_pane_action(app: &mut App, action: Action) {
+    if app.commit_filter_editing() {
+        handle_commit_filter_action(app, action);
+        return;
+    }
     match action {
+        Action::BeginTargetFilter => app.begin_commit_filter(),
         Action::CommitSelectDown | Action::CursorDown(_) | Action::MouseScrollDown(_) => {
             let n = match action {
                 Action::CursorDown(n) | Action::MouseScrollDown(n) => n,
@@ -1547,7 +1581,12 @@ fn handle_log_pane_action(app: &mut App, action: Action) {
         }
         Action::AbortOperation => app.abort_operation(),
         Action::OpenBranchPicker => app.open_branch_picker(),
-        Action::ExitMode => app.focused_panel = FocusedPanel::Diff,
+        // Esc clears an active filter first; a second Esc leaves the pane.
+        Action::ExitMode => {
+            if !app.clear_commit_filter() {
+                app.focused_panel = FocusedPanel::Diff;
+            }
+        }
         _ => handle_shared_normal_action(app, action),
     }
 }

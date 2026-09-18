@@ -616,6 +616,8 @@ impl App {
             log_pane_wanted: false,
             branch_picker: None,
             pending_branch_start: None,
+            commit_filter: None,
+            commit_filter_draft: None,
             commit_order: CommitOrder::default(),
             commit_selection_start: CommitSelectionStart::default(),
             commit_diff_cache: HashMap::new(),

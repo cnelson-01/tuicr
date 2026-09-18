@@ -78,10 +78,7 @@ impl App {
     /// fullscreen selector's post-operation refresh.
     pub(in crate::app) fn log_rows_from_vcs(&self) -> (Vec<CommitInfo>, bool) {
         let commit_limit = initial_commit_limit();
-        let commits = self
-            .vcs
-            .get_recent_commits(0, commit_limit)
-            .unwrap_or_default();
+        let commits = self.fetch_history(0, commit_limit).unwrap_or_default();
         let highlighter = self.theme.syntax_highlighter();
         let change_status = Self::get_change_status_with_ignore(
             self.vcs.as_ref(),
