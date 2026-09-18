@@ -472,7 +472,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw(
-                "Branch picker (also `<leader>b`, `:branches`); `:checkout <name>`, `:checkout! <name>` stashes around the switch",
+                "Branch picker (also `<leader>b`, `:branches`): tab picks, ctrl-d compares, ctrl-l logs; `:compare A B` loads A...B",
             ),
         ]),
         Line::from(vec![

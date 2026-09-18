@@ -234,6 +234,7 @@ In command mode,
 | `:stashes` / `:stash list` | Open the stash picker |
 | `:find <text>` / `:grep <text>` | Search the working tree and show the hits in place of the diff |
 | `:find` | Bring the last results back (or prompt when there are none) |
+| `:compare <base> <other>` | Load `base...other` as the review (what `other` has since the merge base); `:compare <other>` compares against HEAD; `:compare A..B` is used as typed |
 | `:blame` / `:annotate` / `:set blame!` | Toggle the blame gutter; `:set blame` / `:set noblame` set it |
 | `:history` | Show the commits touching the file under the cursor in the log pane |
 | `:set reviewed` | Show files already marked reviewed |
@@ -338,8 +339,9 @@ startup, and `log_height = N` (or `:set logheight N`) for its height.
 
 `/` opens a one-line prompt in the log pane and on the selector's Local tab. Free words
 match the commit message (all of them, case-insensitively), `author:NAME` matches the
-author, `path:PATH` keeps commits that touch that path, and `branch:NAME` walks only the
-branches (local and remote-tracking) whose name contains NAME:
+author, `path:PATH` keeps commits that touch that path, `branch:NAME` walks only the
+branches (local and remote-tracking) whose name contains NAME (repeatable), and `ref:NAME`
+walks exactly that ref (repeatable; what the branch picker's `Ctrl-l` produces):
 
 ```
 /fix retry author:kim path:src/net branch:release
@@ -364,6 +366,9 @@ bold chip (or `[HEAD]` when detached) on the checked-out commit.
 |-----|--------|
 | any printable key | Filter branches by substring (case-insensitive) |
 | `↑` / `↓`, `Ctrl-p` / `Ctrl-n` | Move the cursor |
+| `Tab` | Pick / unpick the highlighted branch (`◆1`, `◆2`); a third pick replaces the oldest |
+| `Ctrl-d` | Compare: two picks load `first...second` (what the second has that the first does not); one pick or none compares the current branch with it (or the cursor row) |
+| `Ctrl-l` | Show the picked branches (or the cursor row) in the log pane, as a `ref:` filter |
 | `Enter` | Check out the highlighted branch (a remote branch creates its local tracking branch) |
 | `Ctrl-s` | Stash the working tree, check out, then pop the stash |
 | `Backspace` / `Ctrl-u` | Edit / clear the filter |

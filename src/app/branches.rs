@@ -17,6 +17,9 @@ pub struct BranchPicker {
     pub cursor: usize,
     /// Mode restored when the picker closes.
     pub return_mode: InputMode,
+    /// Indices into `branches` picked with Tab, in pick order, at most two:
+    /// the pair a compare runs on, or the set the log shows.
+    pub picked: Vec<usize>,
 }
 
 impl BranchPicker {
@@ -41,6 +44,43 @@ impl BranchPicker {
         let n = self.visible().len();
         self.cursor = self.cursor.min(n.saturating_sub(1));
     }
+
+    /// Index into `branches` of the row under the cursor.
+    fn cursor_index(&self) -> Option<usize> {
+        self.visible().get(self.cursor).copied()
+    }
+
+    /// Tab: pick or unpick the row under the cursor. A third pick replaces
+    /// the oldest so the set stays a pair.
+    pub fn toggle_pick(&mut self, idx: usize) {
+        if let Some(pos) = self.picked.iter().position(|&i| i == idx) {
+            self.picked.remove(pos);
+        } else {
+            self.picked.push(idx);
+            if self.picked.len() > 2 {
+                self.picked.remove(0);
+            }
+        }
+    }
+
+    /// 1-based pick order of a branch, for the row marker.
+    pub fn pick_order(&self, idx: usize) -> Option<usize> {
+        self.picked.iter().position(|&i| i == idx).map(|p| p + 1)
+    }
+
+    /// The names a compare or log acts on: the picks, else the cursor row.
+    pub fn picked_names(&self) -> Vec<String> {
+        let indices: Vec<usize> = if self.picked.is_empty() {
+            self.cursor_index().into_iter().collect()
+        } else {
+            self.picked.clone()
+        };
+        indices
+            .into_iter()
+            .filter_map(|i| self.branches.get(i))
+            .map(|b| b.name.clone())
+            .collect()
+    }
 }
 
 impl App {
@@ -61,6 +101,7 @@ impl App {
                     filter: String::new(),
                     cursor,
                     return_mode,
+                    picked: Vec::new(),
                 });
                 self.command_buffer.clear();
                 self.input_mode = InputMode::BranchPicker;
@@ -114,6 +155,71 @@ impl App {
             picker.filter.clear();
             picker.clamp_cursor();
         }
+    }
+
+    /// Tab: pick or unpick the highlighted branch for a compare / log.
+    pub fn branch_picker_toggle_pick(&mut self) {
+        if let Some(picker) = self.branch_picker.as_mut()
+            && let Some(idx) = picker.cursor_index()
+        {
+            picker.toggle_pick(idx);
+        }
+    }
+
+    /// Ctrl-d: compare the picks as `first...second` (what the second has
+    /// that the first does not). One pick, or none, compares the current
+    /// branch against it (or the cursor row).
+    pub fn branch_picker_compare(&mut self) {
+        let Some(picker) = self.branch_picker.as_ref() else {
+            return;
+        };
+        let mut names = picker.picked_names();
+        if names.len() < 2 {
+            let current = self
+                .vcs_info
+                .branch_name
+                .clone()
+                .unwrap_or_else(|| "HEAD".to_string());
+            names.insert(0, current);
+        }
+        let (Some(base), Some(other)) = (names.first().cloned(), names.get(1).cloned()) else {
+            return;
+        };
+        if base == other {
+            self.set_message(format!(
+                "{base} is the current branch; pick another to compare"
+            ));
+            return;
+        }
+        self.close_branch_picker();
+        self.compare_revisions(&format!("{base}...{other}"));
+    }
+
+    /// Ctrl-l: show the picked branches (or the cursor row) in the log pane.
+    pub fn branch_picker_log(&mut self) {
+        let Some(picker) = self.branch_picker.as_ref() else {
+            return;
+        };
+        let names = picker.picked_names();
+        if names.is_empty() {
+            return;
+        }
+        self.close_branch_picker();
+        let label = names.join(", ");
+        self.commit_filter = Some(crate::vcs::CommitQuery {
+            refs: names,
+            ..Default::default()
+        });
+        if self.log_pane.is_none() {
+            self.enable_log_pane();
+        } else {
+            self.refresh_log_rows_keep_cursor();
+            self.focused_panel = super::FocusedPanel::CommitSelector;
+        }
+        let count = self.commit_filter_match_label();
+        self.set_message(format!(
+            "Log of {label} \u{00b7} {count} \u{00b7} esc clears"
+        ));
     }
 
     /// Enter in the picker: check out the highlighted branch. A remote
@@ -343,7 +449,28 @@ mod tests {
             filter: String::new(),
             cursor: 0,
             return_mode: InputMode::Normal,
+            picked: Vec::new(),
         }
+    }
+
+    #[test]
+    fn picks_stay_a_pair_in_pick_order_and_fall_back_to_the_cursor() {
+        let mut p = picker(&[("main", false), ("dev", false), ("origin/main", true)]);
+        // nothing picked: the cursor row stands in
+        p.cursor = 1;
+        assert_eq!(p.picked_names(), ["dev"]);
+        // picks accumulate in order and toggle off again
+        p.toggle_pick(0);
+        p.toggle_pick(2);
+        assert_eq!(p.picked_names(), ["main", "origin/main"]);
+        assert_eq!(p.pick_order(2), Some(2));
+        p.toggle_pick(0);
+        assert_eq!(p.picked_names(), ["origin/main"]);
+        // a third pick pushes the oldest out
+        p.toggle_pick(0);
+        p.toggle_pick(1);
+        assert_eq!(p.picked_names(), ["main", "dev"]);
+        assert_eq!(p.pick_order(2), None);
     }
 
     #[test]

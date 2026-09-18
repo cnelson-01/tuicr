@@ -222,7 +222,8 @@ impl App {
             text: Vec::new(),
             author: None,
             path: Some(path.to_string_lossy().into_owned()),
-            branch: None,
+            branch: Vec::new(),
+            refs: Vec::new(),
         });
         if self.log_pane.is_none() {
             self.enable_log_pane();

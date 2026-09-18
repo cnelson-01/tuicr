@@ -21,8 +21,14 @@ pub(super) fn render_branch_picker(frame: &mut Frame, app: &App) {
     let area = centered_rect(60, 70, modal_anchor(app, frame.area()));
     frame.render_widget(Clear, area);
 
+    let picked = picker.picked.len();
+    let title = if picked > 0 {
+        format!(" Branches \u{00b7} {picked} picked ")
+    } else {
+        " Branches ".to_string()
+    };
     let block = Block::default()
-        .title(" Branches ")
+        .title(title)
         .title_alignment(Alignment::Center)
         .borders(Borders::ALL)
         .style(styles::popup_style(theme))
@@ -60,10 +66,15 @@ pub(super) fn render_branch_picker(frame: &mut Frame, app: &App) {
         } else {
             " "
         };
-        let mut spans = vec![Span::styled(
-            format!("{marker} {}", branch.name),
-            name_style,
-        )];
+        let pick = match picker.pick_order(idx) {
+            Some(order) => format!("\u{25c6}{order}"),
+            None => "  ".to_string(),
+        };
+        let mut spans = vec![
+            Span::styled(format!("{marker} "), name_style),
+            Span::styled(pick, styles::branch_style(theme)),
+            Span::styled(format!(" {}", branch.name), name_style),
+        ];
         let mut tracking = String::new();
         if let Some(upstream) = &branch.upstream {
             tracking.push_str(&format!("  \u{2192} {upstream}"));
@@ -102,7 +113,7 @@ pub(super) fn render_branch_picker(frame: &mut Frame, app: &App) {
     ]));
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "type to filter \u{00b7} \u{2191}/\u{2193} move \u{00b7} \u{21b5} checkout \u{00b7} ctrl-s stash+switch \u{00b7} esc close",
+        "type to filter \u{00b7} tab pick \u{00b7} ctrl-d compare \u{00b7} ctrl-l log \u{00b7} \u{21b5} checkout \u{00b7} ctrl-s stash+switch \u{00b7} esc",
         Style::default().fg(theme.fg_secondary),
     )));
 

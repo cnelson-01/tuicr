@@ -100,15 +100,19 @@ pub enum RefKind {
 
 /// A log filter. Free words match the commit message (every word must
 /// match, case-insensitively), `author:NAME` matches the author,
-/// `path:PATH` keeps commits touching that path, and `branch:NAME` walks
-/// only branches (local and remote-tracking) whose name contains NAME.
+/// `path:PATH` keeps commits touching that path, `branch:NAME` walks only
+/// branches (local and remote-tracking) whose name contains NAME, and
+/// `ref:NAME` walks exactly that ref (what the branch picker's log uses).
 /// Typed as one line: `fix retry author:kim path:src/net branch:release`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CommitQuery {
     pub text: Vec<String>,
     pub author: Option<String>,
     pub path: Option<String>,
-    pub branch: Option<String>,
+    /// Substrings; each becomes a `*NAME*` glob over branch names.
+    pub branch: Vec<String>,
+    /// Exact revisions to walk instead of every branch.
+    pub refs: Vec<String>,
 }
 
 impl CommitQuery {
@@ -126,7 +130,11 @@ impl CommitQuery {
                 }
             } else if let Some(branch) = word.strip_prefix("branch:") {
                 if !branch.is_empty() {
-                    query.branch = Some(branch.to_string());
+                    query.branch.push(branch.to_string());
+                }
+            } else if let Some(rev) = word.strip_prefix("ref:") {
+                if !rev.is_empty() {
+                    query.refs.push(rev.to_string());
                 }
             } else {
                 query.text.push(word.to_string());
@@ -139,7 +147,8 @@ impl CommitQuery {
         self.text.is_empty()
             && self.author.is_none()
             && self.path.is_none()
-            && self.branch.is_none()
+            && self.branch.is_empty()
+            && self.refs.is_empty()
     }
 }
 
@@ -152,8 +161,11 @@ impl std::fmt::Display for CommitQuery {
         if let Some(path) = &self.path {
             parts.push(format!("path:{path}"));
         }
-        if let Some(branch) = &self.branch {
+        for branch in &self.branch {
             parts.push(format!("branch:{branch}"));
+        }
+        for rev in &self.refs {
+            parts.push(format!("ref:{rev}"));
         }
         f.write_str(&parts.join(" "))
     }
@@ -643,10 +655,13 @@ mod tests {
         assert_eq!(query.to_string(), "fix retry author:kim path:src/net");
         assert!(CommitQuery::parse("   ").is_none());
         assert!(CommitQuery::parse("author: path:").is_none());
-        let by_branch = CommitQuery::parse("branch:release").expect("query");
-        assert_eq!(by_branch.branch.as_deref(), Some("release"));
+        let by_branch = CommitQuery::parse("branch:release branch:hotfix").expect("query");
+        assert_eq!(by_branch.branch, ["release", "hotfix"]);
         assert!(by_branch.text.is_empty());
-        assert_eq!(by_branch.to_string(), "branch:release");
+        assert_eq!(by_branch.to_string(), "branch:release branch:hotfix");
+        let exact = CommitQuery::parse("ref:master ref:origin/master").expect("query");
+        assert_eq!(exact.refs, ["master", "origin/master"]);
+        assert_eq!(exact.to_string(), "ref:master ref:origin/master");
     }
 
     #[test]

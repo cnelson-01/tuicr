@@ -1971,6 +1971,7 @@ mod comment_vim;
 mod comments;
 mod commit_filter;
 mod commits;
+mod compare;
 mod diff_load;
 mod file_filter;
 mod find;

@@ -218,6 +218,12 @@ pub enum Action {
     BranchPickerConfirm,
     /// Stash, check out, and pop (Ctrl-s).
     BranchPickerConfirmSmart,
+    /// Pick / unpick the highlighted branch for a compare or log (Tab).
+    BranchPickerPick,
+    /// Compare the picked pair, or the current branch with the pick (Ctrl-d).
+    BranchPickerCompare,
+    /// Show the picked branches in the log pane (Ctrl-l).
+    BranchPickerLog,
 
     // No-op
     None,
@@ -551,6 +557,9 @@ fn map_branch_picker_mode(key: KeyEvent) -> Action {
         (KeyCode::Char('n'), KeyModifiers::CONTROL) => Action::BranchPickerDown,
         (KeyCode::Char('p'), KeyModifiers::CONTROL) => Action::BranchPickerUp,
         (KeyCode::Char('s'), KeyModifiers::CONTROL) => Action::BranchPickerConfirmSmart,
+        (KeyCode::Tab, _) => Action::BranchPickerPick,
+        (KeyCode::Char('d'), KeyModifiers::CONTROL) => Action::BranchPickerCompare,
+        (KeyCode::Char('l'), KeyModifiers::CONTROL) => Action::BranchPickerLog,
         (KeyCode::Char('u'), KeyModifiers::CONTROL) => Action::ClearLine,
         (KeyCode::Enter, _) => Action::BranchPickerConfirm,
         (KeyCode::Esc, _) => Action::ExitMode,

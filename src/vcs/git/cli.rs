@@ -1141,14 +1141,17 @@ pub(super) fn search_commits(
         "--fixed-strings".into(),
         "--all-match".into(),
     ];
-    match &query.branch {
-        // Only branches whose name contains the text, local and remote.
-        Some(branch) => {
-            let glob = format!("*{branch}*");
-            args.push(format!("--branches={glob}"));
-            args.push(format!("--remotes={glob}"));
-        }
-        None => args.push("--branches".into()),
+    // Which refs to walk: every branch plus HEAD by default; otherwise the
+    // `branch:` substrings (as globs over local and remote-tracking names)
+    // and the exact `ref:` revisions.
+    let scoped = !query.branch.is_empty() || !query.refs.is_empty();
+    for branch in &query.branch {
+        let glob = format!("*{branch}*");
+        args.push(format!("--branches={glob}"));
+        args.push(format!("--remotes={glob}"));
+    }
+    if !scoped {
+        args.push("--branches".into());
     }
     for word in &query.text {
         args.push(format!("--grep={word}"));
@@ -1157,7 +1160,9 @@ pub(super) fn search_commits(
         args.push(format!("--author={author}"));
     }
     args.push(COMMIT_FORMAT.into());
-    if query.branch.is_none() {
+    if scoped {
+        args.extend(query.refs.iter().cloned());
+    } else {
         args.push("HEAD".into());
     }
     if let Some(path) = &query.path {
@@ -2254,6 +2259,10 @@ mod tests {
             "{on_release:?}"
         );
         assert_eq!(summaries("notes branch:rel"), ["Release notes"]);
+        // ref: walks exactly the named revisions
+        assert_eq!(summaries("ref:release/1.0")[0], "Release notes");
+        assert!(!summaries("ref:release/1.0").contains(&"Main only".to_string()));
+        assert!(summaries("ref:main ref:release/1.0").contains(&"Main only".to_string()));
         git(workdir, &["checkout", "-q", "main"]);
 
         // and paging walks the filtered log

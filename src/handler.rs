@@ -717,6 +717,11 @@ pub fn handle_command_action(app: &mut App, action: Action) {
                 let message = message.to_string();
                 app.stash_push_current(Some(&message));
                 CommandAfterDispatch::ExitCommandMode
+            } else if let Some(args) = cmd.strip_prefix("compare ") {
+                let args = args.to_string();
+                app.exit_command_mode();
+                app.compare_command(&args);
+                CommandAfterDispatch::KeepMode
             } else if let Some(query) = cmd
                 .strip_prefix("find ")
                 .or_else(|| cmd.strip_prefix("grep "))
@@ -1669,6 +1674,9 @@ pub fn handle_branch_picker_action(app: &mut App, action: Action) {
         Action::BranchPickerUp => app.branch_picker_up(),
         Action::BranchPickerConfirm => app.branch_picker_confirm(false),
         Action::BranchPickerConfirmSmart => app.branch_picker_confirm(true),
+        Action::BranchPickerPick => app.branch_picker_toggle_pick(),
+        Action::BranchPickerCompare => app.branch_picker_compare(),
+        Action::BranchPickerLog => app.branch_picker_log(),
         Action::InsertChar(c) => app.branch_picker_push(c),
         Action::DeleteChar => app.branch_picker_pop(),
         Action::ClearLine => app.branch_picker_clear(),

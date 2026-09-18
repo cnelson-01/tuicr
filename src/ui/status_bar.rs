@@ -343,7 +343,7 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                     "   j/k move \u{00b7} \u{21b5} pop \u{00b7} a apply \u{00b7} d drop \u{00b7} esc close",
                 ),
                 InputMode::BranchPicker => Cow::Borrowed(
-                    "   type to filter \u{00b7} \u{2191}/\u{2193} move \u{00b7} \u{21b5} checkout \u{00b7} ctrl-s stash+switch \u{00b7} esc close",
+                    "   type to filter \u{00b7} tab pick \u{00b7} ctrl-d compare \u{00b7} ctrl-l log \u{00b7} \u{21b5} checkout \u{00b7} ctrl-s stash+switch",
                 ),
                 InputMode::CommitSelect => Cow::Borrowed(
                     "   j/k navigate \u{00b7} space select \u{00b7} \u{21b5} confirm \u{00b7} esc back",
