@@ -26,6 +26,12 @@ window. Phases land in order, each as its own commit(s). Tick items as they ship
 - [x] Abort an in-progress cherry-pick / rebase / merge / revert
 - [x] Graph shows remote-tracking branches, tags, and a HEAD marker
 
+## Phase 3b: remote operations
+
+- [x] `:fetch` (all remotes, pruned) with a per-branch summary; Ctrl-f in the branch picker
+- [x] `:pull` fast-forward only, `:pull!` rebase
+- [x] `:push` to the upstream, setting it on the default remote when missing (never forces)
+
 ## Phase 4: log filter
 
 - [x] Filter local commits by message text, author, and path

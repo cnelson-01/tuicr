@@ -400,7 +400,7 @@ impl App {
     /// cached branch name and head commit are current, then refresh every
     /// commit list on screen and the working-tree diff if that is what is
     /// being reviewed.
-    fn after_head_moved(&mut self) {
+    pub(in crate::app) fn after_head_moved(&mut self) {
         match detect_vcs(
             self.vcs_open_options.git_backend_preference,
             self.vcs_open_options.diff_whitespace_mode,

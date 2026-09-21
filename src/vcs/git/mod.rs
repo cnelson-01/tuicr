@@ -652,6 +652,101 @@ impl VcsBackend for GitBackend {
         run_git_command(&self.info().root_path, &["stash", "drop", "-q", &selector]).map(|_| ())
     }
 
+    fn fetch(&self) -> Result<String> {
+        let root = &self.info().root_path;
+        let before = remote_ref_tips(root)?;
+        run_git_command(root, &["fetch", "--all", "--prune", "--quiet"])?;
+        let after = remote_ref_tips(root)?;
+        Ok(describe_fetch(root, &before, &after))
+    }
+
+    fn pull(&self, rebase: bool) -> Result<String> {
+        let root = &self.info().root_path;
+        let before = run_git_command(root, &["rev-parse", "HEAD"])?
+            .trim()
+            .to_string();
+        let args = if rebase {
+            ["pull", "--rebase", "--quiet"]
+        } else {
+            ["pull", "--ff-only", "--quiet"]
+        };
+        let result = run_git_command(root, &args).and_then(|_| {
+            let after = run_git_command(root, &["rev-parse", "HEAD"])?
+                .trim()
+                .to_string();
+            if after == before {
+                return Ok("Already up to date".to_string());
+            }
+            let count = run_git_command(
+                root,
+                &["rev-list", "--count", &format!("{before}..{after}")],
+            )
+            .map(|n| n.trim().to_string())
+            .unwrap_or_else(|_| "some".to_string());
+            let how = if rebase {
+                "rebased onto"
+            } else {
+                "fast-forwarded to"
+            };
+            Ok(format!(
+                "Pulled {count} commit{}, {how} {}",
+                if count == "1" { "" } else { "s" },
+                &after[..7.min(after.len())]
+            ))
+        });
+        self.refresh_after_cli_op(result)
+    }
+
+    fn push(&self) -> Result<String> {
+        let root = &self.info().root_path;
+        let branch = run_git_command(root, &["symbolic-ref", "--quiet", "--short", "HEAD"])
+            .map_err(|_| {
+                TuicrError::VcsCommand("HEAD is detached; check out a branch to push".into())
+            })?
+            .trim()
+            .to_string();
+        let upstream = run_git_command(
+            root,
+            &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+        )
+        .ok()
+        .map(|u| u.trim().to_string())
+        .filter(|u| !u.is_empty());
+        match upstream {
+            Some(upstream) => {
+                let ahead = run_git_command(root, &["rev-list", "--count", "@{u}..HEAD"])
+                    .map(|n| n.trim().to_string())
+                    .unwrap_or_else(|_| "some".to_string());
+                if ahead == "0" {
+                    return Ok(format!(
+                        "Nothing to push: {branch} is up to date with {upstream}"
+                    ));
+                }
+                run_git_command(root, &["push", "--quiet"])?;
+                Ok(format!(
+                    "Pushed {ahead} commit{} from {branch} to {upstream}",
+                    if ahead == "1" { "" } else { "s" }
+                ))
+            }
+            None => {
+                let remotes = run_git_command(root, &["remote"])?;
+                let remote = remotes
+                    .lines()
+                    .find(|r| *r == "origin")
+                    .or_else(|| remotes.lines().next())
+                    .ok_or_else(|| TuicrError::VcsCommand("No remote configured".into()))?
+                    .to_string();
+                run_git_command(
+                    root,
+                    &["push", "--quiet", "--set-upstream", &remote, &branch],
+                )?;
+                Ok(format!(
+                    "Pushed {branch} to {remote}/{branch} and set it as upstream"
+                ))
+            }
+        }
+    }
+
     fn blame_file(&self, path: &Path, revision: Option<&str>) -> Result<Vec<Option<BlameLine>>> {
         let path = path.to_string_lossy();
         let mut args = vec!["blame", "--porcelain"];
@@ -719,6 +814,72 @@ fn parse_blame_porcelain(output: &str) -> Vec<Option<BlameLine>> {
         }
     }
     lines
+}
+
+/// Remote-tracking refs and their tips, `origin/HEAD` aliases excluded.
+fn remote_ref_tips(root: &Path) -> Result<HashMap<String, String>> {
+    let output = run_git_command(
+        root,
+        &[
+            "for-each-ref",
+            "--format=%(refname:short)%00%(objectname)",
+            "refs/remotes",
+        ],
+    )?;
+    Ok(output
+        .lines()
+        .filter_map(|line| line.split_once('\0'))
+        .filter(|(name, _)| !name.ends_with("/HEAD"))
+        .map(|(name, oid)| (name.to_string(), oid.to_string()))
+        .collect())
+}
+
+/// `Fetched: origin/main +3, origin/dev new · 1 pruned`, or `up to date`.
+fn describe_fetch(
+    root: &Path,
+    before: &HashMap<String, String>,
+    after: &HashMap<String, String>,
+) -> String {
+    let mut moved: Vec<String> = Vec::new();
+    let mut names: Vec<&String> = after.keys().collect();
+    names.sort();
+    for name in names {
+        let now = &after[name];
+        match before.get(name) {
+            None => moved.push(format!("{name} new")),
+            Some(old) if old != now => {
+                let count =
+                    run_git_command(root, &["rev-list", "--count", &format!("{old}..{now}")])
+                        .map(|n| n.trim().to_string())
+                        .ok()
+                        .filter(|n| n != "0");
+                match count {
+                    Some(n) => moved.push(format!("{name} +{n}")),
+                    None => moved.push(format!("{name} moved")),
+                }
+            }
+            Some(_) => {}
+        }
+    }
+    let pruned = before
+        .keys()
+        .filter(|name| !after.contains_key(*name))
+        .count();
+    if moved.is_empty() && pruned == 0 {
+        return "Fetched: everything up to date".to_string();
+    }
+    let shown = moved.len().min(5);
+    let mut summary = format!("Fetched: {}", moved[..shown].join(", "));
+    if moved.len() > shown {
+        summary.push_str(&format!(" and {} more", moved.len() - shown));
+    }
+    if moved.is_empty() {
+        summary = "Fetched".to_string();
+    }
+    if pruned > 0 {
+        summary.push_str(&format!(" \u{00b7} {pruned} pruned"));
+    }
+    summary
 }
 
 /// Run git with `input` on stdin (patches for `git apply`).
@@ -1816,6 +1977,102 @@ mod tests {
             .blame_file(Path::new("src/file.txt"), Some(&first))
             .expect("blame at revision");
         assert_eq!(at_first.len(), 1);
+    }
+
+    #[test]
+    fn fetch_pull_and_push_through_a_local_bare_remote() {
+        // given a bare remote with two clones, A and B
+        let temp_dir = tempdir().expect("failed to create temp dir");
+        let base = temp_dir.path();
+        let remote = base.join("remote.git");
+        run_git_command(base, &["init", "--bare", "-b", "main", "remote.git"]).expect("bare init");
+        let remote_str = remote.to_string_lossy().into_owned();
+        run_git_command(base, &["clone", "-q", &remote_str, "a"]).expect("clone a");
+        let a = base.join("a");
+        for args in [
+            ["config", "user.name", "Tuicr Test"],
+            ["config", "user.email", "tuicr@example.com"],
+            ["config", "commit.gpgsign", "false"],
+        ] {
+            run_git_command(&a, &args).expect("config");
+        }
+        run_git_command(&a, &["checkout", "-q", "-b", "main"]).expect("branch main");
+        fs::write(a.join("f.txt"), "one\n").expect("write");
+        run_git_command(&a, &["add", "."]).expect("add");
+        run_git_command(&a, &["commit", "-qm", "one"]).expect("commit");
+        run_git_command(&a, &["push", "-q", "-u", "origin", "main"]).expect("push");
+        run_git_command(base, &["clone", "-q", &remote_str, "b"]).expect("clone b");
+        let b = base.join("b");
+        for args in [
+            ["config", "user.name", "Tuicr Test"],
+            ["config", "user.email", "tuicr@example.com"],
+            ["config", "commit.gpgsign", "false"],
+        ] {
+            run_git_command(&b, &args).expect("config");
+        }
+        let backend = |root: &Path| {
+            GitBackend::discover_from(
+                root,
+                GitBackendPreference::Libgit2,
+                DiffWhitespaceMode::Normal,
+            )
+            .expect("backend")
+        };
+
+        // when A pushes a second commit, B's fetch reports it and pull takes it
+        fs::write(a.join("f.txt"), "one\ntwo\n").expect("write");
+        run_git_command(&a, &["commit", "-qam", "two"]).expect("commit");
+        assert!(
+            backend(&a)
+                .push()
+                .expect("push")
+                .starts_with("Pushed 1 commit")
+        );
+        let fetched = backend(&b).fetch().expect("fetch");
+        assert!(fetched.contains("origin/main +1"), "{fetched}");
+        assert_eq!(
+            backend(&b).fetch().expect("fetch"),
+            "Fetched: everything up to date"
+        );
+        let pulled = backend(&b).pull(false).expect("pull");
+        assert!(pulled.starts_with("Pulled 1 commit"), "{pulled}");
+        assert_eq!(fs::read_to_string(b.join("f.txt")).unwrap(), "one\ntwo\n");
+        assert_eq!(backend(&b).pull(false).expect("pull"), "Already up to date");
+
+        // and a push with no upstream sets one
+        run_git_command(&b, &["checkout", "-q", "-b", "topic"]).expect("branch");
+        fs::write(b.join("t.txt"), "t\n").expect("write");
+        run_git_command(&b, &["add", "."]).expect("add");
+        run_git_command(&b, &["commit", "-qm", "topic"]).expect("commit");
+        let pushed = backend(&b).push().expect("push");
+        assert!(pushed.contains("set it as upstream"), "{pushed}");
+        assert!(
+            backend(&b)
+                .push()
+                .expect("push")
+                .starts_with("Nothing to push")
+        );
+
+        // and when the branches diverge, ff-only refuses but rebase pulls
+        run_git_command(&b, &["checkout", "-q", "main"]).expect("checkout");
+        fs::write(b.join("f.txt"), "one\ntwo\nthree\n").expect("write");
+        run_git_command(&b, &["commit", "-qam", "three"]).expect("commit");
+        backend(&b).push().expect("push three");
+        fs::write(a.join("g.txt"), "g\n").expect("write");
+        run_git_command(&a, &["add", "."]).expect("add");
+        run_git_command(&a, &["commit", "-qm", "g"]).expect("commit");
+        backend(&a).fetch().expect("fetch");
+        assert!(
+            backend(&a).pull(false).is_err(),
+            "diverged: ff-only must refuse"
+        );
+        let rebased = backend(&a).pull(true).expect("pull --rebase");
+        assert!(rebased.contains("rebased onto"), "{rebased}");
+        assert!(a.join("g.txt").exists());
+        assert_eq!(
+            fs::read_to_string(a.join("f.txt")).unwrap(),
+            "one\ntwo\nthree\n"
+        );
     }
 
     fn is_dirty(root: &Path) -> bool {

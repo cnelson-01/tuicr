@@ -641,6 +641,29 @@ pub trait VcsBackend: Send {
         ))
     }
 
+    /// `git fetch --all --prune`. Returns a one-line summary of what moved.
+    fn fetch(&self) -> Result<String> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Fetching is not supported for this VCS".into(),
+        ))
+    }
+
+    /// Pull the current branch's upstream: fast-forward only, or rebase
+    /// onto it when `rebase`. Returns a one-line summary.
+    fn pull(&self, _rebase: bool) -> Result<String> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Pulling is not supported for this VCS".into(),
+        ))
+    }
+
+    /// Push the current branch to its upstream, setting the upstream on the
+    /// default remote when it has none. Never forces. Returns a summary.
+    fn push(&self) -> Result<String> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Pushing is not supported for this VCS".into(),
+        ))
+    }
+
     /// Blame `path` at `revision` (the working tree when `None`): one entry
     /// per line, index 0 = line 1, `None` for lines without a commit.
     fn blame_file(&self, _path: &Path, _revision: Option<&str>) -> Result<Vec<Option<BlameLine>>> {

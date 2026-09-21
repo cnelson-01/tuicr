@@ -228,6 +228,8 @@ pub enum Action {
     BranchPickerCompare,
     /// Show the picked branches in the log pane (Ctrl-l).
     BranchPickerLog,
+    /// Fetch all remotes and refresh the picker (Ctrl-f).
+    BranchPickerFetch,
 
     // No-op
     None,
@@ -609,6 +611,7 @@ fn map_branch_picker_mode(key: KeyEvent) -> Action {
         (KeyCode::Tab, _) => Action::BranchPickerPick,
         (KeyCode::Char('d'), KeyModifiers::CONTROL) => Action::BranchPickerCompare,
         (KeyCode::Char('l'), KeyModifiers::CONTROL) => Action::BranchPickerLog,
+        (KeyCode::Char('f'), KeyModifiers::CONTROL) => Action::BranchPickerFetch,
         (KeyCode::Char('u'), KeyModifiers::CONTROL) => Action::ClearLine,
         (KeyCode::Enter, _) => Action::BranchPickerConfirm,
         (KeyCode::Esc, _) => Action::ExitMode,

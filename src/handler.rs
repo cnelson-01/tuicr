@@ -3,7 +3,7 @@ use ratatui::layout::Position;
 
 use crate::app::{
     self, App, CommandCompletionState, ExpandDirection, FileTreeItem, FileTreePrompt, FocusedPanel,
-    GapCursorHit, InputMode, TargetTab, VisualSelection,
+    GapCursorHit, InputMode, RemoteOp, TargetTab, VisualSelection,
 };
 use crate::forge::remote_comments::PrCommentsVisibility;
 use crate::forge::submit::SubmitEvent;
@@ -71,6 +71,13 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         CommandKind::BranchPicker,
     ),
     CommandSpec::new(&["abort"], CommandKind::AbortOperation),
+    CommandSpec::new(&["fetch"], CommandKind::Remote(RemoteOp::Fetch)),
+    CommandSpec::new(&["pull"], CommandKind::Remote(RemoteOp::Pull)),
+    CommandSpec::new(
+        &["pull!", "pull --rebase"],
+        CommandKind::Remote(RemoteOp::PullRebase),
+    ),
+    CommandSpec::new(&["push"], CommandKind::Remote(RemoteOp::Push)),
     CommandSpec::new(&["commit"], CommandKind::Commit(false)),
     CommandSpec::new(&["commit!", "amend"], CommandKind::Commit(true)),
     CommandSpec::new(&["unstage"], CommandKind::UnstageFile),
@@ -179,6 +186,7 @@ enum CommandKind {
     ToggleLog,
     BranchPicker,
     AbortOperation,
+    Remote(RemoteOp),
     Commit(bool),
     UnstageFile,
     DiscardFile,
@@ -1055,6 +1063,10 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
                 CommandAfterDispatch::ExitCommandMode
             }
         }
+        CommandKind::Remote(op) => {
+            app.start_remote_op(op);
+            CommandAfterDispatch::ExitCommandMode
+        }
         CommandKind::AbortOperation => {
             app.abort_operation();
             if app.input_mode == InputMode::MergeConflict {
@@ -1777,6 +1789,7 @@ pub fn handle_branch_picker_action(app: &mut App, action: Action) {
         Action::BranchPickerPick => app.branch_picker_toggle_pick(),
         Action::BranchPickerCompare => app.branch_picker_compare(),
         Action::BranchPickerLog => app.branch_picker_log(),
+        Action::BranchPickerFetch => app.start_remote_op(RemoteOp::Fetch),
         Action::InsertChar(c) => app.branch_picker_push(c),
         Action::DeleteChar => app.branch_picker_pop(),
         Action::ClearLine => app.branch_picker_clear(),

@@ -654,6 +654,7 @@ pub use blame::{BLAME_WIDTH, BlameState, overlay_label};
 pub use branches::BranchPicker;
 pub use find::{FIND_MAX_HITS, FindHit, FindState};
 pub use local_changes::{CommitComposer, DiscardTarget, StashPicker};
+pub use remote::{RemoteOp, RemoteOpAnswer, RemoteOpInFlight};
 
 /// State for the fullscreen side-by-side merge conflict screen.
 #[derive(Debug)]
@@ -1625,6 +1626,8 @@ pub struct App {
     pub find: FindState,
     /// Blame gutter state (`:blame`).
     pub blame: BlameState,
+    /// The fetch / pull / push running on a worker thread, if any.
+    pub remote_op: Option<RemoteOpInFlight>,
     /// Display order for the inline commit selector (presentation only).
     pub commit_order: CommitOrder,
     /// Which commits are selected when a multi-commit review first opens.
@@ -2030,6 +2033,7 @@ mod log_pane;
 mod modes;
 mod navigation;
 mod pr;
+mod remote;
 mod reviewed;
 mod search;
 mod session;

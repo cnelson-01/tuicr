@@ -113,7 +113,7 @@ pub(super) fn render_branch_picker(frame: &mut Frame, app: &App) {
     ]));
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "type to filter \u{00b7} tab pick \u{00b7} ctrl-d compare \u{00b7} ctrl-l log \u{00b7} \u{21b5} checkout \u{00b7} ctrl-s stash+switch \u{00b7} esc",
+        "type to filter \u{00b7} tab pick \u{00b7} ctrl-d compare \u{00b7} ctrl-l log \u{00b7} ctrl-f fetch \u{00b7} \u{21b5} checkout \u{00b7} ctrl-s stash+switch",
         Style::default().fg(theme.fg_secondary),
     )));
 

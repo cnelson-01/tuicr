@@ -244,6 +244,9 @@ remote-tracking ones. `:compare ma`, `↓`, `↓`, `Enter` picks the second matc
 | `:checkout <target>` | Check out a branch or commit; refuses when the working tree has changes |
 | `:checkout! <target>` | Stash (untracked included), check out, and pop the stash |
 | `:abort` | Abort the in-progress merge / cherry-pick / rebase / revert |
+| `:fetch` | Fetch all remotes (pruning) in the background; the status bar sums up what moved (`origin/main +3`) |
+| `:pull` / `:pull!` | Pull the upstream: fast-forward only, or rebase onto it with `!` |
+| `:push` | Push the current branch to its upstream (set on `origin` when missing); never forces |
 | `:commit` / `:commit <message>` | Commit the index; without a message the comment box opens as the message editor |
 | `:commit!` / `:amend` / `:commit! <message>` | Amend HEAD (the box is pre-filled with its message) |
 | `:unstage` | Unstage the file under the cursor |
@@ -405,6 +408,7 @@ bold chip (or `[HEAD]` when detached) on the checked-out commit.
 | `Tab` | Pick / unpick the highlighted branch (`◆1`, `◆2`); a third pick replaces the oldest |
 | `Ctrl-d` | Compare: two picks load `first...second` (what the second has that the first does not, or the reverse when that is empty) and narrow the log to the pair; one pick or none compares the current branch with it (or the cursor row) |
 | `Ctrl-l` | Show the picked branches (or the cursor row) in the log pane, as a `ref:` filter |
+| `Ctrl-f` | Fetch all remotes and refresh the list (ahead/behind counts update) |
 | `Enter` | Check out the highlighted branch (a remote branch creates its local tracking branch) |
 | `Ctrl-s` | Stash the working tree, check out, then pop the stash |
 | `Backspace` / `Ctrl-u` | Edit / clear the filter |

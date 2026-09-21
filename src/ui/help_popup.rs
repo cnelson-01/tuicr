@@ -493,7 +493,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw(
-                "Abort the in-progress merge / cherry-pick / rebase / revert (also `:abort`)",
+                "Abort the in-progress merge / cherry-pick / rebase / revert (also `:abort`); `:fetch`, `:pull`, `:pull!`, `:push` run remotes in the background",
             ),
         ]),
         Line::from(vec![

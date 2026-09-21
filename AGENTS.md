@@ -24,6 +24,7 @@ src/
 │   ├── branches.rs      # Branch picker, checkout with dirty-tree guard / stash-and-switch, :branch, abort
 │   ├── commit_filter.rs # Log filter prompt (`/`): CommitQuery over message / author / path / branch / ref, live search
 │   ├── compare.rs       # `:compare A B` / branch picker compare: load a revision range as the review in-TUI
+│   ├── remote.rs        # `:fetch` / `:pull` / `:push` on a worker thread, with summaries and post-op refresh
 │   ├── local_changes.rs # Stage/unstage file+hunk, discard (confirmed), commit/amend via the composer, stash picker
 │   ├── find.rs          # Find in files (`:find`): rg / git grep runner, results state, jump-or-edit
 │   └── blame.rs         # Blame gutter (`:blame`, lazy per-file cache keyed by content hash) + `:history`
