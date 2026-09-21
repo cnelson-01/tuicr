@@ -411,7 +411,10 @@ impl App {
             }
             Err(e) => self.set_warning(format!("Reopening the repository failed: {e}")),
         }
-        if self.input_mode == InputMode::CommitSelect {
+        if self.input_mode == InputMode::CommitSelect
+            || (self.input_mode == InputMode::Command
+                && self.command_return_mode == InputMode::CommitSelect)
+        {
             self.refresh_commit_selector_rows();
         }
         self.refresh_log_rows_keep_cursor();

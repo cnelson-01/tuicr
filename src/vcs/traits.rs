@@ -192,6 +192,17 @@ pub struct BlameLine {
     pub time: DateTime<Utc>,
 }
 
+/// How `git reset` treats the index and working tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResetMode {
+    /// Move the branch; keep index and working tree (changes stay staged).
+    Soft,
+    /// Move the branch and reset the index; keep the working tree.
+    Mixed,
+    /// Move the branch, index, and working tree. Destructive.
+    Hard,
+}
+
 /// One `git stash list` row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StashEntry {
@@ -638,6 +649,56 @@ pub trait VcsBackend: Send {
     fn stash_drop(&self, _index: usize) -> Result<()> {
         Err(crate::error::TuicrError::UnsupportedOperation(
             "Stashing is not supported for this VCS".into(),
+        ))
+    }
+
+    /// A new commit that undoes `id`. Conflicts leave revert state behind.
+    fn revert_commit(&self, _id: &str) -> Result<()> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Reverting is not supported for this VCS".into(),
+        ))
+    }
+
+    /// `git reset --<mode> <target>`.
+    fn reset_to(&self, _target: &str, _mode: ResetMode) -> Result<()> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Reset is not supported for this VCS".into(),
+        ))
+    }
+
+    /// Change the message of `id`: amend when it is HEAD, otherwise replay
+    /// the later commits on top of the reworded one.
+    fn reword_commit(&self, _id: &str, _message: &str) -> Result<()> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Rewording is not supported for this VCS".into(),
+        ))
+    }
+
+    /// Replay history without `id`.
+    fn drop_commit(&self, _id: &str) -> Result<()> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Dropping commits is not supported for this VCS".into(),
+        ))
+    }
+
+    /// Squash `id` into its parent, keeping the parent's message.
+    fn fixup_commit(&self, _id: &str) -> Result<()> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Fixup is not supported for this VCS".into(),
+        ))
+    }
+
+    /// A lightweight tag `name` at `target`.
+    fn create_tag(&self, _name: &str, _target: &str) -> Result<()> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Tagging is not supported for this VCS".into(),
+        ))
+    }
+
+    /// The full message of commit `id`.
+    fn commit_message(&self, _id: &str) -> Result<String> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Reading commit messages is not supported for this VCS".into(),
         ))
     }
 

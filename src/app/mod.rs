@@ -653,6 +653,7 @@ pub enum InputMode {
 pub use blame::{BLAME_WIDTH, BlameState, overlay_label};
 pub use branches::BranchPicker;
 pub use find::{FIND_MAX_HITS, FindHit, FindState};
+pub use history::HistoryAction;
 pub use local_changes::{CommitComposer, DiscardTarget, StashPicker};
 pub use remote::{RemoteOp, RemoteOpAnswer, RemoteOpInFlight};
 
@@ -846,6 +847,8 @@ pub enum ConfirmAction {
     DiscardChanges,
     /// Drop the stash highlighted in the stash picker?
     DropStash,
+    /// Run the history rewrite in `App::pending_history`?
+    HistoryRewrite,
 }
 
 /// Push a `MappedComment` onto the appropriate bucket. Free function so the
@@ -1628,6 +1631,8 @@ pub struct App {
     pub blame: BlameState,
     /// The fetch / pull / push running on a worker thread, if any.
     pub remote_op: Option<RemoteOpInFlight>,
+    /// A drop or reset waiting on its prompt, with the mode to return to.
+    pub pending_history: Option<(HistoryAction, InputMode)>,
     /// Display order for the inline commit selector (presentation only).
     pub commit_order: CommitOrder,
     /// Which commits are selected when a multi-commit review first opens.
@@ -2027,6 +2032,7 @@ mod editor_target;
 mod file_filter;
 mod find;
 mod gaps;
+mod history;
 mod init;
 mod local_changes;
 mod log_pane;

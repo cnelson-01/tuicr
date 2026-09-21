@@ -711,7 +711,7 @@ impl App {
     /// A failed history operation either stopped on conflicts (open the
     /// merge view so the user can resolve, then `--continue` from a shell)
     /// or genuinely failed (surface the VCS error).
-    fn handle_history_op_failure(&mut self, op: &str, err: TuicrError) {
+    pub(in crate::app) fn handle_history_op_failure(&mut self, op: &str, err: TuicrError) {
         if let Ok(Some(_)) = self.vcs.get_merge_conflicts() {
             if let Err(open_err) = self.open_merge_view(self.selector_return_mode()) {
                 self.set_error(format!("{op} stopped on conflicts: {open_err}"));

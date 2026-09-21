@@ -478,7 +478,9 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  c         ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Check out the cursor commit's branch (or the commit, detached)"),
+            Span::raw(
+                "Check out the cursor commit's branch (or the commit, detached); v revert, R reword, D drop, f fixup, x reset, t tag, y copy hash",
+            ),
         ]),
         Line::from(vec![
             Span::styled(

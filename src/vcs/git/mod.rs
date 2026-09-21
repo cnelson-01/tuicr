@@ -6,7 +6,7 @@ pub(crate) mod raw;
 pub mod repository;
 pub mod staging;
 
-use crate::vcs::traits::{BlameLine, BranchInfo, CommitQuery, HunkScope, StashEntry};
+use crate::vcs::traits::{BlameLine, BranchInfo, CommitQuery, HunkScope, ResetMode, StashEntry};
 use chrono::{DateTime, TimeZone, Utc};
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -652,6 +652,89 @@ impl VcsBackend for GitBackend {
         run_git_command(&self.info().root_path, &["stash", "drop", "-q", &selector]).map(|_| ())
     }
 
+    fn revert_commit(&self, id: &str) -> Result<()> {
+        let result = run_git_command(
+            &self.info().root_path,
+            &["-c", "core.editor=true", "revert", "--no-edit", id],
+        )
+        .map(|_| ());
+        self.refresh_after_cli_op(result)
+    }
+
+    fn reset_to(&self, target: &str, mode: ResetMode) -> Result<()> {
+        let flag = match mode {
+            ResetMode::Soft => "--soft",
+            ResetMode::Mixed => "--mixed",
+            ResetMode::Hard => "--hard",
+        };
+        let result =
+            run_git_command(&self.info().root_path, &["reset", "-q", flag, target]).map(|_| ());
+        self.refresh_after_cli_op(result)
+    }
+
+    fn reword_commit(&self, id: &str, message: &str) -> Result<()> {
+        let root = &self.info().root_path;
+        let head = run_git_command(root, &["rev-parse", "HEAD"])?
+            .trim()
+            .to_string();
+        let full = run_git_command(
+            root,
+            &["rev-parse", "--verify", &format!("{id}^{{commit}}")],
+        )?
+        .trim()
+        .to_string();
+        let result = if full == head {
+            // `--only` with no paths amends the message without sweeping in
+            // whatever happens to be staged.
+            run_git_command(root, &["commit", "--amend", "--only", "-q", "-m", message]).map(|_| ())
+        } else {
+            rebase_with_todo(root, &full, TodoAction::Reword(message))
+        };
+        self.refresh_after_cli_op(result)
+    }
+
+    fn drop_commit(&self, id: &str) -> Result<()> {
+        let root = &self.info().root_path;
+        let full = run_git_command(
+            root,
+            &["rev-parse", "--verify", &format!("{id}^{{commit}}")],
+        )?
+        .trim()
+        .to_string();
+        let result = rebase_with_todo(root, &full, TodoAction::Drop);
+        self.refresh_after_cli_op(result)
+    }
+
+    fn fixup_commit(&self, id: &str) -> Result<()> {
+        let root = &self.info().root_path;
+        let full = run_git_command(
+            root,
+            &["rev-parse", "--verify", &format!("{id}^{{commit}}")],
+        )?
+        .trim()
+        .to_string();
+        if run_git_command(
+            root,
+            &["rev-parse", "--verify", "--quiet", &format!("{full}^")],
+        )
+        .is_err()
+        {
+            return Err(TuicrError::VcsCommand(
+                "The root commit has no parent to squash into".into(),
+            ));
+        }
+        let result = rebase_with_todo(root, &full, TodoAction::Fixup);
+        self.refresh_after_cli_op(result)
+    }
+
+    fn create_tag(&self, name: &str, target: &str) -> Result<()> {
+        run_git_command(&self.info().root_path, &["tag", name, target]).map(|_| ())
+    }
+
+    fn commit_message(&self, id: &str) -> Result<String> {
+        run_git_command(&self.info().root_path, &["log", "-1", "--format=%B", id])
+    }
+
     fn fetch(&self) -> Result<String> {
         let root = &self.info().root_path;
         let before = remote_ref_tips(root)?;
@@ -814,6 +897,109 @@ fn parse_blame_porcelain(output: &str) -> Vec<Option<BlameLine>> {
         }
     }
     lines
+}
+
+/// What a todo-driven rebase does to its target commit.
+enum TodoAction<'a> {
+    Reword(&'a str),
+    Drop,
+    Fixup,
+}
+
+/// Rewrite the first-parent history from `target` to HEAD with git's own
+/// interactive rebase, feeding it a prepared todo list instead of an
+/// editor: every commit is `pick` except `target`, which is reworded,
+/// dropped, or fixed up into the commit before it. Refuses merge commits in
+/// the range, since a linear todo cannot express them. A conflict stop is
+/// left in place for the merge view; `git rebase --abort` backs out.
+fn rebase_with_todo(root: &Path, target: &str, action: TodoAction<'_>) -> Result<()> {
+    // The todo starts one commit earlier for a fixup, so its parent is
+    // listed to be squashed into.
+    let first = match action {
+        TodoAction::Fixup => run_git_command(root, &["rev-parse", &format!("{target}^")])?
+            .trim()
+            .to_string(),
+        _ => target.to_string(),
+    };
+    let (base_args, range): (Vec<String>, String) = match run_git_command(
+        root,
+        &["rev-parse", "--verify", "--quiet", &format!("{first}^")],
+    ) {
+        Ok(base) => {
+            let base = base.trim().to_string();
+            (vec![base.clone()], format!("{base}..HEAD"))
+        }
+        Err(_) => (vec!["--root".to_string()], "HEAD".to_string()),
+    };
+    let merges = run_git_command(root, &["rev-list", "--merges", &range])?;
+    if !merges.trim().is_empty() {
+        return Err(TuicrError::VcsCommand(
+            "The history above that commit contains merges; rewrite it by hand".into(),
+        ));
+    }
+    let commits = run_git_command(root, &["rev-list", "--reverse", &range])?;
+    let mut todo = String::new();
+    let mut seen = false;
+    for sha in commits.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        let verb = if sha == target {
+            seen = true;
+            match action {
+                TodoAction::Reword(_) => "reword",
+                TodoAction::Drop => "drop",
+                TodoAction::Fixup => "fixup",
+            }
+        } else {
+            "pick"
+        };
+        todo.push_str(&format!("{verb} {sha}\n"));
+    }
+    if !seen {
+        return Err(TuicrError::VcsCommand(
+            "That commit is not in the current branch's history".into(),
+        ));
+    }
+    let scratch = tempfile::tempdir()
+        .map_err(|e| TuicrError::VcsCommand(format!("Failed to create a temp dir: {e}")))?;
+    let todo_path = scratch.path().join("todo");
+    std::fs::write(&todo_path, todo)
+        .map_err(|e| TuicrError::VcsCommand(format!("Failed to write the rebase todo: {e}")))?;
+    let mut envs: Vec<(&str, String)> = vec![
+        (
+            "GIT_SEQUENCE_EDITOR",
+            format!("cp '{}'", todo_path.display()),
+        ),
+        ("GIT_EDITOR", "true".to_string()),
+    ];
+    if let TodoAction::Reword(message) = action {
+        let message_path = scratch.path().join("message");
+        std::fs::write(&message_path, message)
+            .map_err(|e| TuicrError::VcsCommand(format!("Failed to write the message: {e}")))?;
+        envs[1] = ("GIT_EDITOR", format!("cp '{}'", message_path.display()));
+    }
+    let mut args: Vec<String> = vec!["rebase".to_string(), "-i".to_string()];
+    args.extend(base_args);
+    run_git_env(root, &args, &envs).map(|_| ())
+}
+
+/// Run git with extra environment variables (editor overrides).
+fn run_git_env(workdir: &Path, args: &[String], envs: &[(&str, String)]) -> Result<String> {
+    let mut command = std::process::Command::new("git");
+    command.current_dir(workdir).args(args);
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+    let output = command
+        .output()
+        .map_err(|e| TuicrError::VcsCommand(format!("Failed to run git: {e}")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(TuicrError::VcsCommand(if stderr.is_empty() {
+            format!("git {} failed", args.join(" "))
+        } else {
+            stderr
+        }));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// Remote-tracking refs and their tips, `origin/HEAD` aliases excluded.
@@ -2072,6 +2258,121 @@ mod tests {
         assert_eq!(
             fs::read_to_string(a.join("f.txt")).unwrap(),
             "one\ntwo\nthree\n"
+        );
+    }
+
+    #[test]
+    fn commit_context_actions_rewrite_history() {
+        // given four commits, each adding its own file
+        let temp_dir = tempdir().expect("failed to create temp dir");
+        let root = temp_dir.path();
+        setup_standard_repo(root);
+        let add_commit = |name: &str| {
+            fs::write(root.join(format!("src/{name}.txt")), format!("{name}\n")).expect("write");
+            run_git_command(root, &["add", "."]).expect("add");
+            run_git_command(root, &["commit", "-qm", name]).expect("commit");
+            git_id(root, "HEAD")
+        };
+        let two = add_commit("two");
+        let three = add_commit("three");
+        let four = add_commit("four");
+        let backend = GitBackend::discover_from(
+            root,
+            GitBackendPreference::Libgit2,
+            DiffWhitespaceMode::Normal,
+        )
+        .expect("backend");
+        let count = || {
+            run_git_command(root, &["rev-list", "--count", "HEAD"])
+                .expect("count")
+                .trim()
+                .to_string()
+        };
+        let subject = |rev: &str| {
+            run_git_command(root, &["log", "-1", "--format=%s", rev])
+                .expect("log")
+                .trim()
+                .to_string()
+        };
+        assert_eq!(count(), "4");
+
+        // reword an older commit: the later ones are replayed on top
+        backend
+            .reword_commit(&three, "three reworded\n\nwith a body")
+            .expect("reword older");
+        assert_eq!(subject("HEAD~1"), "three reworded");
+        assert!(
+            backend
+                .commit_message("HEAD~1")
+                .unwrap()
+                .contains("with a body")
+        );
+        assert_eq!(subject("HEAD"), "four");
+        assert_eq!(count(), "4");
+
+        // reword HEAD amends without sweeping in staged changes
+        fs::write(root.join("src/extra.txt"), "extra\n").expect("write");
+        run_git_command(root, &["add", "src/extra.txt"]).expect("add");
+        backend
+            .reword_commit("HEAD", "four reworded")
+            .expect("reword head");
+        assert_eq!(subject("HEAD"), "four reworded");
+        let staged = run_git_command(root, &["diff", "--cached", "--name-only"]).expect("diff");
+        assert!(
+            staged.contains("src/extra.txt"),
+            "staged file must stay staged"
+        );
+        run_git_command(root, &["rm", "-qf", "--cached", "src/extra.txt"]).expect("unstage");
+        fs::remove_file(root.join("src/extra.txt")).expect("rm");
+
+        // fixup HEAD into its parent keeps the parent's message
+        backend.fixup_commit("HEAD").expect("fixup");
+        assert_eq!(count(), "3");
+        assert_eq!(subject("HEAD"), "three reworded");
+        assert!(root.join("src/four.txt").exists());
+
+        // drop the "two" commit: its file goes, later work stays
+        backend.drop_commit(&two).expect("drop");
+        assert_eq!(count(), "2");
+        assert!(!root.join("src/two.txt").exists());
+        assert!(root.join("src/three.txt").exists());
+
+        // tag, then revert HEAD
+        backend.create_tag("v1", "HEAD").expect("tag");
+        let tags = run_git_command(root, &["tag", "--points-at", "HEAD"]).expect("tags");
+        assert!(tags.contains("v1"));
+        let head_before = git_id(root, "HEAD");
+        backend.revert_commit("HEAD").expect("revert");
+        assert!(subject("HEAD").starts_with("Revert"));
+        assert!(!root.join("src/three.txt").exists());
+        assert_ne!(git_id(root, "HEAD"), head_before);
+
+        // reset soft keeps the reverted change staged; hard discards
+        backend
+            .reset_to("HEAD~1", ResetMode::Soft)
+            .expect("reset soft");
+        assert_eq!(git_id(root, "HEAD"), head_before);
+        assert!(
+            !run_git_command(root, &["diff", "--cached", "--name-only"])
+                .unwrap()
+                .trim()
+                .is_empty()
+        );
+        backend
+            .reset_to("HEAD", ResetMode::Hard)
+            .expect("reset hard");
+        assert!(root.join("src/three.txt").exists());
+        assert!(
+            run_git_command(root, &["status", "--porcelain"])
+                .unwrap()
+                .trim()
+                .is_empty()
+        );
+
+        // a commit off the branch is refused for rewrites
+        assert!(
+            backend.drop_commit(&four).is_err(),
+            "{four} was rewritten away"
         );
     }
 

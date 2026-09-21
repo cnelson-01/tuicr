@@ -947,7 +947,11 @@ impl App {
 
     pub fn exit_comment_mode(&mut self) {
         self.input_mode = InputMode::Normal;
-        self.commit_composer = None;
+        if let Some(composer) = self.commit_composer.take()
+            && composer.return_mode == InputMode::CommitSelect
+        {
+            self.input_mode = InputMode::CommitSelect;
+        }
         self.comment_buffer.clear();
         self.comment_cursor = 0;
         self.comment_vim_editor = None;

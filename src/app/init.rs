@@ -633,6 +633,7 @@ impl App {
             find: FindState::default(),
             blame: BlameState::default(),
             remote_op: None,
+            pending_history: None,
             commit_order: CommitOrder::default(),
             commit_selection_start: CommitSelectionStart::default(),
             commit_diff_cache: HashMap::new(),

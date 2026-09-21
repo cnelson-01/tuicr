@@ -45,10 +45,15 @@ impl DiscardTarget {
     }
 }
 
-/// The comment composer is doubling as the commit message editor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The comment composer is doubling as a commit message editor: for a new
+/// commit, an amend, or a reword of `reword`.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommitComposer {
     pub amend: bool,
+    pub reword: Option<String>,
+    /// Mode to hand back to when the composer closes (the fullscreen
+    /// selector when a reword started there).
+    pub return_mode: InputMode,
 }
 
 /// The stash picker modal (`:stashes`).
@@ -279,7 +284,11 @@ impl App {
             return;
         }
         self.enter_review_comment_mode();
-        self.commit_composer = Some(CommitComposer { amend });
+        self.commit_composer = Some(CommitComposer {
+            amend,
+            reword: None,
+            return_mode: InputMode::Normal,
+        });
         if amend && let Ok(message) = self.vcs.head_commit_message() {
             self.comment_buffer = message.trim_end().to_string();
             self.comment_cursor = self.comment_buffer.len();
@@ -294,7 +303,13 @@ impl App {
     pub(in crate::app) fn commit_from_composer(&mut self, composer: CommitComposer) {
         let message = self.comment_buffer.trim().to_string();
         self.exit_comment_mode();
-        self.commit_with_message(&message, composer.amend);
+        if composer.return_mode == InputMode::CommitSelect {
+            self.input_mode = InputMode::CommitSelect;
+        }
+        match composer.reword {
+            Some(id) => self.reword_commit(&id, &message),
+            None => self.commit_with_message(&message, composer.amend),
+        }
     }
 
     pub fn commit_with_message(&mut self, message: &str, amend: bool) {

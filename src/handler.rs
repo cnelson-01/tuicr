@@ -72,6 +72,12 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     ),
     CommandSpec::new(&["abort"], CommandKind::AbortOperation),
     CommandSpec::new(&["fetch"], CommandKind::Remote(RemoteOp::Fetch)),
+    CommandSpec::new(&["revert"], CommandKind::RevertCommit),
+    CommandSpec::new(&["reword"], CommandKind::RewordCommit),
+    CommandSpec::new(&["drop"], CommandKind::DropCommit),
+    CommandSpec::new(&["fixup"], CommandKind::FixupCommit),
+    CommandSpec::new(&["undo"], CommandKind::UndoCommit),
+    CommandSpec::new(&["reset"], CommandKind::ResetPrompt),
     CommandSpec::new(&["pull"], CommandKind::Remote(RemoteOp::Pull)),
     CommandSpec::new(
         &["pull!", "pull --rebase"],
@@ -187,6 +193,12 @@ enum CommandKind {
     BranchPicker,
     AbortOperation,
     Remote(RemoteOp),
+    RevertCommit,
+    RewordCommit,
+    DropCommit,
+    FixupCommit,
+    UndoCommit,
+    ResetPrompt,
     Commit(bool),
     UnstageFile,
     DiscardFile,
@@ -738,6 +750,14 @@ pub fn handle_command_action(app: &mut App, action: Action) {
                 let message = message.to_string();
                 app.stash_push_current(Some(&message));
                 CommandAfterDispatch::ExitCommandMode
+            } else if let Some(args) = cmd.strip_prefix("reset ") {
+                let args = args.to_string();
+                app.reset_command(&args);
+                history_after_dispatch(app)
+            } else if let Some(args) = cmd.strip_prefix("tag ") {
+                let args = args.to_string();
+                app.create_tag(&args);
+                CommandAfterDispatch::ExitCommandMode
             } else if let Some(args) = cmd
                 .strip_prefix("compare ")
                 .or_else(|| cmd.strip_prefix("select "))
@@ -1067,6 +1087,34 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
             app.start_remote_op(op);
             CommandAfterDispatch::ExitCommandMode
         }
+        CommandKind::RevertCommit => {
+            app.revert_cursor_commit();
+            history_after_dispatch(app)
+        }
+        CommandKind::RewordCommit => {
+            app.start_reword_composer();
+            if app.input_mode == InputMode::Comment {
+                CommandAfterDispatch::KeepMode
+            } else {
+                CommandAfterDispatch::ExitCommandMode
+            }
+        }
+        CommandKind::DropCommit => {
+            app.request_drop_commit();
+            history_after_dispatch(app)
+        }
+        CommandKind::FixupCommit => {
+            app.fixup_cursor_commit();
+            history_after_dispatch(app)
+        }
+        CommandKind::UndoCommit => {
+            app.undo_last_commit();
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::ResetPrompt => {
+            app.reset_command("");
+            history_after_dispatch(app)
+        }
         CommandKind::AbortOperation => {
             app.abort_operation();
             if app.input_mode == InputMode::MergeConflict {
@@ -1361,6 +1409,19 @@ fn rank_branch_matches(names: &[String], word: &str) -> Vec<String> {
 
 /// Parse `:<n>` (new-side) or `:o<n>` (old-side) jump targets. The leading `:`
 /// has already been stripped by the time we get here.
+/// History actions may have opened a prompt or the merge view; leave the
+/// command line only when nothing modal took over.
+fn history_after_dispatch(app: &App) -> CommandAfterDispatch {
+    if matches!(
+        app.input_mode,
+        InputMode::Confirm | InputMode::MergeConflict | InputMode::Comment
+    ) {
+        CommandAfterDispatch::KeepMode
+    } else {
+        CommandAfterDispatch::ExitCommandMode
+    }
+}
+
 /// `:checkout <target>` / `:checkout! <target>` — the target and whether to
 /// stash a dirty tree around the switch.
 fn parse_checkout_command(cmd: &str) -> Option<(&str, bool)> {
@@ -1516,6 +1577,14 @@ pub fn handle_confirm_action(app: &mut App, action: Action) {
             match action {
                 Action::ConfirmYes => app.confirm_drop_stash(),
                 Action::ConfirmNo => app.cancel_drop_stash(),
+                _ => {}
+            }
+            return;
+        }
+        Some(app::ConfirmAction::HistoryRewrite) => {
+            match action {
+                Action::ConfirmYes => app.confirm_history_action(),
+                Action::ConfirmNo => app.cancel_history_action(),
                 _ => {}
             }
             return;
@@ -1680,6 +1749,13 @@ fn handle_local_target_action(app: &mut App, action: Action) {
         }
         Action::AbortOperation => app.abort_operation(),
         Action::OpenBranchPicker => app.open_branch_picker(),
+        Action::SelectorRevert => app.revert_cursor_commit(),
+        Action::SelectorReword => app.start_reword_composer(),
+        Action::SelectorDrop => app.request_drop_commit(),
+        Action::SelectorFixup => app.fixup_cursor_commit(),
+        Action::SelectorReset => app.start_reset_prompt(),
+        Action::SelectorTag => app.start_tag_prompt(),
+        Action::SelectorCopyHash => app.copy_cursor_commit_hash(),
         Action::BeginTargetFilter => app.begin_commit_filter(),
         _ => {}
     }
@@ -1860,6 +1936,13 @@ fn handle_log_pane_action(app: &mut App, action: Action) {
         }
         Action::AbortOperation => app.abort_operation(),
         Action::OpenBranchPicker => app.open_branch_picker(),
+        Action::SelectorRevert => app.revert_cursor_commit(),
+        Action::SelectorReword => app.start_reword_composer(),
+        Action::SelectorDrop => app.request_drop_commit(),
+        Action::SelectorFixup => app.fixup_cursor_commit(),
+        Action::SelectorReset => app.start_reset_prompt(),
+        Action::SelectorTag => app.start_tag_prompt(),
+        Action::SelectorCopyHash => app.copy_cursor_commit_hash(),
         // Esc clears an active filter first; a second Esc leaves the pane.
         Action::ExitMode => {
             if !app.clear_commit_filter() {

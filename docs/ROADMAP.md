@@ -32,6 +32,12 @@ window. Phases land in order, each as its own commit(s). Tick items as they ship
 - [x] `:pull` fast-forward only, `:pull!` rebase
 - [x] `:push` to the upstream, setting it on the default remote when missing (never forces)
 
+## Phase 3c: commit context actions
+
+- [x] Revert, reword (amend or todo-driven rebase), drop, fixup into parent
+- [x] Reset soft / mixed / hard to a commit (hard asks first); `:undo` last commit
+- [x] Tag at a commit; copy hash
+
 ## Phase 4: log filter
 
 - [x] Filter local commits by message text, author, and path

@@ -192,6 +192,20 @@ pub enum Action {
     AbortOperation,
     /// Open the branch picker (`B` in a selector, `<leader>b`, `:branches`).
     OpenBranchPicker,
+    /// Revert the cursor commit with a new commit (`v`).
+    SelectorRevert,
+    /// Reword the cursor commit in the composer (`R`).
+    SelectorReword,
+    /// Drop the cursor commit after confirmation (`D`).
+    SelectorDrop,
+    /// Squash the cursor commit into its parent (`f`).
+    SelectorFixup,
+    /// Prompt `:reset <mode>` targeting the cursor commit (`x`).
+    SelectorReset,
+    /// Prompt `:tag <name>` at the cursor commit (`t`).
+    SelectorTag,
+    /// Copy the cursor commit's full hash (`y`).
+    SelectorCopyHash,
 
     // Local changes (working-tree reviews)
     /// Stage the focused file (`s`).
@@ -655,6 +669,13 @@ fn map_commit_select_mode_with_q_quits(key: KeyEvent, q_quits: bool) -> Action {
         (KeyCode::Char('n'), KeyModifiers::NONE) => Action::SelectorNewBranch,
         (KeyCode::Char('a'), KeyModifiers::NONE) => Action::AbortOperation,
         (KeyCode::Char('B'), _) => Action::OpenBranchPicker,
+        (KeyCode::Char('v'), KeyModifiers::NONE) => Action::SelectorRevert,
+        (KeyCode::Char('R'), _) => Action::SelectorReword,
+        (KeyCode::Char('D'), _) => Action::SelectorDrop,
+        (KeyCode::Char('f'), KeyModifiers::NONE) => Action::SelectorFixup,
+        (KeyCode::Char('x'), KeyModifiers::NONE) => Action::SelectorReset,
+        (KeyCode::Char('t'), KeyModifiers::NONE) => Action::SelectorTag,
+        (KeyCode::Char('y'), KeyModifiers::NONE) => Action::SelectorCopyHash,
         (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
         (KeyCode::Char('q'), KeyModifiers::NONE) => q_action(q_quits),
         (KeyCode::Char(':'), _) => Action::EnterCommandMode,
@@ -682,6 +703,13 @@ pub fn map_log_pane_mode(key: KeyEvent, leader_key: char, q_quits: bool) -> Acti
         (KeyCode::Char('n'), KeyModifiers::NONE) => Action::SelectorNewBranch,
         (KeyCode::Char('a'), KeyModifiers::NONE) => Action::AbortOperation,
         (KeyCode::Char('B'), _) => Action::OpenBranchPicker,
+        (KeyCode::Char('v'), KeyModifiers::NONE) => Action::SelectorRevert,
+        (KeyCode::Char('R'), _) => Action::SelectorReword,
+        (KeyCode::Char('D'), _) => Action::SelectorDrop,
+        (KeyCode::Char('f'), KeyModifiers::NONE) => Action::SelectorFixup,
+        (KeyCode::Char('x'), KeyModifiers::NONE) => Action::SelectorReset,
+        (KeyCode::Char('t'), KeyModifiers::NONE) => Action::SelectorTag,
+        (KeyCode::Char('y'), KeyModifiers::NONE) => Action::SelectorCopyHash,
         (KeyCode::Char('/'), _) => Action::BeginTargetFilter,
         (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
         _ => map_normal_mode_with_q_quits(key, leader_key, q_quits),

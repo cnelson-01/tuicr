@@ -244,6 +244,10 @@ remote-tracking ones. `:compare ma`, `↓`, `↓`, `Enter` picks the second matc
 | `:checkout <target>` | Check out a branch or commit; refuses when the working tree has changes |
 | `:checkout! <target>` | Stash (untracked included), check out, and pop the stash |
 | `:abort` | Abort the in-progress merge / cherry-pick / rebase / revert |
+| `:revert`, `:reword`, `:drop`, `:fixup` | The log-cursor commit actions above, from the command line |
+| `:reset [soft\|mixed\|hard] [commit]` | Reset the branch (default `mixed`; `hard` asks first); the commit defaults to the log cursor |
+| `:undo` | Undo the last commit, keeping its changes staged (`reset --soft HEAD~1`) |
+| `:tag <name> [commit]` | Lightweight tag at the commit (default: the one `t` was pressed on, else HEAD) |
 | `:fetch` | Fetch all remotes (pruning) in the background; the status bar sums up what moved (`origin/main +3`) |
 | `:pull` / `:pull!` | Pull the upstream: fast-forward only, or rebase onto it with `!` |
 | `:push` | Push the current branch to its upstream (set on `origin` when missing); never forces |
@@ -369,6 +373,13 @@ startup, and `log_height = N` (or `:set logheight N`) for its height.
 | `n` | New branch at the cursor commit: opens `:branch ` for the name |
 | `a` | Abort the in-progress merge / cherry-pick / rebase / revert |
 | `B` | Open the branch picker |
+| `v` | Revert the cursor commit (a new commit; conflicts open the merge view) |
+| `R` | Reword the cursor commit: the message box opens pre-filled (amends HEAD, otherwise replays the later commits) |
+| `D` | Drop the cursor commit, after a prompt |
+| `f` | Fix up: squash the cursor commit into its parent, keeping the parent's message |
+| `x` | Reset the branch to the cursor commit: opens `:reset ` for `soft`, `mixed` (default), or `hard` (asks first) |
+| `t` | Tag the cursor commit: opens `:tag ` for the name |
+| `y` | Copy the cursor commit's full hash |
 | `/` | Filter the log (see below); `Esc` clears an active filter |
 | `Tab` / `Shift-Tab`, `<leader>k` / `<leader>j` | Move focus between the pane and the other panels |
 | `Esc` | Return focus to the diff |
@@ -449,6 +460,7 @@ first, with children always above their parents so the graph stays coherent.
 | `n` | New branch at the cursor commit: opens `:branch ` for the name |
 | `a` | Abort the in-progress merge / cherry-pick / rebase / revert |
 | `B` | Open the branch picker |
+| `v` / `R` / `D` / `f` / `x` / `t` / `y` | Revert / reword / drop / fixup / reset to / tag / copy hash of the cursor commit (as in the log pane) |
 | `/` | Local tab: filter the log by message / `author:` / `path:` (see the log pane section); Pull Requests tab: filter the loaded PR rows |
 | `r` | In Pull Requests tab, toggle all open PRs / PRs requesting your review |
 | `Esc` | Return to the diff |
