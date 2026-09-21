@@ -738,9 +738,48 @@ impl VcsBackend for GitBackend {
     fn fetch(&self) -> Result<String> {
         let root = &self.info().root_path;
         let before = remote_ref_tips(root)?;
-        run_git_command(root, &["fetch", "--all", "--prune", "--quiet"])?;
+        let remotes: Vec<String> = run_git_command(root, &["remote"])?
+            .lines()
+            .map(str::trim)
+            .filter(|r| !r.is_empty())
+            .map(str::to_string)
+            .collect();
+        if remotes.is_empty() {
+            return Err(TuicrError::VcsCommand("No remotes configured".into()));
+        }
+        // One remote at a time, never interactive and never into
+        // submodules, so a remote that wants credentials fails with its name
+        // in the message instead of prompting under the TUI or stalling the
+        // other remotes.
+        let envs = non_interactive_git_env(root);
+        let mut failures: Vec<String> = Vec::new();
+        for remote in &remotes {
+            let args: Vec<String> = ["fetch", "--prune", "--no-recurse-submodules", "--quiet"]
+                .iter()
+                .map(|s| s.to_string())
+                .chain(std::iter::once(remote.clone()))
+                .collect();
+            if let Err(e) = run_git_env(root, &args, &envs) {
+                let reason = e.to_string();
+                let reason = reason
+                    .lines()
+                    .find(|l| !l.trim().is_empty())
+                    .unwrap_or("failed")
+                    .trim()
+                    .to_string();
+                failures.push(format!("{remote} failed: {reason}"));
+            }
+        }
+        if failures.len() == remotes.len() {
+            return Err(TuicrError::VcsCommand(failures.join(" \u{00b7} ")));
+        }
         let after = remote_ref_tips(root)?;
-        Ok(describe_fetch(root, &before, &after))
+        let mut summary = describe_fetch(root, &before, &after);
+        if !failures.is_empty() {
+            summary.push_str(" \u{00b7} ");
+            summary.push_str(&failures.join(" \u{00b7} "));
+        }
+        Ok(summary)
     }
 
     fn pull(&self, rebase: bool) -> Result<String> {
@@ -748,12 +787,13 @@ impl VcsBackend for GitBackend {
         let before = run_git_command(root, &["rev-parse", "HEAD"])?
             .trim()
             .to_string();
-        let args = if rebase {
-            ["pull", "--rebase", "--quiet"]
-        } else {
-            ["pull", "--ff-only", "--quiet"]
-        };
-        let result = run_git_command(root, &args).and_then(|_| {
+        let mode = if rebase { "--rebase" } else { "--ff-only" };
+        let args: Vec<String> = ["pull", mode, "--no-recurse-submodules", "--quiet"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let envs = non_interactive_git_env(root);
+        let result = run_git_env(root, &args, &envs).and_then(|_| {
             let after = run_git_command(root, &["rev-parse", "HEAD"])?
                 .trim()
                 .to_string();
@@ -805,7 +845,12 @@ impl VcsBackend for GitBackend {
                         "Nothing to push: {branch} is up to date with {upstream}"
                     ));
                 }
-                run_git_command(root, &["push", "--quiet"])?;
+                let envs = non_interactive_git_env(root);
+                let args: Vec<String> = ["push", "--quiet", "--recurse-submodules=no"]
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect();
+                run_git_env(root, &args, &envs)?;
                 Ok(format!(
                     "Pushed {ahead} commit{} from {branch} to {upstream}",
                     if ahead == "1" { "" } else { "s" }
@@ -819,10 +864,19 @@ impl VcsBackend for GitBackend {
                     .or_else(|| remotes.lines().next())
                     .ok_or_else(|| TuicrError::VcsCommand("No remote configured".into()))?
                     .to_string();
-                run_git_command(
-                    root,
-                    &["push", "--quiet", "--set-upstream", &remote, &branch],
-                )?;
+                let envs = non_interactive_git_env(root);
+                let args: Vec<String> = [
+                    "push",
+                    "--quiet",
+                    "--recurse-submodules=no",
+                    "--set-upstream",
+                    remote.as_str(),
+                    branch.as_str(),
+                ]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+                run_git_env(root, &args, &envs)?;
                 Ok(format!(
                     "Pushed {branch} to {remote}/{branch} and set it as upstream"
                 ))
@@ -1000,6 +1054,24 @@ fn run_git_env(workdir: &Path, args: &[String], envs: &[(&str, String)]) -> Resu
         }));
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Environment for network git calls made from under the TUI: never
+/// prompt for HTTP credentials, and run ssh in batch mode so a missing key
+/// or passphrase fails instead of asking. The ssh override is skipped when
+/// the user has their own `GIT_SSH_COMMAND` / `GIT_SSH` / `core.sshCommand`,
+/// since that may carry the identity they need.
+fn non_interactive_git_env(root: &Path) -> Vec<(&'static str, String)> {
+    let mut envs = vec![("GIT_TERMINAL_PROMPT", "0".to_string())];
+    let custom_ssh = std::env::var_os("GIT_SSH_COMMAND").is_some()
+        || std::env::var_os("GIT_SSH").is_some()
+        || run_git_command(root, &["config", "--get", "core.sshCommand"])
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false);
+    if !custom_ssh {
+        envs.push(("GIT_SSH_COMMAND", "ssh -o BatchMode=yes".to_string()));
+    }
+    envs
 }
 
 /// Remote-tracking refs and their tips, `origin/HEAD` aliases excluded.
@@ -2220,6 +2292,11 @@ mod tests {
             backend(&b).fetch().expect("fetch"),
             "Fetched: everything up to date"
         );
+        // a remote that cannot be reached is named, and the others still fetch
+        run_git_command(&b, &["remote", "add", "dead", "/nonexistent/repo.git"]).expect("remote");
+        let partial = backend(&b).fetch().expect("partial fetch");
+        assert!(partial.contains("dead failed"), "{partial}");
+        run_git_command(&b, &["remote", "remove", "dead"]).expect("remove");
         let pulled = backend(&b).pull(false).expect("pull");
         assert!(pulled.starts_with("Pulled 1 commit"), "{pulled}");
         assert_eq!(fs::read_to_string(b.join("f.txt")).unwrap(), "one\ntwo\n");

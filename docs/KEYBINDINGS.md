@@ -248,9 +248,9 @@ remote-tracking ones. `:compare ma`, `↓`, `↓`, `Enter` picks the second matc
 | `:reset [soft\|mixed\|hard] [commit]` | Reset the branch (default `mixed`; `hard` asks first); the commit defaults to the log cursor |
 | `:undo` | Undo the last commit, keeping its changes staged (`reset --soft HEAD~1`) |
 | `:tag <name> [commit]` | Lightweight tag at the commit (default: the one `t` was pressed on, else HEAD) |
-| `:fetch` | Fetch all remotes (pruning) in the background; the status bar sums up what moved (`origin/main +3`) |
+| `:fetch` | Fetch every remote one by one (pruning, no submodules, never prompting) in the background; the status bar sums up what moved (`origin/main +3`) and names any remote that failed, such as one that wants credentials |
 | `:pull` / `:pull!` | Pull the upstream: fast-forward only, or rebase onto it with `!` |
-| `:push` | Push the current branch to its upstream (set on `origin` when missing); never forces |
+| `:push` | Push the current branch to its upstream (set on `origin` when missing); never forces, never prompts |
 | `:commit` / `:commit <message>` | Commit the index; without a message the comment box opens as the message editor |
 | `:commit!` / `:amend` / `:commit! <message>` | Amend HEAD (the box is pre-filled with its message) |
 | `:unstage` | Unstage the file under the cursor |
