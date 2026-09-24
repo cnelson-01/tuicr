@@ -14,6 +14,7 @@ Related references: [CONFIG.md](CONFIG.md) for the config file and themes,
 |---|---|
 | `tuicr` | Open the TUI on the review target selector |
 | `tuicr tui` | Same TUI, explicit subcommand |
+| `tuicr <commit>` (`tuicr tui <commit>`) | Review one commit directly, skipping the selector |
 | `tuicr pr <target>` (`tuicr mr`) | Review a pull request / merge request |
 | `tuicr tui pr <target>` (`tuicr tui mr`) | Same, under the explicit TUI subcommand |
 | `tuicr review list` | List persisted review sessions |
@@ -24,6 +25,11 @@ Related references: [CONFIG.md](CONFIG.md) for the config file and themes,
 `mr` is an alias of `pr`, and `get` an alias of `comments`; they behave
 identically. `<target>` accepts a bare `<number>`, `<owner/repo#N>`, or a PR
 URL.
+
+`<commit>` is a hash (full or abbreviated), tag, or branch name — any revision
+`-r` accepts — and is shorthand for `-r <commit>`, so `tuicr 7faea43` opens
+that commit's diff against its parent. It conflicts with `-r`, `--file`, and
+`--all-files`; combine it with `-w` to include uncommitted changes.
 
 `tuicr update` takes an optional SemVer version to install a specific release,
 including an older known-good one. It only accepts a version number — there is

@@ -54,6 +54,15 @@ struct Cli {
     #[command(flatten)]
     tui_options: TuiOptions,
 
+    /// Commit to review directly, skipping the selector: a hash (full or
+    /// abbreviated), tag, or branch name. Accepts any revision `-r` does.
+    #[arg(
+        value_name = "COMMIT",
+        value_parser = clap::builder::NonEmptyStringValueParser::new(),
+        conflicts_with_all = ["revisions", "file_path", "all_files"]
+    )]
+    commit: Option<String>,
+
     #[command(subcommand)]
     command: Option<Subcmd>,
 }
@@ -170,6 +179,15 @@ enum Subcmd {
 struct TuiCommand {
     #[command(flatten)]
     options: TuiOptions,
+
+    /// Commit to review directly, skipping the selector: a hash (full or
+    /// abbreviated), tag, or branch name. Accepts any revision `-r` does.
+    #[arg(
+        value_name = "COMMIT",
+        value_parser = clap::builder::NonEmptyStringValueParser::new(),
+        conflicts_with_all = ["revisions", "file_path", "all_files"]
+    )]
+    commit: Option<String>,
 
     #[command(subcommand)]
     command: Option<TuiSubcmd>,
@@ -288,36 +306,29 @@ pub enum LineSideArg {
 
 impl From<Cli> for CliArgs {
     fn from(cli: Cli) -> Self {
+        // A positional COMMIT is shorthand for `-r COMMIT` at the same level.
+        let top = cli.tui_options.with_commit(cli.commit);
         let (options, pr_target, review_command, update_version, update_command) = match cli.command
         {
-            Some(Subcmd::Tui(command)) => match command.command {
-                Some(TuiSubcmd::Pr(pr)) => (
-                    cli.tui_options.merge(command.options).merge(pr.options),
-                    Some(pr.target),
-                    None,
-                    None,
-                    false,
-                ),
-                None => (
-                    cli.tui_options.merge(command.options),
-                    None,
-                    None,
-                    None,
-                    false,
-                ),
-            },
-            Some(Subcmd::Pr(pr)) => (
-                cli.tui_options.merge(pr.options),
-                Some(pr.target),
-                None,
-                None,
-                false,
-            ),
+            Some(Subcmd::Tui(command)) => {
+                let tui = command.options.with_commit(command.commit);
+                match command.command {
+                    Some(TuiSubcmd::Pr(pr)) => (
+                        top.merge(tui).merge(pr.options),
+                        Some(pr.target),
+                        None,
+                        None,
+                        false,
+                    ),
+                    None => (top.merge(tui), None, None, None, false),
+                }
+            }
+            Some(Subcmd::Pr(pr)) => (top.merge(pr.options), Some(pr.target), None, None, false),
             Some(Subcmd::Review { command }) => {
                 (TuiOptions::default(), None, Some(command), None, false)
             }
             Some(Subcmd::Update { version }) => (TuiOptions::default(), None, None, version, true),
-            None => (cli.tui_options, None, None, None, false),
+            None => (top, None, None, None, false),
         };
         Self {
             theme: options.theme,
@@ -354,6 +365,15 @@ impl TuiOptions {
             || self.remote.is_some()
     }
 
+    /// Fold a positional COMMIT into `revisions`. clap already rejects the
+    /// two together at one level, so this never overrides an explicit `-r`.
+    fn with_commit(mut self, commit: Option<String>) -> Self {
+        if self.revisions.is_none() {
+            self.revisions = commit;
+        }
+        self
+    }
+
     fn merge(self, later: TuiOptions) -> Self {
         Self {
             theme: later.theme.or(self.theme),
@@ -374,7 +394,7 @@ impl TuiOptions {
 impl Cli {
     fn try_into_args(self) -> std::result::Result<CliArgs, clap::Error> {
         match (
-            self.tui_options.has_any_explicit_value(),
+            self.tui_options.has_any_explicit_value() || self.commit.is_some(),
             self.non_tui_command_name(),
         ) {
             (true, Some(command_name)) => Err(clap::Error::raw(
@@ -564,6 +584,85 @@ mod tests {
             parse_for_test(&["tuicr", "-w", "-r", "HEAD~3..HEAD"]).expect("parse should succeed");
         assert!(parsed.working_tree);
         assert_eq!(parsed.revisions, Some("HEAD~3..HEAD".to_string()));
+    }
+
+    #[test]
+    fn should_parse_positional_commit_as_revisions() {
+        let parsed = parse_for_test(&["tuicr", "7faea43"]).expect("parse should succeed");
+        assert_eq!(parsed.revisions, Some("7faea43".to_string()));
+        assert!(parsed.pr_target.is_none());
+        assert!(!parsed.working_tree);
+    }
+
+    #[test]
+    fn should_parse_positional_commit_under_tui_subcommand() {
+        let parsed = parse_for_test(&["tuicr", "tui", "7faea43"]).expect("parse should succeed");
+        assert_eq!(parsed.revisions, Some("7faea43".to_string()));
+        assert!(parsed.pr_target.is_none());
+    }
+
+    #[test]
+    fn should_parse_positional_commit_with_working_tree_and_path() {
+        let parsed = parse_for_test(&["tuicr", "7faea43", "-w", "-p", "src/"])
+            .expect("parse should succeed");
+        assert_eq!(parsed.revisions, Some("7faea43".to_string()));
+        assert!(parsed.working_tree);
+        assert_eq!(parsed.path_filter, Some("src/".to_string()));
+    }
+
+    #[test]
+    fn should_parse_positional_commit_after_flags() {
+        let parsed =
+            parse_for_test(&["tuicr", "--theme", "dark", "v1.2.0"]).expect("parse should succeed");
+        assert_eq!(parsed.revisions, Some("v1.2.0".to_string()));
+        assert_eq!(parsed.theme, Some("dark".to_string()));
+    }
+
+    #[test]
+    fn should_let_tui_level_positional_commit_win_over_top_level_revisions() {
+        let parsed = parse_for_test(&["tuicr", "-r", "main..HEAD", "tui", "7faea43"])
+            .expect("parse should succeed");
+        assert_eq!(parsed.revisions, Some("7faea43".to_string()));
+    }
+
+    #[test]
+    fn should_keep_pr_subcommand_out_of_positional_commit() {
+        let parsed = parse_for_test(&["tuicr", "pr", "125"]).expect("parse should succeed");
+        assert_eq!(parsed.pr_target, Some("125".to_string()));
+        assert!(parsed.revisions.is_none());
+    }
+
+    #[test]
+    fn should_reject_positional_commit_with_revisions_flag() {
+        let err = parse_for_test(&["tuicr", "7faea43", "-r", "main..HEAD"])
+            .expect_err("parse should fail");
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn should_reject_positional_commit_with_file() {
+        let err =
+            parse_for_test(&["tuicr", "7faea43", "--file", "f.md"]).expect_err("parse should fail");
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn should_reject_positional_commit_with_all_files() {
+        let err = parse_for_test(&["tuicr", "7faea43", "-A"]).expect_err("parse should fail");
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn should_reject_positional_commit_with_review_command() {
+        let err =
+            parse_for_test(&["tuicr", "7faea43", "review", "list"]).expect_err("parse should fail");
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn should_reject_empty_positional_commit() {
+        let err = parse_for_test(&["tuicr", ""]).expect_err("parse should fail");
+        assert_eq!(err.kind(), ErrorKind::InvalidValue);
     }
 
     #[test]

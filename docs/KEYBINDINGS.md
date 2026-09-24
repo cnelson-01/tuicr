@@ -397,6 +397,11 @@ walks exactly that ref (repeatable; what the branch picker's `Ctrl-l` produces):
 /fix retry author:kim path:src/net branch:release
 ```
 
+A free word that looks like a commit hash (4 or more hex digits) and names exactly one
+commit pins that commit to the top of the rows, ahead of any commits whose message
+mentions it, so `/7faea43` finds a hash pasted from elsewhere. A hex word that names no
+commit, or an ambiguous prefix, stays a message word.
+
 The rows follow the prompt as you type: each pause of about 200ms searches in the
 background and the title shows `…` while a search is running. `Enter` keeps the filter,
 `Esc` while typing puts the rows back to the last kept filter, and `Esc` afterwards clears
@@ -461,7 +466,7 @@ first, with children always above their parents so the graph stays coherent.
 | `a` | Abort the in-progress merge / cherry-pick / rebase / revert |
 | `B` | Open the branch picker |
 | `v` / `R` / `D` / `f` / `x` / `t` / `y` | Revert / reword / drop / fixup / reset to / tag / copy hash of the cursor commit (as in the log pane) |
-| `/` | Local tab: filter the log by message / `author:` / `path:` (see the log pane section); Pull Requests tab: filter the loaded PR rows |
+| `/` | Local tab: filter the log by message / hash / `author:` / `path:` (see the log pane section); Pull Requests tab: filter the loaded PR rows |
 | `r` | In Pull Requests tab, toggle all open PRs / PRs requesting your review |
 | `Esc` | Return to the diff |
 | `:q` | Quit |

@@ -1126,6 +1126,13 @@ fn read_git_object(workdir: &Path, spec: &str) -> Option<String> {
 /// `git log` limited by a [`CommitQuery`]: fixed-string, case-insensitive
 /// message words (all must match), author, and path. Same walk and shape as
 /// `get_recent_commits`, so the overflow row can page through the matches.
+///
+/// A free word that abbreviates a commit id (`/7faea43`) pins that commit
+/// to the top of the first page, ahead of the message matches, so a hash
+/// pasted into the prompt finds its commit even though `--grep` only reads
+/// messages. The pinned row takes the first slot of the virtual log: the
+/// first page asks git for one row fewer and later pages skip one fewer, so
+/// the overflow row keeps paging without dropping or repeating a commit.
 pub(super) fn search_commits(
     workdir: &Path,
     query: &CommitQuery,
@@ -1135,10 +1142,73 @@ pub(super) fn search_commits(
     if run_git_command(workdir, &["rev-parse", "--verify", "HEAD"]).is_err() {
         return Ok(Vec::new());
     }
+    let branch_tips = get_branch_tip_names(workdir);
+    let pinned = query
+        .text
+        .iter()
+        .filter(|word| looks_like_commit_id(word))
+        .find_map(|word| lookup_commit(workdir, word, &branch_tips));
+    let (skip, take) = match (&pinned, offset) {
+        (Some(_), 0) => (0, limit.saturating_sub(1)),
+        (Some(_), _) => (offset - 1, limit),
+        (None, _) => (offset, limit),
+    };
+    let mut commits = if take == 0 {
+        Vec::new()
+    } else {
+        search_commit_page(workdir, query, skip, take, &branch_tips)?
+    };
+    if let Some(hit) = pinned {
+        commits.retain(|c| c.id != hit.id);
+        if offset == 0 {
+            commits.insert(0, hit);
+        }
+    }
+    let refs = get_ref_index(workdir);
+    for commit in &mut commits {
+        refs.apply(commit);
+    }
+    Ok(commits)
+}
+
+/// Whether a free word could abbreviate a commit id: 4 hex digits (git's
+/// shortest abbreviation) up to a full SHA-256 id.
+fn looks_like_commit_id(word: &str) -> bool {
+    (4..=64).contains(&word.len()) && word.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// The commit `word` names, when it abbreviates exactly one. An ambiguous or
+/// unknown prefix resolves to nothing, so a hex-looking word like `cafe` is
+/// left to match messages.
+fn lookup_commit(
+    workdir: &Path,
+    word: &str,
+    branch_tips: &HashMap<String, Vec<String>>,
+) -> Option<CommitInfo> {
+    let spec = format!("{word}^{{commit}}");
+    let output = run_git_command(
+        workdir,
+        &["log", "--max-count=1", COMMIT_FORMAT, spec.as_str()],
+    )
+    .ok()?;
+    parse_commit_records(&output, branch_tips)
+        .into_iter()
+        .next()
+}
+
+/// One `git log` page of the message / author / path / branch matches, with
+/// the ref chips still to be applied.
+fn search_commit_page(
+    workdir: &Path,
+    query: &CommitQuery,
+    skip: usize,
+    take: usize,
+    branch_tips: &HashMap<String, Vec<String>>,
+) -> Result<Vec<CommitInfo>> {
     let mut args: Vec<String> = vec![
         "log".into(),
-        format!("--skip={offset}"),
-        format!("--max-count={limit}"),
+        format!("--skip={skip}"),
+        format!("--max-count={take}"),
         "--date-order".into(),
         "--regexp-ignore-case".into(),
         "--fixed-strings".into(),
@@ -1173,12 +1243,7 @@ pub(super) fn search_commits(
         args.push(path.clone());
     }
     let output = run_git_command_strings(workdir, args)?;
-    let mut commits = parse_commit_records(&output, &get_branch_tip_names(workdir));
-    let refs = get_ref_index(workdir);
-    for commit in &mut commits {
-        refs.apply(commit);
-    }
-    Ok(commits)
+    Ok(parse_commit_records(&output, branch_tips))
 }
 
 /// Every ref pointing at each commit (branches, remotes, tags) plus HEAD,
@@ -2289,6 +2354,71 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["Fix retry in B"]
         );
+    }
+
+    #[test]
+    fn search_commits_pins_the_commit_a_hash_word_names() {
+        // given three commits, none of whose messages mention a hash
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let workdir = temp_dir.path();
+        git(workdir, &["init", "-b", "main"]);
+        git(workdir, &["config", "user.email", "kim@example.com"]);
+        git(workdir, &["config", "user.name", "Kim"]);
+        write_file(workdir, "a.txt", "1\n");
+        git(workdir, &["add", "."]);
+        git(workdir, &["commit", "-m", "Add feature A"]);
+        write_file(workdir, "b.txt", "1\n");
+        git(workdir, &["add", "."]);
+        git(workdir, &["commit", "-m", "Fix retry in B"]);
+        write_file(workdir, "a.txt", "2\n");
+        git(workdir, &["commit", "-am", "fix typo in A"]);
+        let oldest = run_git_command(workdir, &["rev-parse", "HEAD~2"])
+            .expect("rev-parse")
+            .trim()
+            .to_string();
+        let short = &oldest[..7];
+
+        let summaries = |query: &str, offset: usize, limit: usize| -> Vec<String> {
+            search_commits(
+                workdir,
+                &CommitQuery::parse(query).expect("query"),
+                offset,
+                limit,
+            )
+            .expect("search")
+            .into_iter()
+            .map(|c| c.summary)
+            .collect()
+        };
+
+        // then an abbreviated, full, or upper-case hash finds its commit
+        assert_eq!(summaries(short, 0, 10), ["Add feature A"]);
+        assert_eq!(summaries(&oldest, 0, 10), ["Add feature A"]);
+        assert_eq!(summaries(&short.to_uppercase(), 0, 10), ["Add feature A"]);
+        // and the pinned row carries the full id
+        let rows = search_commits(workdir, &CommitQuery::parse(short).unwrap(), 0, 10).unwrap();
+        assert_eq!(rows[0].id, oldest);
+
+        // commits whose message cites the hash follow the pinned one
+        let revert = format!("Revert {short}");
+        write_file(workdir, "c.txt", "1\n");
+        git(workdir, &["add", "."]);
+        git(workdir, &["commit", "-m", &revert]);
+        assert_eq!(summaries(short, 0, 10), ["Add feature A", &revert]);
+        // and the other filters still narrow the message matches
+        assert_eq!(
+            summaries(&format!("{short} author:nobody"), 0, 10),
+            ["Add feature A"]
+        );
+
+        // the pinned row takes the first slot, so paging stays contiguous
+        assert_eq!(summaries(short, 0, 1), ["Add feature A"]);
+        assert_eq!(summaries(short, 1, 1), [revert.as_str()]);
+        assert!(summaries(short, 2, 1).is_empty());
+
+        // a hex word that names no commit, or is too short to, stays a message word
+        assert_eq!(summaries("add", 0, 10), ["Add feature A"]);
+        assert!(summaries("0000000000000000000000000000000000000000", 0, 10).is_empty());
     }
 
     #[test]

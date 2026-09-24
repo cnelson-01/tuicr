@@ -513,7 +513,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw(
-                "Filter the log as you type: words match the message, `author:`, `path:`, `branch:`; Esc clears",
+                "Filter the log as you type: words match the message, a hash finds its commit, `author:`, `path:`, `branch:`; Esc clears",
             ),
         ]),
         Line::from(vec![
