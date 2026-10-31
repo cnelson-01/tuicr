@@ -101,6 +101,25 @@ impl Default for Theme {
 }
 
 impl Theme {
+    /// Background for the changed tokens inside a modified line: the line's
+    /// own add/del background pushed toward its add/del accent, so the edit
+    /// stands out from the rest of the line in any theme. `syntax` picks the
+    /// syntax-highlighted line background as the base. Palette (non-RGB)
+    /// themes fall back to the stronger plain diff background.
+    pub fn intraline_bg(&self, addition: bool, syntax: bool) -> Color {
+        let (syntax_bg, plain_bg, accent) = if addition {
+            (self.syntax_add_bg, self.diff_add_bg, self.diff_add)
+        } else {
+            (self.syntax_del_bg, self.diff_del_bg, self.diff_del)
+        };
+        let base = if syntax { syntax_bg } else { plain_bg };
+        match (base, accent) {
+            (Color::Rgb(..), Color::Rgb(..)) => blend(base, accent, 30),
+            _ if syntax => plain_bg,
+            _ => base,
+        }
+    }
+
     /// Create the dark theme (current default colors)
     pub fn dark() -> Self {
         Self {

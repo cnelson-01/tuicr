@@ -388,12 +388,12 @@ fn main() -> anyhow::Result<()> {
             app.diff_state.wrap_lines = wrap;
         }
         if let Some(pct) = cfg.split {
-            app.sbs_split_pct = (pct.min(100) as u16)
-                .clamp(app::MIN_SBS_SPLIT_PCT, app::MAX_SBS_SPLIT_PCT);
+            app.sbs_split_pct =
+                (pct.min(100) as u16).clamp(app::MIN_SBS_SPLIT_PCT, app::MAX_SBS_SPLIT_PCT);
         }
         if let Some(pct) = cfg.tree_width {
-            app.file_list_pct = (pct.min(100) as u16)
-                .clamp(app::MIN_FILE_LIST_PCT, app::MAX_FILE_LIST_PCT);
+            app.file_list_pct =
+                (pct.min(100) as u16).clamp(app::MIN_FILE_LIST_PCT, app::MAX_FILE_LIST_PCT);
         }
         app.relative_line_numbers = cfg.relative_line_numbers.unwrap_or(false);
         // Open in single-file view when the user opts in. Pristine

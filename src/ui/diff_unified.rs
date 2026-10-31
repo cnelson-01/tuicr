@@ -590,7 +590,8 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                 }
 
                 // Diff lines
-                for diff_line in &hunk.lines {
+                let partners = crate::ui::intraline::pair_partners(&hunk.lines);
+                for (hunk_line_idx, diff_line) in hunk.lines.iter().enumerate() {
                     // Hot path: skip span/style allocation entirely for diff
                     // lines outside the viewport. Comment handling below still
                     // runs so `line_idx` stays exact and any comment box that
@@ -645,6 +646,33 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                             line_spans.push(Span::styled(diff_line.content.clone(), style));
                         }
 
+                        // Word-level emphasis against the line this one
+                        // replaced (or was replaced by).
+                        if let Some(partner) =
+                            partners[hunk_line_idx].and_then(|p| hunk.lines.get(p))
+                        {
+                            let is_add = diff_line.origin == LineOrigin::Addition;
+                            let (old, new) = if is_add {
+                                (partner, diff_line)
+                            } else {
+                                (diff_line, partner)
+                            };
+                            if let Some((old_ranges, new_ranges)) =
+                                crate::ui::intraline::changed_ranges(
+                                    &crate::ui::intraline::rendered_text(old),
+                                    &crate::ui::intraline::rendered_text(new),
+                                )
+                            {
+                                let ranges = if is_add { new_ranges } else { old_ranges };
+                                let bg = app
+                                    .theme
+                                    .intraline_bg(is_add, diff_line.highlighted_spans.is_some());
+                                let content = line_spans.split_off(content_start);
+                                line_spans
+                                    .extend(crate::ui::intraline::emphasize(content, &ranges, bg));
+                            }
+                        }
+
                         // Mark add/del lines with their effective EOL style so we can paint full
                         // row backgrounds later (including wrapped visual rows).
                         let eol_marker = matches!(
@@ -664,8 +692,10 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                     let base = line_spans.last().map(|s| s.style).unwrap_or(style);
                                     base.bg(syntax_bg)
                                 }
-                                // Non-highlighted lines keep classic diff background.
-                                None => line_spans.last().map(|s| s.style).unwrap_or(style),
+                                // Non-highlighted lines keep classic diff background
+                                // (the base style: the last span may carry
+                                // word-level emphasis).
+                                None => style,
                             };
                             // Zero-width marker span carrying the background style.
                             Span::styled(String::new(), eol_style)

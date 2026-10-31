@@ -42,17 +42,25 @@ fn content_spans_for_diff_line(
     dl: &DiffLine,
     origin: LineOrigin,
     search: Option<(&str, Style)>,
+    emphasis: Option<&[std::ops::Range<usize>]>,
 ) -> Vec<Span<'static>> {
     let base = match origin {
         LineOrigin::Context => styles::diff_context_style(theme),
         LineOrigin::Addition => styles::diff_add_style(theme),
         LineOrigin::Deletion => styles::diff_del_style(theme),
     };
-    let spans: Vec<Span<'static>> = if let Some(ref h) = dl.highlighted_spans {
+    let mut spans: Vec<Span<'static>> = if let Some(ref h) = dl.highlighted_spans {
         h.iter().map(|(s, t)| Span::styled(t.clone(), *s)).collect()
     } else {
         vec![Span::styled(dl.content.clone(), base)]
     };
+    if let Some(ranges) = emphasis {
+        let bg = theme.intraline_bg(
+            origin == LineOrigin::Addition,
+            dl.highlighted_spans.is_some(),
+        );
+        spans = crate::ui::intraline::emphasize(spans, ranges, bg);
+    }
     match search {
         Some((needle, hl)) => apply_search_highlight_spans(spans, needle, hl),
         None => spans,
@@ -1544,7 +1552,7 @@ fn render_context_line_side_by_side(
         lines.push(Line::from(spans));
 
         let content =
-            content_spans_for_diff_line(ctx.theme, diff_line, LineOrigin::Context, search);
+            content_spans_for_diff_line(ctx.theme, diff_line, LineOrigin::Context, search, None);
         let ctx_style = styles::diff_context_style(ctx.theme);
         let (lp, rp) = sbs_row_prefixes(
             ctx.theme,
@@ -1683,6 +1691,16 @@ fn render_deletion_addition_pair_side_by_side(
 
             lines.push(Line::from(spans));
 
+            // Word-level emphasis for a deletion/addition pair: just the
+            // tokens that changed get the stronger background.
+            let emphasis = match (del_opt, add_opt) {
+                (Some(dl), Some(al)) => crate::ui::intraline::changed_ranges(
+                    &crate::ui::intraline::rendered_text(dl),
+                    &crate::ui::intraline::rendered_text(al),
+                ),
+                _ => None,
+            };
+
             let w = ctx.lineno_width;
             let (left_content, left_pad, left_marker, left_lineno, left_marker_style) =
                 match del_opt {
@@ -1692,6 +1710,7 @@ fn render_deletion_addition_pair_side_by_side(
                             dl,
                             LineOrigin::Deletion,
                             ctx.search_for(line_idx),
+                            emphasis.as_ref().map(|(old, _)| old.as_slice()),
                         ),
                         column_pad_style(ctx.theme, dl, LineOrigin::Deletion),
                         "▌",
@@ -1708,6 +1727,7 @@ fn render_deletion_addition_pair_side_by_side(
                             al,
                             LineOrigin::Addition,
                             ctx.search_for(line_idx),
+                            emphasis.as_ref().map(|(_, new)| new.as_slice()),
                         ),
                         column_pad_style(ctx.theme, al, LineOrigin::Addition),
                         "▌",
@@ -1850,6 +1870,7 @@ fn render_standalone_addition_side_by_side(
             diff_line,
             LineOrigin::Addition,
             ctx.search_for(line_idx),
+            None,
         );
         let right_pad = column_pad_style(ctx.theme, diff_line, LineOrigin::Addition);
         let (lp, rp) = sbs_row_prefixes(
@@ -3010,5 +3031,38 @@ mod remote_comments_side_by_side_snapshot_tests {
         let target = inner.x + crate::app::sbs_left_gutter(lw) + available * 3 / 10;
         app.drag_splitter_to(crate::app::Splitter::SideBySide, target);
         assert_eq!(app.sbs_split_pct, 29);
+    }
+
+    #[test]
+    fn should_emphasize_only_the_changed_tokens_of_a_pair() {
+        let mut app = make_pr_app();
+        app.diff_files = vec![diff_file_with_pair(
+            "return alpha * 10 + beta",
+            "return alpha * 1000 + beta",
+        )];
+        app.set_diff_wrap(false);
+        app.rebuild_annotations();
+
+        let buf = draw_sbs(&mut app, 120, 20);
+        let row = row_containing(&buf, "1000");
+        let text: String = (0..120).map(|x| char_at(&buf, x, row)).collect();
+        let emph_add = app.theme.intraline_bg(true, false);
+        let emph_del = app.theme.intraline_bg(false, false);
+        let col_of = |needle: &str, from: usize| {
+            text[from..]
+                .find(needle)
+                .map(|i| text[..from + i].chars().count() as u16)
+        };
+        let ten = col_of("10 ", 0).expect("old number");
+        let thousand = col_of("1000", 0).expect("new number");
+        let alpha_new = col_of("alpha", thousand as usize - 12).expect("new alpha");
+        assert_eq!(buf[(ten, row)].bg, emph_del);
+        assert_eq!(buf[(thousand, row)].bg, emph_add);
+        assert_eq!(buf[(thousand + 3, row)].bg, emph_add);
+        assert_ne!(
+            buf[(alpha_new, row)].bg,
+            emph_add,
+            "unchanged token emphasized"
+        );
     }
 }

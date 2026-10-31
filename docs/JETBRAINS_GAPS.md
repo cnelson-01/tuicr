@@ -20,7 +20,7 @@ splitter and the tool-window edges, and hide every tool window to read a diff.
       `‹` / `›` markers on the clipped edge of each column
 - [ ] In unified view, wrapped continuation rows start at column 0 under the
       gutter. Indent them to the content column
-- [ ] No intra-line (word-level) change highlighting. Paired deletion and
+- [x] No intra-line (word-level) change highlighting. Paired deletion and
       addition lines should emphasize just the tokens that differ, in both views
 - [x] The side-by-side split is fixed at 50/50. Add keys to move it, a
       `:set split N` command, a reset key, and mouse drag on the divider

@@ -11,6 +11,7 @@ pub mod file_list;
 pub mod find_results;
 pub mod help_popup;
 pub mod inline_commit_selector;
+pub mod intraline;
 pub mod log_pane;
 pub mod merge_conflict;
 pub mod pr_info_panel;
