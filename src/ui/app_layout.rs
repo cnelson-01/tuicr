@@ -211,12 +211,14 @@ fn render_main_content(frame: &mut Frame, app: &mut App, area: Rect) {
         area
     };
 
+    app.content_area = Some(content_area);
     if app.show_file_list {
+        let tree_pct = app.file_list_pct;
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Percentage(20), // File list
-                Constraint::Percentage(80), // Diff view
+                Constraint::Percentage(tree_pct),       // File list
+                Constraint::Percentage(100 - tree_pct), // Diff view
             ])
             .split(content_area);
 

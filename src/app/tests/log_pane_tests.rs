@@ -96,7 +96,7 @@ fn commit(id: &str) -> CommitInfo {
 
 /// An app in Normal mode reviewing `review` commits, with the inline
 /// selector state the review load would have left behind.
-fn build_review_app(review: &[&str]) -> App {
+pub(super) fn build_review_app(review: &[&str]) -> App {
     let vcs_info = VcsInfo {
         root_path: PathBuf::from("/tmp"),
         head_commit: "head".to_string(),

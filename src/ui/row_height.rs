@@ -33,9 +33,11 @@ pub(crate) fn annotation_row_height(app: &App, idx: usize) -> usize {
     // SBS parity: the renderer disables the entire wrap pass (including
     // non-content rows) when the per-side content width is 0, falling back
     // to height 1 for every row.
-    if app.diff_view_mode == DiffViewMode::SideBySide && sbs_content_width(app, viewport_width) == 0
-    {
-        return 1;
+    if app.diff_view_mode == DiffViewMode::SideBySide {
+        let (left_w, right_w) = sbs_content_width(app, viewport_width);
+        if left_w == 0 || right_w == 0 {
+            return 1;
+        }
     }
     let Some(annotation) = app.line_annotations.get(idx) else {
         return 1;
@@ -146,16 +148,16 @@ fn wrap_len(text: &str, width: usize) -> usize {
     wrap_spans(&[Span::raw(text.to_string())], width).len()
 }
 
-fn wrap_side_max(left: &str, right: &str, content_width: usize) -> usize {
-    let l = wrap_len(left, content_width);
-    let r = wrap_len(right, content_width);
+fn wrap_side_max(left: &str, right: &str, widths: (usize, usize)) -> usize {
+    let l = wrap_len(left, widths.0);
+    let r = wrap_len(right, widths.1);
     l.max(r).max(1)
 }
 
-fn sbs_content_width(app: &App, viewport_width: usize) -> usize {
+fn sbs_content_width(app: &App, viewport_width: usize) -> (usize, usize) {
     let lw = app.lineno_width();
     let overhead = sbs_overhead(lw) as usize;
-    viewport_width.saturating_sub(overhead) / 2
+    crate::app::sbs_split_widths(viewport_width.saturating_sub(overhead), app.sbs_split_pct)
 }
 
 fn sbs_row_contents(

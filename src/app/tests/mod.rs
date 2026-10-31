@@ -10,6 +10,7 @@ mod expand_gap_tests;
 mod file_filter_tests;
 mod find_source_line_tests;
 mod find_tests;
+mod layout_tests;
 mod log_pane_tests;
 mod persistence_merge_tests;
 mod pr_info_tests;

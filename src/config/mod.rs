@@ -129,6 +129,10 @@ pub struct AppConfig {
     /// Log pane height in rows, borders included. Defaults to 12; adjust at
     /// runtime with `<leader>+` / `<leader>-` or `:set logheight N`.
     pub log_height: Option<usize>,
+    /// Old side's share of the side-by-side width, in percent.
+    pub split: Option<usize>,
+    /// File tree width, in percent of the content area.
+    pub tree_width: Option<usize>,
     /// Whether files already marked reviewed appear in the file tree and the
     /// diff. Defaults to true; toggle at runtime with `H` (file tree) or
     /// `:set reviewed!`.
@@ -213,6 +217,8 @@ const KNOWN_KEYS: &[&str] = &[
     "show_commits",
     "show_log",
     "log_height",
+    "split",
+    "tree_width",
     "show_reviewed",
     "diff_view",
     "commit_order",
@@ -444,6 +450,8 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         show_commits: read_bool(table, "show_commits", &mut warnings),
         show_log: read_bool(table, "show_log", &mut warnings),
         log_height: read_usize(table, "log_height", &mut warnings),
+        split: read_usize(table, "split", &mut warnings),
+        tree_width: read_usize(table, "tree_width", &mut warnings),
         show_reviewed: read_bool(table, "show_reviewed", &mut warnings),
         diff_view: read_enum(
             table,

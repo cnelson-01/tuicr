@@ -387,6 +387,14 @@ fn main() -> anyhow::Result<()> {
         if let Some(wrap) = cfg.wrap {
             app.diff_state.wrap_lines = wrap;
         }
+        if let Some(pct) = cfg.split {
+            app.sbs_split_pct = (pct.min(100) as u16)
+                .clamp(app::MIN_SBS_SPLIT_PCT, app::MAX_SBS_SPLIT_PCT);
+        }
+        if let Some(pct) = cfg.tree_width {
+            app.file_list_pct = (pct.min(100) as u16)
+                .clamp(app::MIN_FILE_LIST_PCT, app::MAX_FILE_LIST_PCT);
+        }
         app.relative_line_numbers = cfg.relative_line_numbers.unwrap_or(false);
         // Open in single-file view when the user opts in. Pristine
         // `--all-files` already turned it on inside `App::new`, so we
@@ -585,6 +593,24 @@ fn main() -> anyhow::Result<()> {
                                 app.cursor_to_bottom();
                                 continue;
                             }
+                            // Horizontal pans: half a column, line start,
+                            // end of the longest line on screen.
+                            crossterm::event::KeyCode::Char('H') => {
+                                app.pan_half_screen(false);
+                                continue;
+                            }
+                            crossterm::event::KeyCode::Char('L') => {
+                                app.pan_half_screen(true);
+                                continue;
+                            }
+                            crossterm::event::KeyCode::Char('s') => {
+                                app.pan_home();
+                                continue;
+                            }
+                            crossterm::event::KeyCode::Char('e') => {
+                                app.pan_end();
+                                continue;
+                            }
                             _ => {} // Fall through to normal handling
                         }
                     }
@@ -710,6 +736,32 @@ fn main() -> anyhow::Result<()> {
                             // `<leader>a` toggles the blame (annotate) gutter.
                             crossterm::event::KeyCode::Char('a') => {
                                 app.toggle_blame();
+                                continue;
+                            }
+                            // Layout: move the side-by-side divider, resize
+                            // the file tree, reset both, hide every panel.
+                            crossterm::event::KeyCode::Char('<' | ',') => {
+                                app.adjust_sbs_split(-app::SPLIT_STEP_PCT);
+                                continue;
+                            }
+                            crossterm::event::KeyCode::Char('>' | '.') => {
+                                app.adjust_sbs_split(app::SPLIT_STEP_PCT);
+                                continue;
+                            }
+                            crossterm::event::KeyCode::Char('[') => {
+                                app.adjust_file_list_pct(-app::SPLIT_STEP_PCT);
+                                continue;
+                            }
+                            crossterm::event::KeyCode::Char(']') => {
+                                app.adjust_file_list_pct(app::SPLIT_STEP_PCT);
+                                continue;
+                            }
+                            crossterm::event::KeyCode::Char('0') => {
+                                app.reset_layout();
+                                continue;
+                            }
+                            crossterm::event::KeyCode::Char('z') => {
+                                app.toggle_zen();
                                 continue;
                             }
                             _ => {}

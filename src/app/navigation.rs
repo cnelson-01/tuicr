@@ -287,10 +287,10 @@ impl App {
             return;
         }
         let viewport_width = if self.diff_view_mode == DiffViewMode::SideBySide {
-            self.diff_state
-                .viewport_width
-                .saturating_sub(crate::app::sbs_overhead(self.lineno_width()) as usize)
-                / 2
+            // Both columns pan together; stop when the narrower one shows
+            // the end of the longest line.
+            let (left_w, right_w) = self.sbs_column_widths(self.diff_state.viewport_width as u16);
+            left_w.min(right_w)
         } else {
             self.diff_state.viewport_width
         };
@@ -670,6 +670,13 @@ impl App {
         lineno_width(hunk_max.max(cache_max).max(relative_max)) + self.blame_width()
     }
 
+    /// Content widths of the old and new side-by-side columns for a diff
+    /// pane `inner_width` cells wide, after gutters and the divider.
+    pub fn sbs_column_widths(&self, inner_width: u16) -> (usize, usize) {
+        let available = inner_width.saturating_sub(sbs_overhead(self.lineno_width())) as usize;
+        crate::app::sbs_split_widths(available, self.sbs_split_pct)
+    }
+
     pub fn pane_geometry(&self, inner: ratatui::layout::Rect, side: LineSide) -> PaneGeom {
         let w = self.lineno_width();
         match self.diff_view_mode {
@@ -685,19 +692,19 @@ impl App {
             DiffViewMode::SideBySide => {
                 let overhead = sbs_overhead(w);
                 let left_gutter = sbs_left_gutter(w);
-                let half_w = (inner.width.saturating_sub(overhead) / 2) as usize;
+                let (left_w, right_w) = self.sbs_column_widths(inner.width);
                 match side {
                     LineSide::Old => PaneGeom {
                         content_x_start: inner.x + left_gutter,
-                        content_x_end: inner.x + left_gutter + half_w as u16,
-                        content_width: half_w,
+                        content_x_end: inner.x + left_gutter + left_w as u16,
+                        content_width: left_w,
                     },
                     LineSide::New => {
-                        let start = inner.x + overhead + half_w as u16;
+                        let start = inner.x + overhead + left_w as u16;
                         PaneGeom {
                             content_x_start: start,
-                            content_x_end: start + half_w as u16,
-                            content_width: half_w,
+                            content_x_end: start + right_w as u16,
+                            content_width: right_w,
                         }
                     }
                 }
@@ -715,8 +722,8 @@ impl App {
         match self.diff_view_mode {
             DiffViewMode::Unified => ann_default,
             DiffViewMode::SideBySide => {
-                let half_w = inner.width.saturating_sub(sbs_overhead(w)) / 2;
-                let divider = inner.x + sbs_left_gutter(w) + half_w;
+                let (left_w, _) = self.sbs_column_widths(inner.width);
+                let divider = inner.x + sbs_left_gutter(w) + left_w as u16;
                 if x < divider {
                     LineSide::Old
                 } else {

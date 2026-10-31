@@ -66,6 +66,8 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     CommandSpec::new(&["set log"], CommandKind::SetLogVisible(true)),
     CommandSpec::new(&["set nolog"], CommandKind::SetLogVisible(false)),
     CommandSpec::new(&["log", "set log!"], CommandKind::ToggleLog),
+    CommandSpec::new(&["zen"], CommandKind::ToggleZen),
+    CommandSpec::new(&["set split"], CommandKind::ResetSplit),
     CommandSpec::new(
         &["branches", "branch", "compare", "select"],
         CommandKind::BranchPicker,
@@ -190,6 +192,8 @@ enum CommandKind {
     ToggleCommits,
     SetLogVisible(bool),
     ToggleLog,
+    ToggleZen,
+    ResetSplit,
     BranchPicker,
     AbortOperation,
     Remote(RemoteOp),
@@ -235,6 +239,28 @@ enum CompletionDirection {
 
 pub fn handle_mouse_event(app: &mut App, event: MouseEvent) {
     let pos = Position::new(event.column, event.row);
+    // Splitter drags (file tree border, side-by-side divider) own the
+    // gesture from press to release, before any selection logic sees it.
+    if matches!(app.input_mode, InputMode::Normal | InputMode::VisualSelect) {
+        match event.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if let Some(splitter) = app.splitter_at(pos.x, pos.y) {
+                    app.splitter_drag = Some(splitter);
+                    return;
+                }
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if let Some(splitter) = app.splitter_drag {
+                    app.drag_splitter_to(splitter, pos.x);
+                    return;
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) if app.splitter_drag.take().is_some() => {
+                return;
+            }
+            _ => {}
+        }
+    }
     match event.kind {
         MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
             let scroll_up = matches!(event.kind, MouseEventKind::ScrollUp);
@@ -731,6 +757,12 @@ pub fn handle_command_action(app: &mut App, action: Action) {
             } else if let Some(rows) = parse_log_height_command(&cmd) {
                 app.set_log_pane_height(rows);
                 CommandAfterDispatch::ExitCommandMode
+            } else if let Some(pct) = parse_set_number(&cmd, "split") {
+                app.set_sbs_split(pct);
+                CommandAfterDispatch::ExitCommandMode
+            } else if let Some(pct) = parse_set_number(&cmd, "treewidth") {
+                app.set_file_list_pct(pct);
+                CommandAfterDispatch::ExitCommandMode
             } else if let Some((target, smart)) = parse_checkout_command(&cmd) {
                 app.checkout_target(target, smart);
                 CommandAfterDispatch::ExitCommandMode
@@ -1073,6 +1105,14 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
         }
         CommandKind::ToggleLog => {
             app.toggle_log_pane();
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::ToggleZen => {
+            app.toggle_zen();
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::ResetSplit => {
+            app.set_sbs_split(app::DEFAULT_SBS_SPLIT_PCT);
             CommandAfterDispatch::ExitCommandMode
         }
         CommandKind::BranchPicker => {
@@ -1438,6 +1478,17 @@ fn parse_log_height_command(cmd: &str) -> Option<u16> {
     let rest = cmd.strip_prefix("set logheight")?.trim();
     let rest = rest.strip_prefix('=').map(str::trim).unwrap_or(rest);
     rest.parse().ok()
+}
+
+/// `:set <name> N` / `:set <name>=N` for a numeric layout option.
+fn parse_set_number(cmd: &str, name: &str) -> Option<u16> {
+    let rest = cmd
+        .strip_prefix("set ")?
+        .trim_start()
+        .strip_prefix(name)?
+        .trim();
+    let rest = rest.strip_prefix('=').map(str::trim).unwrap_or(rest);
+    rest.trim_end_matches('%').parse().ok()
 }
 
 fn parse_lineno_command(cmd: &str) -> Option<(u32, LineSide)> {

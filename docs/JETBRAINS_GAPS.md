@@ -14,23 +14,23 @@ JetBrains never wraps in its diff viewer. It scrolls both sides together and
 highlights the changed words inside a modified line. You can drag the
 splitter and the tool-window edges, and hide every tool window to read a diff.
 
-- [ ] Lines wrap by default (`wrap_lines: true`). Default to no wrap and keep
+- [x] Lines wrap by default (`wrap_lines: true`). Default to no wrap and keep
       `:set wrap` / `wrap = true` as opt-ins
-- [ ] Clipped lines give no sign that text continues past the edge. Add
+- [x] Clipped lines give no sign that text continues past the edge. Add
       `‹` / `›` markers on the clipped edge of each column
 - [ ] In unified view, wrapped continuation rows start at column 0 under the
       gutter. Indent them to the content column
 - [ ] No intra-line (word-level) change highlighting. Paired deletion and
       addition lines should emphasize just the tokens that differ, in both views
-- [ ] The side-by-side split is fixed at 50/50. Add keys to move it, a
+- [x] The side-by-side split is fixed at 50/50. Add keys to move it, a
       `:set split N` command, a reset key, and mouse drag on the divider
-- [ ] The file tree is fixed at 20% width. Add keys to resize it, a
+- [x] The file tree is fixed at 20% width. Add keys to resize it, a
       `:set treewidth N` command, and mouse drag on its border
-- [ ] No "hide all tool windows" (JetBrains Ctrl-Shift-F12). Add a zen
+- [x] No "hide all tool windows" (JetBrains Ctrl-Shift-F12). Add a zen
       toggle that keeps only the diff, and restores the layout when toggled again
 - [ ] Ignore-whitespace is config-only. Add a runtime toggle that reloads
       the diff
-- [ ] Horizontal paging moves only 4 columns at a time. Add half-screen
+- [x] Horizontal paging moves only 4 columns at a time. Add half-screen
       pans and jumps to the line start and the end of the longest line
 - [ ] Font size: a TUI can't change the terminal font. Document the terminal
       zoom keys, and use the density controls above (split, tree width, zen)

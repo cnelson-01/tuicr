@@ -41,6 +41,8 @@ comment_vim = false
 q_quits = false
 comment_tab_width = 4
 wrap = false
+split = 50
+tree_width = 20
 relative_line_numbers = false
 cursor_line = true
 search_highlight = true
@@ -102,6 +104,8 @@ session_header = true
 | `q_quits`                  | `false`      | Restore bare `q` as a quit key in review modes. `:q`, `ZZ`, and `ZQ` work regardless of this setting.                                                     |
 | `comment_tab_width`        | `4`          | Spaces inserted by Tab while typing in the vim comment box (Insert mode).                                                                                  |
 | `wrap`                     | `false`      | Line wrap in the diff view. Toggle with `:set wrap!`.                                                                                                      |
+| `split`                    | `50`         | Old side's share of the side-by-side width, in percent (15–85). Adjust with `<leader><` / `<leader>>`, `:set split N`, or by dragging the `│` divider. |
+| `tree_width`               | `20`         | File tree width, in percent of the area beside it (8–60). Adjust with `<leader>[` / `<leader>]`, `:set treewidth N`, or by dragging its border.         |
 | `relative_line_numbers`    | `false`      | Show gutter numbers as rendered-row distances from the cursor. Toggle with `:set relativenumber!`.                                                         |
 | `cursor_line`              | `true`       | Highlight the current cursor line and visual selection.                                                                                                    |
 | `search_highlight`         | `true`       | Highlight `/` search matches in the diff view. Clear at runtime with `Esc`; `n` / `N` re-enable.                                                           |

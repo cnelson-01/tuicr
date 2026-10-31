@@ -12,6 +12,8 @@ Full reference. Press `?` inside tuicr for an in-app version of this list.
 | `k` / `↑` | Scroll up |
 | `h` / `←` | Scroll left |
 | `l` / `→` | Scroll right |
+| `zH` / `zL` | Pan half a column left / right |
+| `zs` / `ze` | Pan to the line start / to the end of the longest line on screen |
 | `Ctrl-d` / `Ctrl-u` | Half page down / up |
 | `Ctrl-f` / `Ctrl-b` | Full page down / up |
 | `g` / `G` | Go to first / last file |
@@ -120,6 +122,10 @@ considers files that pass the active filters.
 | `<leader>b` | Open the branch picker (also `:branches`) |
 | `<leader>F` | Find in files: opens the command line with `find ` |
 | `<leader>a` | Toggle the blame gutter (also `:blame`, `:set blame!`) |
+| `<leader><` / `<leader>>` | Move the side-by-side divider left / right (also `<leader>,` / `<leader>.`, `:set split N`, or drag the `│`) |
+| `<leader>[` / `<leader>]` | Narrow / widen the file tree (also `:set treewidth N`, or drag its border) |
+| `<leader>0` | Reset the divider to 50/50 and the file tree to 20% |
+| `<leader>z` | Zen mode: hide the file tree and the log pane; again restores them (also `:zen`) |
 | `Enter` | Select file (when file list is focused) |
 
 ## Comment navigator
@@ -229,8 +235,11 @@ remote-tracking ones. `:compare ma`, `↓`, `↓`, `Enter` picks the second matc
 | `:comments unresolved` | Show unresolved remote comments (PR mode, default) |
 | `:comments all` | Show all remote comments including resolved and outdated |
 | `:comments hide` | Hide remote comments in PR mode |
-| `:set wrap` | Enable line wrap in diff view |
+| `:set wrap` | Enable line wrap in diff view (off by default: long lines pan, and `‹` / `›` mark the clipped edges) |
 | `:set wrap!` (`:wrap`) | Toggle line wrap in diff view |
+| `:set split N` | Old side's share of the side-by-side width (15–85%); bare `:set split` resets to 50 |
+| `:set treewidth N` | File tree width (8–60%) |
+| `:zen` | Toggle zen mode (diff only) |
 | `:set relativenumber` / `:set norelativenumber` | Enable / disable relative rendered-row numbers |
 | `:set relativenumber!` | Toggle relative rendered-row numbers |
 | `:set commits` | Show inline commit selector |

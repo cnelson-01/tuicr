@@ -8,7 +8,8 @@ use ratatui::{
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{
-    App, DiffSource, ExpandDirection, FocusedPanel, GAP_EXPAND_BATCH, GapId, InputMode,
+    AnnotatedLine, App, DiffSource, ExpandDirection, FocusedPanel, GAP_EXPAND_BATCH, GapId,
+    InputMode,
 };
 use crate::model::{DiffLine, FileStatus, LineOrigin, LineRange, LineSide};
 use crate::theme::Theme;
@@ -153,19 +154,24 @@ fn pan_spans(
     pad_spans_to_width(visible, width, pad_style)
 }
 
-fn pan_sbs_row(meta: &SbsRowMeta, scroll_x: usize, content_width: usize) -> Line<'static> {
+fn pan_sbs_row(
+    meta: &SbsRowMeta,
+    scroll_x: usize,
+    left_width: usize,
+    right_width: usize,
+) -> Line<'static> {
     let mut spans = meta.left_prefix.clone();
     spans.extend(pan_spans(
         &meta.left_content,
         scroll_x,
-        content_width,
+        left_width,
         meta.left_pad_style,
     ));
     spans.extend(meta.right_prefix.clone());
     spans.extend(pan_spans(
         &meta.right_content,
         scroll_x,
-        content_width,
+        right_width,
         meta.right_pad_style,
     ));
     Line::from(spans)
@@ -268,6 +274,60 @@ fn paint_sbs_active_side_caret(
     }
 }
 
+/// Mark clipped content while panning without wrap: `‹` in a column's
+/// change-marker slot (just left of the code, so no text is hidden) when
+/// text is scrolled off its left edge, `›` on its last cell when the line
+/// runs past the right edge. JetBrains shows a
+/// scrollbar; a TUI needs the cue on the row itself.
+#[allow(clippy::too_many_arguments)]
+fn paint_sbs_clip_markers(
+    frame: &mut Frame,
+    inner: Rect,
+    theme: &Theme,
+    sbs_meta: &std::collections::HashMap<usize, SbsRowMeta>,
+    scroll_offset: usize,
+    scroll_x: usize,
+    lw: usize,
+    widths: (usize, usize),
+) {
+    let (left_w, right_w) = widths;
+    if left_w < 2 || right_w < 2 {
+        return;
+    }
+    let left_x = inner.x + crate::app::sbs_left_gutter(lw);
+    let right_x = inner.x + crate::app::sbs_overhead(lw) + left_w as u16;
+    let fg = theme.diff_hunk_header;
+    let mut mark = |x: u16, y: u16, glyph: char| {
+        if x < inner.x + inner.width {
+            let cell = &mut frame.buffer_mut()[(x, y)];
+            // The `‹` goes on the `▌` change-marker slot: keep a changed
+            // line's red/green so it still reads as a deletion/addition.
+            if cell.symbol() != "▌" {
+                cell.set_fg(fg);
+            }
+            cell.set_char(glyph);
+        }
+    };
+    for row in 0..inner.height {
+        let Some(meta) = sbs_meta.get(&(scroll_offset + row as usize)) else {
+            continue;
+        };
+        let y = inner.y + row;
+        for (content, x, w) in [
+            (&meta.left_content, left_x, left_w),
+            (&meta.right_content, right_x, right_w),
+        ] {
+            let len: usize = content.iter().map(|s| s.content.width()).sum();
+            if scroll_x > 0 && len > 0 {
+                mark(x - 1, y, '‹');
+            }
+            if len > scroll_x + w {
+                mark(x + w as u16 - 1, y, '›');
+            }
+        }
+    }
+}
+
 /// Continuation-row prefixes shared by every wrapped line: blank in place of
 /// the line numbers (same width, so columns stay aligned) with the center
 /// divider preserved.
@@ -289,7 +349,10 @@ type SideBySideCursorInfo = (usize, u16, usize, usize, usize);
 struct SideBySideContext<'a> {
     app: &'a App,
     theme: &'a Theme,
-    content_width: usize,
+    /// Old (left) column content width.
+    left_width: usize,
+    /// New (right) column content width.
+    right_width: usize,
     panel_width: usize,
     current_line_idx: usize,
     lineno_width: usize,
@@ -367,8 +430,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
     app.comment_input_annotation_offset = None;
 
     let lw = app.lineno_width();
-    let available_width = inner.width.saturating_sub(crate::app::sbs_overhead(lw)) as usize;
-    let content_width = available_width / 2;
+    let (left_width, right_width) = app.sbs_column_widths(inner.width);
 
     // Determine if we're in line comment mode (not file-level)
     let comment_input_mode = app.input_mode == InputMode::Comment
@@ -380,7 +442,8 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
     let ctx = SideBySideContext {
         app,
         theme: &app.theme,
-        content_width,
+        left_width,
+        right_width,
         panel_width: inner.width as usize,
         current_line_idx: app.diff_state.cursor_line,
         lineno_width: lw,
@@ -1051,7 +1114,9 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
     // Single pass: wrap each logical line once, producing both the visual
     // rows to render and the per-line height used by every row-mapping
     // consumer below, so the two can't disagree.
-    let (row_heights, wrapped_lines): (Vec<usize>, Option<Vec<Line>>) = if wrap && content_width > 0
+    let (row_heights, wrapped_lines): (Vec<usize>, Option<Vec<Line>>) = if wrap
+        && left_width > 0
+        && right_width > 0
     {
         let mut heights = Vec::with_capacity(visible_lines_unscrolled_for_overlay.len());
         let mut out: Vec<Line> = Vec::new();
@@ -1063,12 +1128,12 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                     let left_rows = if m.left_content.is_empty() {
                         vec![Vec::new()]
                     } else {
-                        wrap_spans(&m.left_content, content_width)
+                        wrap_spans(&m.left_content, left_width)
                     };
                     let right_rows = if m.right_content.is_empty() {
                         vec![Vec::new()]
                     } else {
-                        wrap_spans(&m.right_content, content_width)
+                        wrap_spans(&m.right_content, right_width)
                     };
                     let n = left_rows.len().max(right_rows.len()).max(1);
                     heights.push(n);
@@ -1077,9 +1142,9 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                         let left_content_row = left_rows.get(k).unwrap_or(&empty_row).clone();
                         let right_content_row = right_rows.get(k).unwrap_or(&empty_row).clone();
                         let left_padded =
-                            pad_spans_to_width(left_content_row, content_width, m.left_pad_style);
+                            pad_spans_to_width(left_content_row, left_width, m.left_pad_style);
                         let right_padded =
-                            pad_spans_to_width(right_content_row, content_width, m.right_pad_style);
+                            pad_spans_to_width(right_content_row, right_width, m.right_pad_style);
                         let (left_prefix, right_prefix) = if k == 0 {
                             (m.left_prefix.clone(), m.right_prefix.clone())
                         } else {
@@ -1112,7 +1177,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
         scroll_offset,
     );
 
-    let max_scroll_x = max_content_width.saturating_sub(content_width);
+    let max_scroll_x = max_content_width.saturating_sub(left_width.min(right_width));
     if app.diff_state.scroll_x > max_scroll_x {
         app.diff_state.scroll_x = max_scroll_x;
     }
@@ -1123,17 +1188,34 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
     let scroll_x = app.diff_state.scroll_x;
     let visible_lines: Vec<Line> = match wrapped_lines {
         Some(out) => out,
+        // Code rows are always rebuilt from their metadata so both columns
+        // clip the same way at any pan offset (the `‹` / `›` markers mark
+        // the cut). File and hunk headers and expanders stay put: they are
+        // labels, not code, and half a header reads as garbage.
         None => visible_lines_unscrolled
             .into_iter()
             .enumerate()
             .map(|(i, line)| {
-                if scroll_x == 0 || comment_box_row(&line).is_some() {
+                if comment_box_row(&line).is_some() {
+                    return line;
+                }
+                if let Some(meta) = sbs_meta.get(&(scroll_offset + i)) {
+                    return pan_sbs_row(meta, scroll_x, left_width, right_width);
+                }
+                let pinned = matches!(
+                    app.line_annotations.get(scroll_offset + i),
+                    Some(
+                        AnnotatedLine::FileHeader { .. }
+                            | AnnotatedLine::HunkHeader { .. }
+                            | AnnotatedLine::Expander { .. }
+                            | AnnotatedLine::HiddenLines { .. }
+                            | AnnotatedLine::ReviewedBanner { .. }
+                    )
+                );
+                if scroll_x == 0 || pinned {
                     line
                 } else {
-                    sbs_meta
-                        .get(&(scroll_offset + i))
-                        .map(|meta| pan_sbs_row(meta, scroll_x, content_width))
-                        .unwrap_or_else(|| apply_horizontal_scroll(line, scroll_x))
+                    apply_horizontal_scroll(line, scroll_x)
                 }
             })
             .collect(),
@@ -1168,7 +1250,20 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
     );
 
     // Move the `▶` caret onto the active side for the cursor row.
-    paint_sbs_active_side_caret(frame, inner, app, lw, content_width, &row_heights);
+    paint_sbs_active_side_caret(frame, inner, app, lw, left_width, &row_heights);
+
+    if !app.diff_state.wrap_lines {
+        paint_sbs_clip_markers(
+            frame,
+            inner,
+            &app.theme,
+            &sbs_meta,
+            scroll_offset,
+            scroll_x,
+            lw,
+            (left_width, right_width),
+        );
+    }
 
     // Painted last so the cell overlay wins over cursor-line bg on overlap.
     if let Some(sel) = app.visual_selection {
@@ -1223,7 +1318,6 @@ fn render_sbs_expanded_context_line(
 ) {
     let theme = ctx.theme;
     let lw = ctx.lineno_width;
-    let content_width = ctx.content_width;
     let indicator = cursor_indicator(*line_idx, ctx.current_line_idx);
     let old_line_num = ctx
         .display_lineno(expanded_line.old_lineno, *line_idx)
@@ -1234,24 +1328,26 @@ fn render_sbs_expanded_context_line(
         .map(|n| format!("{n:>lw$} "))
         .unwrap_or_else(|| " ".repeat(lw + 1));
     let ec_style = styles::expanded_context_style(theme);
-    let content_cell = plain_cell_spans(
-        &expanded_line.content,
-        ec_style,
-        content_width,
-        ctx.search_for(*line_idx),
-    );
+    let cell = |width| {
+        plain_cell_spans(
+            &expanded_line.content,
+            ec_style,
+            width,
+            ctx.search_for(*line_idx),
+        )
+    };
     let mut line_spans = vec![
         Span::styled(indicator, styles::current_line_indicator_style(theme)),
         Span::styled(old_line_num.clone(), ec_style),
         Span::styled(" ", ec_style),
     ];
-    line_spans.extend(content_cell.clone());
+    line_spans.extend(cell(ctx.left_width));
     line_spans.extend([
         Span::styled(" │ ", styles::dim_style(theme)),
         Span::styled(new_line_num.clone(), ec_style),
         Span::styled(" ", ec_style),
     ]);
-    line_spans.extend(content_cell);
+    line_spans.extend(cell(ctx.right_width));
     lines.push(Line::from(line_spans));
 
     let dim = styles::dim_style(theme);
@@ -1410,24 +1506,26 @@ fn render_context_line_side_by_side(
         ];
 
         let search = ctx.search_for(line_idx);
-        let content_cell = if let Some(ref highlighted) = diff_line.highlighted_spans {
-            searched_cell_spans(
-                highlighted,
-                ctx.content_width,
-                styles::diff_context_style(ctx.theme),
-                search,
-            )
-        } else {
-            plain_cell_spans(
-                &diff_line.content,
-                styles::diff_context_style(ctx.theme),
-                ctx.content_width,
-                search,
-            )
+        let content_cell = |width| {
+            if let Some(ref highlighted) = diff_line.highlighted_spans {
+                searched_cell_spans(
+                    highlighted,
+                    width,
+                    styles::diff_context_style(ctx.theme),
+                    search,
+                )
+            } else {
+                plain_cell_spans(
+                    &diff_line.content,
+                    styles::diff_context_style(ctx.theme),
+                    width,
+                    search,
+                )
+            }
         };
 
         // Left side content - use syntax highlighting if available
-        spans.extend(content_cell.clone());
+        spans.extend(content_cell(ctx.left_width));
 
         // Separator
         spans.push(Span::styled(" │ ", styles::dim_style(ctx.theme)));
@@ -1441,7 +1539,7 @@ fn render_context_line_side_by_side(
         ));
 
         // Right side content - use same highlighting
-        spans.extend(content_cell);
+        spans.extend(content_cell(ctx.right_width));
 
         lines.push(Line::from(spans));
 
@@ -1557,13 +1655,13 @@ fn render_deletion_addition_pair_side_by_side(
                     ctx.theme,
                     &mut spans,
                     del_line,
-                    ctx.content_width,
+                    ctx.left_width,
                     ctx.lineno_width,
                     ctx.display_lineno(del_line.old_lineno, line_idx),
                     ctx.search_for(line_idx),
                 );
             } else {
-                add_empty_column_spans(&mut spans, ctx.content_width, ctx.lineno_width);
+                add_empty_column_spans(&mut spans, ctx.left_width, ctx.lineno_width);
             }
 
             spans.push(Span::styled(" │ ", styles::dim_style(ctx.theme)));
@@ -1574,13 +1672,13 @@ fn render_deletion_addition_pair_side_by_side(
                     ctx.theme,
                     &mut spans,
                     add_line,
-                    ctx.content_width,
+                    ctx.right_width,
                     ctx.lineno_width,
                     ctx.display_lineno(add_line.new_lineno, line_idx),
                     ctx.search_for(line_idx),
                 );
             } else {
-                add_empty_column_spans(&mut spans, ctx.content_width, ctx.lineno_width);
+                add_empty_column_spans(&mut spans, ctx.right_width, ctx.lineno_width);
             }
 
             lines.push(Line::from(spans));
@@ -1732,13 +1830,13 @@ fn render_standalone_addition_side_by_side(
             indicator,
             styles::current_line_indicator_style(ctx.theme),
         )];
-        add_empty_column_spans(&mut spans, ctx.content_width, ctx.lineno_width);
+        add_empty_column_spans(&mut spans, ctx.left_width, ctx.lineno_width);
         spans.push(Span::styled(" │ ", styles::dim_style(ctx.theme)));
         add_addition_spans(
             ctx.theme,
             &mut spans,
             diff_line,
-            ctx.content_width,
+            ctx.right_width,
             ctx.lineno_width,
             ctx.display_lineno(diff_line.new_lineno, line_idx),
             ctx.search_for(line_idx),
@@ -2805,5 +2903,112 @@ mod remote_comments_side_by_side_snapshot_tests {
             checked, 1,
             "expected the commit message body to render exactly once, got {checked}"
         );
+    }
+
+    fn row_containing(buf: &Buffer, needle: &str) -> u16 {
+        (0..buf.area.height)
+            .find(|&y| {
+                (0..buf.area.width)
+                    .map(|x| char_at(buf, x, y))
+                    .collect::<String>()
+                    .contains(needle)
+            })
+            .unwrap_or_else(|| panic!("no row contains {needle:?}"))
+    }
+
+    #[test]
+    fn should_move_divider_when_split_changes() {
+        let mut app = make_pr_app();
+        app.diff_files = vec![diff_file_with_pair("OLDSIDE", "NEWSIDE")];
+        app.set_diff_wrap(false);
+        app.rebuild_annotations();
+
+        app.sbs_split_pct = 70;
+        let buf = draw_sbs(&mut app, 120, 20);
+
+        let row = row_containing(&buf, "OLDSIDE");
+        let lw = app.lineno_width();
+        let (left_w, right_w) = app.sbs_column_widths(118);
+        assert!(left_w > right_w * 2, "{left_w} vs {right_w}");
+        let divider = 1 + crate::app::sbs_left_gutter(lw) + left_w as u16 + 1;
+        assert_eq!(char_at(&buf, divider, row), "│");
+        let right_start = divider + 1 + lw as u16 + 3;
+        let right_text: String = (right_start..right_start + 7)
+            .map(|x| char_at(&buf, x, row))
+            .collect();
+        assert_eq!(right_text, "NEWSIDE");
+    }
+
+    #[test]
+    fn should_mark_clipped_edges_without_hiding_code() {
+        let mut app = make_pr_app();
+        app.diff_files = vec![diff_file_with_pair(
+            &format!("AAAA{}", "x".repeat(150)),
+            &format!("BBBB{}", "y".repeat(150)),
+        )];
+        app.set_diff_wrap(false);
+        app.rebuild_annotations();
+
+        let buf = draw_sbs(&mut app, 80, 20);
+        let row = row_containing(&buf, "AAAA");
+        let text: String = (0..80).map(|x| char_at(&buf, x, row)).collect();
+        assert_eq!(text.matches('›').count(), 2, "{text}");
+        assert!(
+            !text.contains('‹'),
+            "nothing is clipped on the left yet: {text}"
+        );
+
+        app.scroll_right(4);
+        let buf = draw_sbs(&mut app, 80, 20);
+        let row = row_containing(&buf, "xxx");
+        let text: String = (0..80).map(|x| char_at(&buf, x, row)).collect();
+        assert_eq!(text.matches('‹').count(), 2, "{text}");
+        // The `‹` sits in the change-marker slot, so the first visible code
+        // column still shows code.
+        let lw = app.lineno_width();
+        let left_start = 1 + crate::app::sbs_left_gutter(lw);
+        assert_eq!(char_at(&buf, left_start - 1, row), "‹");
+        assert_eq!(char_at(&buf, left_start, row), "x");
+    }
+
+    #[test]
+    fn should_keep_hunk_header_in_place_while_panning() {
+        let mut app = make_pr_app();
+        app.diff_files = vec![diff_file_with_pair(&"L".repeat(150), &"R".repeat(150))];
+        app.set_diff_wrap(false);
+        app.rebuild_annotations();
+
+        let _ = draw_sbs(&mut app, 80, 20);
+        app.scroll_right(20);
+        let buf = draw_sbs(&mut app, 80, 20);
+        assert!(app.diff_state.scroll_x > 0);
+        assert!(
+            body_text(&buf).contains("@@ -1,1 +1,1 @@"),
+            "hunk header panned away:\n{}",
+            body_text(&buf)
+        );
+    }
+
+    #[test]
+    fn should_hit_test_and_drag_the_divider() {
+        let mut app = make_pr_app();
+        app.diff_files = vec![diff_file_with_pair("old", "new")];
+        app.rebuild_annotations();
+        let _ = draw_sbs(&mut app, 120, 20);
+
+        let inner = app.diff_inner_area.expect("inner area");
+        let lw = app.lineno_width();
+        let (left_w, _) = app.sbs_column_widths(inner.width);
+        let divider = inner.x + crate::app::sbs_left_gutter(lw) + left_w as u16 + 1;
+        assert_eq!(
+            app.splitter_at(divider, inner.y + 1),
+            Some(crate::app::Splitter::SideBySide)
+        );
+        assert_eq!(app.splitter_at(inner.x + 5, inner.y + 1), None);
+
+        let available = inner.width - crate::app::sbs_overhead(lw);
+        let target = inner.x + crate::app::sbs_left_gutter(lw) + available * 3 / 10;
+        app.drag_splitter_to(crate::app::Splitter::SideBySide, target);
+        assert_eq!(app.sbs_split_pct, 29);
     }
 }

@@ -230,6 +230,52 @@ pub fn unified_gutter(w: usize) -> u16 {
     (w + 4) as u16
 }
 
+/// Default old-side share of the side-by-side content width.
+pub const DEFAULT_SBS_SPLIT_PCT: u16 = 50;
+/// The split never leaves either side less than this share.
+pub const MIN_SBS_SPLIT_PCT: u16 = 15;
+pub const MAX_SBS_SPLIT_PCT: u16 = 85;
+/// Default file tree width, as a percentage of the content area.
+pub const DEFAULT_FILE_LIST_PCT: u16 = 20;
+pub const MIN_FILE_LIST_PCT: u16 = 8;
+pub const MAX_FILE_LIST_PCT: u16 = 60;
+
+/// Panel visibility saved by zen mode (`<leader>z`) so toggling it back off
+/// restores exactly what was open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ZenSaved {
+    pub show_file_list: bool,
+    pub log_pane_open: bool,
+    pub show_commit_selector: bool,
+}
+
+/// A draggable layout boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Splitter {
+    /// The file tree's right border.
+    FileList,
+    /// The side-by-side `│` divider between the old and new columns.
+    SideBySide,
+}
+
+/// Split the side-by-side content width (everything but gutters and the
+/// divider) between the old and new columns. `pct` is the old side's share;
+/// the new side takes the remainder so no column is lost to rounding.
+pub fn sbs_split_widths(available: usize, pct: u16) -> (usize, usize) {
+    let pct = pct.clamp(MIN_SBS_SPLIT_PCT, MAX_SBS_SPLIT_PCT) as usize;
+    let left = if pct == 50 {
+        available / 2
+    } else {
+        available * pct / 100
+    };
+    let right = if pct == 50 {
+        available / 2
+    } else {
+        available - left
+    };
+    (left, right)
+}
+
 /// Side-by-side leading width before Old content: indicator(1) + lineno(w) + space(1) + prefix(1).
 pub fn sbs_left_gutter(w: usize) -> u16 {
     (w + 3) as u16
@@ -654,6 +700,7 @@ pub use blame::{BLAME_WIDTH, BlameState, overlay_label};
 pub use branches::BranchPicker;
 pub use find::{FIND_MAX_HITS, FindHit, FindState};
 pub use history::HistoryAction;
+pub use layout::SPLIT_STEP_PCT;
 pub use local_changes::{CommitComposer, DiscardTarget, StashPicker};
 pub use remote::{RemoteOp, RemoteOpAnswer, RemoteOpInFlight};
 
@@ -1535,6 +1582,9 @@ pub struct App {
     pub leader_key: char,
     pub scroll_offset: usize,
     pub file_list_area: Option<ratatui::layout::Rect>,
+    /// Area shared by the file tree and the diff from the last render, for
+    /// turning a border drag into a tree-width percentage.
+    pub content_area: Option<ratatui::layout::Rect>,
     pub comment_navigator_area: Option<ratatui::layout::Rect>,
     pub diff_area: Option<ratatui::layout::Rect>,
     /// Inner content rect of the file list panel; populated during render.
@@ -1602,6 +1652,16 @@ pub struct App {
     pub log_pane_height: u16,
     /// `show_log = true`: open the pane as soon as a review is on screen.
     pub log_pane_wanted: bool,
+    /// Old-side share of the side-by-side content width, in percent
+    /// (`:set split N`, `<leader><` / `<leader>>`, divider drag).
+    pub sbs_split_pct: u16,
+    /// File tree width as a percentage of the content area
+    /// (`:set treewidth N`, `<leader>[` / `<leader>]`, border drag).
+    pub file_list_pct: u16,
+    /// Panels hidden by `<leader>z`, restored when it toggles back off.
+    pub zen_saved: Option<ZenSaved>,
+    /// Which layout splitter a left-button drag is moving, if any.
+    pub splitter_drag: Option<Splitter>,
     /// Branch picker modal state; `Some` while `input_mode == BranchPicker`.
     pub branch_picker: Option<BranchPicker>,
     /// Start point for the next `:branch <name>`, set by `n` in a selector.
@@ -1756,7 +1816,7 @@ pub struct CommentNavigatorItem {
     pub author: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct DiffState {
     pub scroll_offset: usize,
     pub scroll_x: usize,
@@ -1765,6 +1825,8 @@ pub struct DiffState {
     pub viewport_height: usize,
     pub viewport_width: usize,
     pub max_content_width: usize,
+    /// Off by default: like JetBrains, a diff pans both sides together
+    /// instead of wrapping (`:set wrap` / `wrap = true` opt back in).
     pub wrap_lines: bool,
     /// Number of logical lines that fit in the viewport (set during render).
     /// When wrapping is enabled, this accounts for lines expanding to multiple visual rows.
@@ -1788,22 +1850,6 @@ impl DiffState {
     /// viewport to guarantee a stable free zone after centering (zz).
     pub fn effective_scroll_margin(&self, scroll_offset: usize) -> usize {
         scroll_offset.min((self.effective_visible_lines() / 2).saturating_sub(1))
-    }
-}
-
-impl Default for DiffState {
-    fn default() -> Self {
-        Self {
-            scroll_offset: 0,
-            scroll_x: 0,
-            cursor_line: 0,
-            current_file_idx: 0,
-            viewport_height: 0,
-            viewport_width: 0,
-            max_content_width: 0,
-            wrap_lines: true,
-            visible_line_count: 0,
-        }
     }
 }
 
@@ -2034,6 +2080,7 @@ mod find;
 mod gaps;
 mod history;
 mod init;
+mod layout;
 mod local_changes;
 mod log_pane;
 mod modes;
