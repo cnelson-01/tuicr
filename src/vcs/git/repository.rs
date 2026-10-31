@@ -74,13 +74,26 @@ struct RefIndex {
     head: Option<Oid>,
 }
 
+/// The branch HEAD is attached to, `None` when detached.
+fn attached_branch(repo: &Repository) -> Option<String> {
+    let head = repo.head().ok()?;
+    head.is_branch()
+        .then(|| head.shorthand().map(str::to_string))
+        .flatten()
+}
+
 impl RefIndex {
     fn build(repo: &Repository) -> Self {
         let mut labels: HashMap<Oid, Vec<RefLabel>> = HashMap::new();
+        let current = attached_branch(repo);
         if let Ok(references) = repo.references() {
             for reference in references.flatten() {
                 let kind = if reference.is_branch() {
-                    RefKind::Local
+                    if reference.shorthand() == current.as_deref() {
+                        RefKind::Head
+                    } else {
+                        RefKind::Local
+                    }
                 } else if reference.is_remote() {
                     RefKind::Remote
                 } else if reference.is_tag() {
@@ -124,9 +137,10 @@ impl RefIndex {
 
 fn ref_kind_rank(kind: RefKind) -> u8 {
     match kind {
-        RefKind::Local => 0,
-        RefKind::Remote => 1,
-        RefKind::Tag => 2,
+        RefKind::Head => 0,
+        RefKind::Local => 1,
+        RefKind::Remote => 2,
+        RefKind::Tag => 3,
     }
 }
 

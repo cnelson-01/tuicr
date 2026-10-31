@@ -10,7 +10,7 @@ use ratatui::text::{Line, Span};
 use crate::app::{MERGE_SELECTION_ID, STAGED_SELECTION_ID, UNSTAGED_SELECTION_ID};
 use crate::theme::Theme;
 use crate::ui::styles;
-use crate::ui::text_utils::{truncate_or_pad, truncate_str};
+use crate::ui::text_utils::truncate_or_pad;
 use crate::vcs::CommitInfo;
 use crate::vcs::traits::RefKind;
 
@@ -141,10 +141,13 @@ enum ChipKind {
     Tag,
 }
 
-/// The chips a commit row shows in its branch column, in order.
+/// The chips a commit row shows in its branch column, in order: the
+/// checked-out branch as `[HEAD → name]` (or `[HEAD]` when detached), other
+/// local branches `[name]`, remote-tracking branches `[origin/name]`, and
+/// tags `<name>`, so kind reads without colour too.
 fn chip_labels(commit: &CommitInfo) -> Vec<(String, ChipKind)> {
     let mut chips = Vec::new();
-    if commit.is_head && !commit.refs.iter().any(|r| r.kind == RefKind::Local) {
+    if commit.is_head && !commit.refs.iter().any(|r| r.kind == RefKind::Head) {
         chips.push(("[HEAD]".to_string(), ChipKind::Head));
     }
     if commit.refs.is_empty() {
@@ -153,22 +156,24 @@ fn chip_labels(commit: &CommitInfo) -> Vec<(String, ChipKind)> {
         }
     } else {
         for label in &commit.refs {
-            let kind = match label.kind {
-                RefKind::Local => ChipKind::Local,
-                RefKind::Remote => ChipKind::Remote,
-                RefKind::Tag => ChipKind::Tag,
+            let (text, kind) = match label.kind {
+                RefKind::Head => (format!("[HEAD \u{2192} {}]", label.name), ChipKind::Head),
+                RefKind::Local => (format!("[{}]", label.name), ChipKind::Local),
+                RefKind::Remote => (format!("[{}]", label.name), ChipKind::Remote),
+                RefKind::Tag => (format!("<{}>", label.name), ChipKind::Tag),
             };
-            chips.push((format!("[{}]", label.name), kind));
+            chips.push((text, kind));
         }
     }
     chips
 }
 
-/// Columns the commit's chips need to show in full.
+/// Columns the commit's chips need to show in full: each chip plus the
+/// space after it, so the summary never butts against the last label.
 pub fn chip_columns(commit: &CommitInfo) -> usize {
     chip_labels(commit)
         .iter()
-        .map(|(text, _)| text.chars().count())
+        .map(|(text, _)| text.chars().count() + 1)
         .sum()
 }
 
@@ -181,7 +186,6 @@ fn ref_chip_spans<'a>(spec: &CommitRowSpec<'a>, width: usize) -> Vec<Span<'a>> {
         .map(|(text, kind)| {
             let style = match kind {
                 ChipKind::Head => head_style,
-                ChipKind::Local if commit.is_head => head_style,
                 ChipKind::Local => styles::branch_style(theme),
                 ChipKind::Remote => Style::default().fg(theme.fg_dim),
                 ChipKind::Tag => styles::pseudo_commit_tag_style(theme),
@@ -195,14 +199,25 @@ fn ref_chip_spans<'a>(spec: &CommitRowSpec<'a>, width: usize) -> Vec<Span<'a>> {
     for (i, (text, style)) in chips.iter().enumerate() {
         let text_width = text.chars().count();
         let remaining = width.saturating_sub(used);
-        if text_width <= remaining {
+        if text_width < remaining {
             spans.push(Span::styled(text.clone(), *style));
-            used += text_width;
+            spans.push(Span::raw(" "));
+            used += text_width + 1;
         } else if i == 0 {
-            // The first chip always shows, truncated to the column.
-            let inner = text.trim_matches(|c| c == '[' || c == ']');
-            let chip = format!("[{}]", truncate_str(inner, width.saturating_sub(3)));
-            spans.push(Span::styled(truncate_or_pad(&chip, width), *style));
+            // The first chip always shows, cut to the column with an
+            // ellipsis and still followed by its space.
+            let room = width.saturating_sub(1);
+            let chip: String = if room == 0 {
+                String::new()
+            } else {
+                let mut cut: String = text.chars().take(room - 1).collect();
+                cut.push('\u{2026}');
+                cut
+            };
+            spans.push(Span::styled(truncate_or_pad(&chip, room), *style));
+            if width > 0 {
+                spans.push(Span::raw(" "));
+            }
             used = width;
             break;
         } else {
@@ -582,7 +597,7 @@ mod tests {
         ];
         let plain = commit("def5678", "Plain", None);
         let needed = chip_columns(&tagged);
-        assert_eq!(needed, "[main][origin/main][v1.2.3]".len());
+        assert_eq!(needed, "[main] [origin/main] <v1.2.3> ".len());
 
         // when the terminal is wide
         let layout = CommitRowLayout::fit_rows(&[tagged.clone(), plain.clone()], 200, 4);

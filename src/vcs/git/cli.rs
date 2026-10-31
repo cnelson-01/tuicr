@@ -1210,6 +1210,10 @@ pub(super) fn get_ref_index(workdir: &Path) -> RefIndex {
     )
     .unwrap_or_default();
     let mut labels: HashMap<String, Vec<RefLabel>> = HashMap::new();
+    let current = run_git_command(workdir, &["symbolic-ref", "-q", "--short", "HEAD"])
+        .ok()
+        .map(|out| out.trim().to_string())
+        .filter(|name| !name.is_empty());
     for line in output.lines() {
         let mut fields = line.split('\0');
         let (Some(oid), Some(full), Some(short)) = (fields.next(), fields.next(), fields.next())
@@ -1217,7 +1221,11 @@ pub(super) fn get_ref_index(workdir: &Path) -> RefIndex {
             continue;
         };
         let kind = if full.starts_with("refs/heads/") {
-            RefKind::Local
+            if current.as_deref() == Some(short) {
+                RefKind::Head
+            } else {
+                RefKind::Local
+            }
         } else if full.starts_with("refs/remotes/") {
             if short.ends_with("/HEAD") {
                 continue;
@@ -1249,9 +1257,10 @@ pub(super) fn get_ref_index(workdir: &Path) -> RefIndex {
 
 fn ref_kind_rank(kind: RefKind) -> u8 {
     match kind {
-        RefKind::Local => 0,
-        RefKind::Remote => 1,
-        RefKind::Tag => 2,
+        RefKind::Head => 0,
+        RefKind::Local => 1,
+        RefKind::Remote => 2,
+        RefKind::Tag => 3,
     }
 }
 
@@ -2314,8 +2323,8 @@ mod tests {
             .get_recent_commits(0, 10)
             .expect("failed to list commits");
 
-        // then labels sit on the right commits, locals before remotes, and
-        // the annotated tag is peeled to its commit
+        // then labels sit on the right commits, the checked-out branch
+        // before remotes, and the annotated tag is peeled to its commit
         let labels = |c: &CommitInfo| -> Vec<(String, RefKind)> {
             c.refs.iter().map(|r| (r.name.clone(), r.kind)).collect()
         };
@@ -2323,7 +2332,7 @@ mod tests {
         assert_eq!(
             labels(&commits[0]),
             [
-                ("main".to_string(), RefKind::Local),
+                ("main".to_string(), RefKind::Head),
                 ("origin/main".to_string(), RefKind::Remote)
             ]
         );

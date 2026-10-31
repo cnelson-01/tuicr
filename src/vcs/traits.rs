@@ -90,6 +90,9 @@ pub struct RefLabel {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefKind {
+    /// The `refs/heads/*` branch HEAD is attached to (the checked-out
+    /// branch). Listed first and labelled `HEAD → name` in the log.
+    Head,
     /// `refs/heads/*`
     Local,
     /// `refs/remotes/*`

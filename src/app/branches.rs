@@ -330,7 +330,7 @@ impl App {
             commit
                 .refs
                 .iter()
-                .find(|r| r.kind == RefKind::Local)
+                .find(|r| matches!(r.kind, RefKind::Head | RefKind::Local))
                 .map(|r| r.name.clone())
                 .or_else(|| commit.branch_name.clone())
                 .unwrap_or_else(|| commit.id.clone()),
