@@ -108,6 +108,30 @@ pub(crate) fn annotation_row_height(app: &App, idx: usize) -> usize {
             wrap_side_max(&content, &content, content_width)
         }
 
+        // Unified code rows wrap with a hanging indent under the code
+        // (see `wrap_spans_hanging`), so only the code counts.
+        AnnotatedLine::DiffLine { .. } | AnnotatedLine::ExpandedContext { .. }
+            if app.diff_view_mode == DiffViewMode::Unified =>
+        {
+            let text = full_row_text(app, annotation);
+            let gutter = crate::app::unified_gutter(app.lineno_width()) as usize;
+            if viewport_width <= gutter + 1 {
+                return wrap_len(&text, viewport_width);
+            }
+            let mut skipped = 0usize;
+            let code: String = text
+                .chars()
+                .skip_while(|c| {
+                    if skipped >= gutter {
+                        return false;
+                    }
+                    skipped += unicode_width::UnicodeWidthChar::width(*c).unwrap_or(0);
+                    true
+                })
+                .collect();
+            wrap_len(&code, viewport_width - gutter).max(1)
+        }
+
         _ => {
             let text = full_row_text(app, annotation);
             wrap_len(&text, viewport_width)

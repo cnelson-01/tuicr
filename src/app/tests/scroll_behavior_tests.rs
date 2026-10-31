@@ -537,9 +537,10 @@ fn page_lines_down_wrap_on_counts_visual_rows() {
 #[test]
 fn page_down_uses_viewport_relative_row_heights() {
     let mut contents = vec!["x".to_string(); 16];
-    // Diff-row prefix is 5 cells at this fixture's line-number width, so
-    // 56 unbroken content cells produce a four-row annotation at width 20.
-    contents[0] = "L".repeat(56);
+    // Code rows wrap with a hanging indent under an 8-cell gutter at this
+    // fixture's line-number width, so 45 unbroken content cells fill four
+    // 12-cell rows at width 20.
+    contents[0] = "L".repeat(45);
     let mut app = build_wrapping_scroll_app_with_contents(&contents, 5, 20);
     let first_diff = app
         .line_annotations
@@ -572,7 +573,7 @@ fn page_down_uses_viewport_relative_row_heights() {
 #[test]
 fn page_up_uses_viewport_relative_row_heights() {
     let mut contents = vec!["x".to_string(); 20];
-    contents[5] = "L".repeat(56);
+    contents[5] = "L".repeat(45);
     let mut app = build_wrapping_scroll_app_with_contents(&contents, 5, 20);
     let first_diff = app
         .line_annotations

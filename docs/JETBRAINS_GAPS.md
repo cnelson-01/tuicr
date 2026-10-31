@@ -18,7 +18,7 @@ splitter and the tool-window edges, and hide every tool window to read a diff.
       `:set wrap` / `wrap = true` as opt-ins
 - [x] Clipped lines give no sign that text continues past the edge. Add
       `‹` / `›` markers on the clipped edge of each column
-- [ ] In unified view, wrapped continuation rows start at column 0 under the
+- [x] In unified view, wrapped continuation rows start at column 0 under the
       gutter. Indent them to the content column
 - [x] No intra-line (word-level) change highlighting. Paired deletion and
       addition lines should emphasize just the tokens that differ, in both views

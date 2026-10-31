@@ -1259,8 +1259,21 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
         if wrap && viewport_width > 0 {
             let mut heights = Vec::with_capacity(visible_lines_unscrolled_for_bg.len());
             let mut out: Vec<Line> = Vec::new();
-            for line in &visible_lines_unscrolled_for_bg {
-                let rows = crate::ui::text_utils::wrap_spans(&line.spans, viewport_width);
+            let gutter = crate::app::unified_gutter(lw) as usize;
+            for (i, line) in visible_lines_unscrolled_for_bg.iter().enumerate() {
+                // Code rows wrap under the code, not under the line number.
+                let code_row = matches!(
+                    app.line_annotations.get(scroll_offset + i),
+                    Some(
+                        crate::app::AnnotatedLine::DiffLine { .. }
+                            | crate::app::AnnotatedLine::ExpandedContext { .. }
+                    )
+                );
+                let rows = if code_row {
+                    crate::ui::text_utils::wrap_spans_hanging(&line.spans, gutter, viewport_width)
+                } else {
+                    crate::ui::text_utils::wrap_spans(&line.spans, viewport_width)
+                };
                 heights.push(rows.len());
                 out.extend(rows.into_iter().map(Line::from));
             }

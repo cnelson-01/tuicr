@@ -307,6 +307,60 @@ fn split_pairs_at_ranges(
     out
 }
 
+/// Wrap a code row with a hanging indent: the first `gutter` columns (line
+/// number and marker) stay on the first visual row, the code wraps at
+/// `width - gutter`, and continuation rows start under the code with a
+/// blank gutter instead of at column 0.
+pub(super) fn wrap_spans_hanging<'a>(
+    spans: &[Span<'a>],
+    gutter: usize,
+    width: usize,
+) -> Vec<Vec<Span<'a>>> {
+    if width <= gutter + 1 {
+        return wrap_spans(spans, width);
+    }
+    let mut head: Vec<Span<'a>> = Vec::new();
+    let mut body: Vec<Span<'a>> = Vec::new();
+    let mut used = 0usize;
+    for span in spans {
+        if used >= gutter {
+            body.push(span.clone());
+            continue;
+        }
+        let mut split_at = span.content.len();
+        let mut w = used;
+        for (i, ch) in span.content.char_indices() {
+            if w >= gutter {
+                split_at = i;
+                break;
+            }
+            w += unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        }
+        let (a, b) = span.content.split_at(split_at);
+        head.push(Span::styled(a.to_string(), span.style));
+        used = w;
+        if !b.is_empty() {
+            body.push(Span::styled(b.to_string(), span.style));
+        }
+    }
+    let mut rows = wrap_spans(&body, width - gutter);
+    if rows.is_empty() {
+        rows.push(Vec::new());
+    }
+    rows.into_iter()
+        .enumerate()
+        .map(|(i, row)| {
+            let mut out = if i == 0 {
+                head.clone()
+            } else {
+                vec![Span::raw(" ".repeat(gutter))]
+            };
+            out.extend(row);
+            out
+        })
+        .collect()
+}
+
 pub(super) fn wrap_spans<'a>(spans: &[Span<'a>], width: usize) -> Vec<Vec<Span<'a>>> {
     if width == 0 {
         return vec![spans.to_vec()];
@@ -463,6 +517,27 @@ pub(super) fn wrap_spans<'a>(spans: &[Span<'a>], width: usize) -> Vec<Vec<Span<'
 mod tests {
     use super::*;
     use ratatui::style::Color;
+
+    #[test]
+    fn hanging_wrap_keeps_continuation_rows_under_the_code() {
+        let spans = vec![
+            Span::raw(" 12 "),
+            Span::raw("+ "),
+            Span::raw("abcdefghijklmnop"),
+        ];
+        let rows = wrap_spans_hanging(&spans, 6, 12);
+        let text: Vec<String> = rows
+            .iter()
+            .map(|r| r.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert_eq!(text, vec![" 12 + abcdef", "      ghijkl", "      mnop"]);
+    }
+
+    #[test]
+    fn hanging_wrap_falls_back_when_there_is_no_room_for_code() {
+        let spans = vec![Span::raw(" 12 + abc")];
+        assert_eq!(wrap_spans_hanging(&spans, 6, 6), wrap_spans(&spans, 6));
+    }
 
     fn flatten<'a>(row: &[Span<'a>]) -> Vec<(Style, String)> {
         row.iter()
