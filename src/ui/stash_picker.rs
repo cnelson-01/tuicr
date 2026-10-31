@@ -62,7 +62,7 @@ pub(super) fn render_stash_picker(frame: &mut Frame, app: &App) {
     }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "\u{21b5} pop \u{00b7} a apply \u{00b7} d drop \u{00b7} esc close",
+        "\u{21b5} pop \u{00b7} a apply \u{00b7} v view diff \u{00b7} d drop \u{00b7} esc close",
         Style::default().fg(theme.fg_secondary),
     )));
 

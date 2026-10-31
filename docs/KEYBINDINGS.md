@@ -314,7 +314,7 @@ remote-tracking ones. `:compare ma`, `↓`, `↓`, `Enter` picks the second matc
 | `:discard` | Discard every change to the file under the cursor (asks first) |
 | `:stash` / `:stash <message>` | Stash the working tree, untracked files included |
 | `:stash pop` | Restore the newest stash |
-| `:stashes` / `:stash list` | Open the stash picker |
+| `:stashes` / `:stash list` | Open the stash picker (`Enter` pops, `a` applies, `v` shows the stash's diff as the review, `d` drops) |
 | `:find <text>` / `:grep <text>` | Search the working tree and show the hits in place of the diff |
 | `:find` | Bring the last results back (or prompt when there are none) |
 | `:compare <base> <other>` (`:select`) | Load `base...other` as the review (what `other` has since the merge base) and narrow the log pane to those two refs. When `other` has nothing beyond `base` the reverse is loaded and the status bar says so. `:compare <other>` compares the current branch; `:compare A..B` is used as typed; bare `:compare` opens the branch picker |

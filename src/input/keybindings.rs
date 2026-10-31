@@ -230,6 +230,8 @@ pub enum Action {
     StashPickerApply,
     /// Drop the highlighted stash after confirmation (`d`).
     StashPickerDrop,
+    /// Show the highlighted stash's diff as the review (`v`).
+    StashPickerView,
 
     // Branch picker
     BranchPickerDown,
@@ -682,6 +684,7 @@ fn map_stash_picker_mode(key: KeyEvent) -> Action {
         (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => Action::StashPickerUp,
         (KeyCode::Enter, KeyModifiers::NONE) => Action::StashPickerPop,
         (KeyCode::Char('a'), KeyModifiers::NONE) => Action::StashPickerApply,
+        (KeyCode::Char('v'), KeyModifiers::NONE) => Action::StashPickerView,
         (KeyCode::Char('d'), KeyModifiers::NONE) => Action::StashPickerDrop,
         (KeyCode::Esc | KeyCode::Char('q'), KeyModifiers::NONE) => Action::ExitMode,
         _ => Action::None,

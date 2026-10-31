@@ -2026,6 +2026,7 @@ pub fn handle_stash_picker_action(app: &mut App, action: Action) {
         Action::StashPickerUp => app.stash_picker_up(),
         Action::StashPickerPop => app.stash_picker_apply(true),
         Action::StashPickerApply => app.stash_picker_apply(false),
+        Action::StashPickerView => app.stash_picker_view(),
         Action::StashPickerDrop => app.request_drop_stash(),
         Action::ExitMode => app.close_stash_picker(),
         _ => {}

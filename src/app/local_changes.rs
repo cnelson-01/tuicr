@@ -529,6 +529,27 @@ impl App {
     }
 
     /// Enter (pop) or `a` (apply, keeping the stash).
+    /// `v` in the stash picker: load the stash's changes as the review
+    /// (JetBrains' "Show Diff"), leaving the stash in place. Untracked files
+    /// stashed with it are not part of this diff.
+    pub fn stash_picker_view(&mut self) {
+        let Some(entry) = self.stash_picker_selected() else {
+            return;
+        };
+        self.close_stash_picker();
+        let stash = format!("stash@{{{}}}", entry.index);
+        match self.open_revision_range(&format!("{stash}^..{stash}")) {
+            Ok(_) => self.set_message(format!(
+                "Viewing {stash}: {} \u{00b7} :stashes to pop or apply it",
+                entry.message
+            )),
+            Err(e) => self.set_error(format!(
+                "Can't show {stash}: {}",
+                e.to_string().trim()
+            )),
+        }
+    }
+
     pub fn stash_picker_apply(&mut self, pop: bool) {
         let Some(entry) = self.stash_picker_selected() else {
             return;

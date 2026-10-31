@@ -580,6 +580,7 @@ fn mode_hints(app: &App) -> Vec<Hint> {
             hint("j/k move"),
             hint("\u{21b5} pop"),
             hint("a apply"),
+            hint("v view"),
             hint("d drop"),
             pinned("esc close"),
         ],

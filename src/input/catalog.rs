@@ -182,6 +182,7 @@ pub const ENTRIES: &[Entry] = &[
     e(Stashes, "Local changes", "Enter", "Pop the stash", Cmd("stashes")),
     e(Stashes, "Local changes", "a", "Apply the stash, keeping it", Cmd("stashes")),
     e(Stashes, "Local changes", "d", "Drop the stash", Cmd("stashes")),
+    e(Stashes, "Local changes", "v", "Show the stash's diff", Cmd("stashes")),
     // ── Log ──────────────────────────────────────────────────────────────
     e(Global, "Log", ":commits", "Choose commits to review", Cmd("commits")),
     e(Global, "Log", ") / (", "Next / previous commit in the review", Keys(")")),
