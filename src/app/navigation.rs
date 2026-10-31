@@ -762,7 +762,14 @@ impl App {
         }
         let which_row = rel - walker;
         let total_chars = content.chars().count();
-        let char_offset = (which_row * geom.content_width + col_in_row).min(total_chars);
+        // Without wrap the code may be panned: the first visible column is
+        // `scroll_x` characters in.
+        let pan = if self.diff_state.wrap_lines {
+            0
+        } else {
+            self.diff_state.scroll_x
+        };
+        let char_offset = (which_row * geom.content_width + col_in_row + pan).min(total_chars);
         Some(SelPoint {
             annotation_idx: idx,
             char_offset,

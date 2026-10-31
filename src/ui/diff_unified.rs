@@ -1299,11 +1299,42 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
     }
 
     let scroll_x = app.diff_state.scroll_x;
+    // While panning, code rows keep their gutter (so line numbers stay on
+    // screen) and file / hunk headers and expanders stay put; other rows
+    // (comment boxes, PR info) pan whole as before. Clipped code rows get
+    // `‹` / `›` markers, painted after the paragraph.
+    let gutter = crate::app::unified_gutter(lw) as usize;
+    let mut clip_marks: Vec<(u16, bool, bool)> = Vec::new();
     let visible_lines: Vec<Line> = match wrapped_lines {
         Some(out) => out,
         None => visible_lines_unscrolled
             .into_iter()
-            .map(|line| apply_horizontal_scroll(line, scroll_x))
+            .enumerate()
+            .map(|(i, line)| {
+                use crate::app::AnnotatedLine as A;
+                match app.line_annotations.get(scroll_offset + i) {
+                    Some(A::DiffLine { .. } | A::ExpandedContext { .. }) => {
+                        let (line, left, right) = crate::ui::diff_view::pan_code_row(
+                            line,
+                            gutter,
+                            scroll_x,
+                            viewport_width,
+                        );
+                        if left || right {
+                            clip_marks.push((i as u16, left, right));
+                        }
+                        line
+                    }
+                    Some(
+                        A::FileHeader { .. }
+                        | A::HunkHeader { .. }
+                        | A::Expander { .. }
+                        | A::HiddenLines { .. }
+                        | A::ReviewedBanner { .. },
+                    ) => line,
+                    _ => apply_horizontal_scroll(line, scroll_x),
+                }
+            })
             .collect(),
     };
 
@@ -1338,6 +1369,27 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
     // Keep paragraph bg unset so pre-painted per-row diff backgrounds remain visible.
     let diff = Paragraph::new(visible_lines).style(Style::default().fg(app.theme.fg_primary));
     frame.render_widget(diff, inner);
+
+    // `‹` sits on the space after the change marker, `›` on the last column.
+    if gutter >= 1 && (inner.width as usize) > gutter + 1 {
+        let fg = app.theme.diff_hunk_header;
+        for (row, left, right) in clip_marks {
+            if row >= inner.height {
+                continue;
+            }
+            let y = inner.y + row;
+            if left {
+                let cell = &mut frame.buffer_mut()[(inner.x + gutter as u16 - 1, y)];
+                cell.set_char('‹');
+                cell.set_fg(fg);
+            }
+            if right {
+                let cell = &mut frame.buffer_mut()[(inner.x + inner.width - 1, y)];
+                cell.set_char('›');
+                cell.set_fg(fg);
+            }
+        }
+    }
 
     // Cursor-line bg has to land after the paragraph: spans on +/- lines carry
     // explicit diff_add_bg/diff_del_bg that would mask a pre-paint over the code.

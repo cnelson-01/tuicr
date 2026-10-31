@@ -1072,13 +1072,13 @@ pub(super) fn paint_file_header_fill(frame: &mut Frame, ctx: &DiffOverlayPaint) 
                 continue;
             }
             let y = ctx.inner.y + (visual_row + last_row) as u16;
+            // File headers never pan (both views pin them), so the fill
+            // starts after the full header text whatever the pan offset.
             let content_w = if ctx.wrap_lines {
                 let prior = last_row * ctx.viewport_width;
                 line_width.saturating_sub(prior).min(ctx.viewport_width)
             } else {
-                line_width
-                    .saturating_sub(ctx.scroll_x)
-                    .min(ctx.viewport_width)
+                line_width.min(ctx.viewport_width)
             };
             let mut x = ctx.inner.x + content_w as u16;
             while x <= right_x {
@@ -1108,6 +1108,63 @@ fn visual_rows_for_line(row_heights: &[usize], idx: usize) -> usize {
 }
 
 /// Apply horizontal scroll to a line while preserving the first span (cursor indicator)
+/// Pan a code row by `scroll_x` columns while its first `gutter` columns
+/// (indicator, line number, change marker) stay put, so line numbers never
+/// scroll away. Returns the row and whether text was cut on the left and on
+/// the right of `width`.
+pub(super) fn pan_code_row(
+    line: Line<'static>,
+    gutter: usize,
+    scroll_x: usize,
+    width: usize,
+) -> (Line<'static>, bool, bool) {
+    let mut head: Vec<Span<'static>> = Vec::new();
+    let mut body: Vec<Span<'static>> = Vec::new();
+    let mut used = 0usize;
+    for span in line.spans {
+        if used >= gutter {
+            body.push(span);
+            continue;
+        }
+        let mut split_at = span.content.len();
+        let mut w = used;
+        for (i, ch) in span.content.char_indices() {
+            if w >= gutter {
+                split_at = i;
+                break;
+            }
+            w += unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        }
+        let (a, b) = span.content.split_at(split_at);
+        head.push(Span::styled(a.to_string(), span.style));
+        if !b.is_empty() {
+            body.push(Span::styled(b.to_string(), span.style));
+        }
+        used = w;
+    }
+    let total: usize = body.iter().map(|s| s.content.width()).sum();
+    let room = width.saturating_sub(gutter);
+    let mut skipped = 0usize;
+    let mut out = head;
+    for span in body {
+        let mut text = String::new();
+        for ch in span.content.chars() {
+            let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+            if skipped < scroll_x {
+                skipped += w;
+            } else {
+                text.push(ch);
+            }
+        }
+        if !text.is_empty() || span.content.is_empty() {
+            out.push(Span::styled(text, span.style));
+        }
+    }
+    let cut_left = scroll_x > 0 && total > 0;
+    let cut_right = total > scroll_x + room;
+    (Line::from(out), cut_left, cut_right)
+}
+
 pub(super) fn apply_horizontal_scroll(line: Line, scroll_x: usize) -> Line {
     if scroll_x == 0 || line.spans.is_empty() {
         return line;
@@ -1145,6 +1202,28 @@ pub(super) fn apply_horizontal_scroll(line: Line, scroll_x: usize) -> Line {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pan_code_row_keeps_the_gutter_and_reports_cuts() {
+        let line = Line::from(vec![
+            Span::raw(" "),
+            Span::raw(" 12 "),
+            Span::raw("+ "),
+            Span::raw("0123456789abcdef"),
+        ]);
+        let (panned, left, right) = pan_code_row(line, 7, 4, 15);
+        let text: String = panned.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "  12 + 456789abcdef");
+        assert!(left);
+        // 16 code columns, 8 visible from column 4: more to the right.
+        assert!(right);
+
+        let line = Line::from(vec![Span::raw("  12 + "), Span::raw("short")]);
+        let (panned, left, right) = pan_code_row(line, 7, 0, 40);
+        let text: String = panned.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "  12 + short");
+        assert!(!left && !right);
+    }
 
     #[test]
     fn should_not_scroll_when_comment_box_already_visible() {

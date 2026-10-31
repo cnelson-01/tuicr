@@ -3065,4 +3065,43 @@ mod remote_comments_side_by_side_snapshot_tests {
             "unchanged token emphasized"
         );
     }
+
+    #[test]
+    fn should_keep_file_header_text_after_panning_to_the_end() {
+        let mut app = make_pr_app();
+        app.diff_files = vec![diff_file_with_pair(&"L".repeat(300), &"R".repeat(300))];
+        app.set_diff_wrap(false);
+        app.rebuild_annotations();
+        let _ = draw_sbs(&mut app, 80, 20);
+        app.pan_end();
+        let buf = draw_sbs(&mut app, 80, 20);
+        assert!(app.diff_state.scroll_x > 100);
+        assert!(
+            body_text(&buf).contains("src/lib.rs [M]"),
+            "file header text was overwritten:\n{}",
+            body_text(&buf)
+        );
+    }
+
+    #[test]
+    fn should_map_mouse_columns_through_the_pan_offset() {
+        let mut app = make_pr_app();
+        app.diff_files = vec![diff_file_with_pair(
+            &format!("{}TARGET", "x".repeat(60)),
+            "short",
+        )];
+        app.set_diff_wrap(false);
+        app.rebuild_annotations();
+        let _ = draw_sbs(&mut app, 80, 20);
+        app.scroll_right(60);
+        let buf = draw_sbs(&mut app, 80, 20);
+        let row = row_containing(&buf, "TARGET");
+        let text: String = (0..80).map(|x| char_at(&buf, x, row)).collect();
+        let col = text
+            .find("TARGET")
+            .map(|i| text[..i].chars().count())
+            .unwrap() as u16;
+        let point = app.cell_to_sel_point(col, row).expect("a selection point");
+        assert_eq!(point.char_offset, 60, "column maps to the panned text");
+    }
 }
