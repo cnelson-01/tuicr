@@ -24,6 +24,8 @@ impl App {
     /// The catalog scope of whatever has focus right now.
     pub fn current_scope(&self) -> Scope {
         match self.input_mode {
+            // The fullscreen selector takes the log pane's commit keys.
+            InputMode::CommitSelect => return Scope::Log,
             InputMode::BranchPicker => return Scope::Branches,
             InputMode::StashPicker => return Scope::Stashes,
             InputMode::MergeConflict => return Scope::Merge,

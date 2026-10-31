@@ -46,7 +46,12 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             && app
                 .pending_history
                 .as_ref()
-                .is_some_and(|(_, mode)| *mode == InputMode::CommitSelect));
+                .is_some_and(|(_, mode)| *mode == InputMode::CommitSelect))
+        || (app.input_mode == InputMode::Palette
+            && app
+                .palette
+                .as_ref()
+                .is_some_and(|p| p.return_mode == InputMode::CommitSelect));
     if selector_background {
         render_commit_select(frame, app);
         let area = frame.area();
@@ -65,6 +70,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         }
         if app.input_mode == InputMode::BranchPicker {
             branch_picker::render_branch_picker(frame, app);
+        }
+        if app.input_mode == InputMode::Palette {
+            palette::render_palette(frame, app);
         }
         if app.input_mode == InputMode::Confirm
             && let Some((action, _)) = app.pending_history.as_ref()

@@ -760,6 +760,7 @@ fn map_commit_select_mode_with_q_quits(key: KeyEvent, q_quits: bool) -> Action {
         (KeyCode::Char('t'), KeyModifiers::NONE) => Action::SelectorTag,
         (KeyCode::Char('y'), KeyModifiers::NONE) => Action::SelectorCopyHash,
         (KeyCode::Char('i'), KeyModifiers::NONE) => Action::SelectorInteractiveRebase,
+        (KeyCode::Char('p'), KeyModifiers::CONTROL) => Action::OpenPalette,
         (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
         (KeyCode::Char('q'), KeyModifiers::NONE) => q_action(q_quits),
         (KeyCode::Char(':'), _) => Action::EnterCommandMode,

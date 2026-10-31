@@ -568,8 +568,32 @@ fn render_target_selector_footer(frame: &mut Frame, app: &App, area: Rect) {
                     app.commit_filter_match_label()
                 ),
                 None => {
-                    "   j/k navigate \u{00b7} space range \u{00b7} \u{21b5} confirm \u{00b7} / filter \u{00b7} p pick \u{00b7} b rebase \u{00b7} s squash \u{00b7} :q quit"
-                        .to_string()
+                    // Every commit action, dropped from the end to fit; the
+                    // palette lists whatever doesn't.
+                    use status_bar::{hint, pinned};
+                    let hints = [
+                        hint("j/k move"),
+                        hint("space range"),
+                        hint("\u{21b5} load"),
+                        hint("/ filter"),
+                        hint("c checkout"),
+                        hint("n branch"),
+                        hint("p cherry-pick"),
+                        hint("R reword"),
+                        hint("f fixup"),
+                        hint("D drop"),
+                        hint("i rebase -i"),
+                        hint("b rebase onto"),
+                        hint("s squash"),
+                        hint("v revert"),
+                        hint("x reset"),
+                        hint("t tag"),
+                        hint("B branches"),
+                        pinned("^p actions"),
+                        pinned(":q quit"),
+                    ];
+                    let room = (area.width as usize).saturating_sub(14);
+                    format!("   {}", status_bar::fit_hints(&hints, room))
                 }
             },
             TargetTab::PullRequests => {

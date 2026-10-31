@@ -479,19 +479,19 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 
 /// One status-bar hint; `pinned` hints survive when the bar is too narrow
 /// for everything.
-struct Hint {
+pub(crate) struct Hint {
     text: String,
     pinned: bool,
 }
 
-fn hint(text: impl Into<String>) -> Hint {
+pub(crate) fn hint(text: impl Into<String>) -> Hint {
     Hint {
         text: text.into(),
         pinned: false,
     }
 }
 
-fn pinned(text: impl Into<String>) -> Hint {
+pub(crate) fn pinned(text: impl Into<String>) -> Hint {
     Hint {
         text: text.into(),
         pinned: true,
@@ -656,7 +656,7 @@ fn mode_hints(app: &App) -> Vec<Hint> {
 
 /// Join hints with ` · `, dropping unpinned ones from the end until the
 /// line fits in `width` columns.
-fn fit_hints(hints: &[Hint], width: usize) -> String {
+pub(crate) fn fit_hints(hints: &[Hint], width: usize) -> String {
     let join = |keep: &[&Hint]| {
         keep.iter()
             .map(|h| h.text.as_str())
