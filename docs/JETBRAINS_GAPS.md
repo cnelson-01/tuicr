@@ -59,7 +59,7 @@ screen, and the status-bar hints for most panes are partial or truncated.
 - [x] The log row glues the ref label onto the subject (`[topic/refactor]flip`)
       and shows one ref per commit. Show every ref, styled by kind: HEAD,
       local branch, remote branch, tag
-- [ ] No commit details pane in the live preview (hash, author, date,
+- [x] No commit details pane in the live preview (hash, author, date,
       parents, refs, full message). The message pseudo-file appears only for a
       committed single-commit review
 - [ ] No ahead/behind (incoming/outgoing) counts for the current branch

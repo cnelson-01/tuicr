@@ -463,3 +463,29 @@ fn leader_g_opens_then_focuses_then_hides() {
     assert!(app.log_pane.is_none());
     assert_eq!(app.focused_panel, FocusedPanel::Diff);
 }
+
+#[test]
+fn single_commit_details_name_author_parents_and_refs() {
+    let mut app = build_review_app(&["abc1234def"]);
+    let commit = &mut app.review_commits[0];
+    commit.author = "Kim".to_string();
+    commit.parent_ids = vec!["1111111aaaa".to_string(), "2222222bbbb".to_string()];
+    commit.refs = vec![
+        crate::vcs::traits::RefLabel {
+            name: "main".to_string(),
+            kind: crate::vcs::traits::RefKind::Head,
+        },
+        crate::vcs::traits::RefLabel {
+            name: "v1".to_string(),
+            kind: crate::vcs::traits::RefKind::Tag,
+        },
+    ];
+    let details = app.single_commit_details().expect("one commit on screen");
+    assert!(details.starts_with("Kim · "), "{details}");
+    assert!(details.contains("merge of 1111111 + 2222222"), "{details}");
+    assert!(details.ends_with("HEAD \u{2192} main, <v1>"), "{details}");
+
+    let mut wide = build_review_app(&["a", "b"]);
+    wide.commit_selection_range = Some((0, 1));
+    assert!(wide.single_commit_details().is_none());
+}

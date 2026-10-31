@@ -1661,6 +1661,9 @@ impl App {
         {
             self.reload_inline_selection()?;
         } else {
+            // A single commit (the log pane's preview, Enter on one row)
+            // gets its message and details at the top, as at startup.
+            self.insert_commit_message_if_single();
             self.sort_files_by_directory(true);
             self.expand_all_dirs();
             self.rebuild_annotations();

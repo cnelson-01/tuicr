@@ -37,9 +37,9 @@ impl App {
     /// so that comments on different commits' messages get distinct session keys
     /// (the session indexes comments by path) and the exported review records
     /// which commit each commit-message comment belongs to.
-    pub(in crate::app) fn insert_commit_message_if_single(&mut self) {
-        self.diff_files.retain(|f| !f.is_commit_message);
-
+    /// The one commit on screen when the review is a single commit (a
+    /// one-commit range, or one row of a wider range selected inline).
+    pub fn single_review_commit(&self) -> Option<&CommitInfo> {
         let commit = if let Some((start, end)) = self.commit_selection_range {
             if start == end {
                 self.review_commits.get(start)
@@ -50,12 +50,54 @@ impl App {
             self.review_commits.first()
         } else {
             None
-        };
+        }?;
+        (!Self::is_special_commit(commit)).then_some(commit)
+    }
 
-        let Some(commit) = commit else { return };
-        if Self::is_special_commit(commit) {
-            return;
+    /// Author, date, parents, and refs of the single commit on screen, for
+    /// the commit message's section header (JetBrains' commit details).
+    pub fn single_commit_details(&self) -> Option<String> {
+        let commit = self.single_review_commit()?;
+        let local = commit.time.with_timezone(&chrono::Local);
+        let mut parts = vec![
+            commit.author.clone(),
+            format!(
+                "{} ({})",
+                local.format("%Y-%m-%d %H:%M"),
+                crate::ui::commit_row::format_relative_short(&commit.time)
+            ),
+        ];
+        let parents: Vec<&str> = commit
+            .parent_ids
+            .iter()
+            .map(|p| &p[..p.len().min(7)])
+            .collect();
+        match parents.len() {
+            0 => {}
+            1 => parts.push(format!("parent {}", parents[0])),
+            _ => parts.push(format!("merge of {}", parents.join(" + "))),
         }
+        let refs: Vec<String> = commit
+            .refs
+            .iter()
+            .map(|r| match r.kind {
+                crate::vcs::traits::RefKind::Head => format!("HEAD \u{2192} {}", r.name),
+                crate::vcs::traits::RefKind::Tag => format!("<{}>", r.name),
+                _ => r.name.clone(),
+            })
+            .collect();
+        if !refs.is_empty() {
+            parts.push(refs.join(", "));
+        }
+        Some(parts.join(" \u{00b7} "))
+    }
+
+    pub(in crate::app) fn insert_commit_message_if_single(&mut self) {
+        self.diff_files.retain(|f| !f.is_commit_message);
+
+        let Some(commit) = self.single_review_commit() else {
+            return;
+        };
 
         let mut full_message = commit.summary.clone();
         if let Some(ref body) = commit.body {
