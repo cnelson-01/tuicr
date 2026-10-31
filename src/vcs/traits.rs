@@ -728,6 +728,15 @@ pub trait VcsBackend: Send {
         ))
     }
 
+    /// Run `git <args>` in the repository root and return its stdout (Git
+    /// backends only). `network` disables credential and ssh prompts, for
+    /// commands that talk to a remote from under the TUI.
+    fn run_git(&self, _args: &[&str], _network: bool) -> Result<String> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "This operation needs a Git repository".into(),
+        ))
+    }
+
     /// Blame `path` at `revision` (the working tree when `None`): one entry
     /// per line, index 0 = line 1, `None` for lines without a commit.
     fn blame_file(&self, _path: &Path, _revision: Option<&str>) -> Result<Vec<Option<BlameLine>>> {

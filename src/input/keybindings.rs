@@ -244,6 +244,16 @@ pub enum Action {
     BranchPickerLog,
     /// Fetch all remotes and refresh the picker (Ctrl-f).
     BranchPickerFetch,
+    /// Delete the highlighted branch, asking when unmerged (Ctrl-x).
+    BranchPickerDelete,
+    /// Rename the highlighted branch via a pre-filled `:branch -m` (Ctrl-r).
+    BranchPickerRename,
+    /// Merge the highlighted branch into the current one (Ctrl-g).
+    BranchPickerMerge,
+    /// Rebase the current branch onto the highlighted one (Ctrl-b).
+    BranchPickerRebase,
+    /// Make the current branch track the highlighted remote branch (Ctrl-t).
+    BranchPickerTrack,
 
     /// Open the command palette (`Ctrl-p`).
     OpenPalette,
@@ -284,6 +294,7 @@ pub fn map_key_to_action_with_q_quits(
         InputMode::StashPicker => map_stash_picker_mode(key),
         InputMode::FindResults => map_find_results_mode(key),
         InputMode::Palette => map_palette_mode(key),
+        InputMode::Console => map_console_mode(key),
     }
 }
 
@@ -625,6 +636,23 @@ fn map_palette_mode(key: KeyEvent) -> Action {
     }
 }
 
+/// Git console: `j` / `k` scroll, `m` toggles reads, `c` clears.
+fn map_console_mode(key: KeyEvent) -> Action {
+    match (key.code, key.modifiers) {
+        (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => Action::CursorDown(1),
+        (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => Action::CursorUp(1),
+        (KeyCode::Char('d'), KeyModifiers::CONTROL) | (KeyCode::PageDown, _) => Action::PageDown,
+        (KeyCode::Char('u'), KeyModifiers::CONTROL) | (KeyCode::PageUp, _) => Action::PageUp,
+        (KeyCode::Char('g'), KeyModifiers::NONE) => Action::GoToTop,
+        (KeyCode::Char('G'), _) => Action::GoToBottom,
+        (KeyCode::Char('m'), KeyModifiers::NONE) => Action::ToggleExpand,
+        (KeyCode::Char('c'), KeyModifiers::NONE) => Action::ClearLine,
+        (KeyCode::Esc | KeyCode::Char('q'), KeyModifiers::NONE) => Action::ExitMode,
+        (KeyCode::Char(':'), _) => Action::EnterCommandMode,
+        _ => Action::None,
+    }
+}
+
 /// Stash picker: `j` / `k` move, Enter pops, `a` applies, `d` drops.
 fn map_stash_picker_mode(key: KeyEvent) -> Action {
     match (key.code, key.modifiers) {
@@ -651,6 +679,11 @@ fn map_branch_picker_mode(key: KeyEvent) -> Action {
         (KeyCode::Char('d'), KeyModifiers::CONTROL) => Action::BranchPickerCompare,
         (KeyCode::Char('l'), KeyModifiers::CONTROL) => Action::BranchPickerLog,
         (KeyCode::Char('f'), KeyModifiers::CONTROL) => Action::BranchPickerFetch,
+        (KeyCode::Char('x'), KeyModifiers::CONTROL) => Action::BranchPickerDelete,
+        (KeyCode::Char('r'), KeyModifiers::CONTROL) => Action::BranchPickerRename,
+        (KeyCode::Char('g'), KeyModifiers::CONTROL) => Action::BranchPickerMerge,
+        (KeyCode::Char('b'), KeyModifiers::CONTROL) => Action::BranchPickerRebase,
+        (KeyCode::Char('t'), KeyModifiers::CONTROL) => Action::BranchPickerTrack,
         (KeyCode::Char('u'), KeyModifiers::CONTROL) => Action::ClearLine,
         (KeyCode::Enter, _) => Action::BranchPickerConfirm,
         (KeyCode::Esc, _) => Action::ExitMode,

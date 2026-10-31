@@ -33,12 +33,24 @@ where
         command.current_dir(current_dir);
     }
 
-    let output = command.args(args).output().map_err(|err| {
+    // git invocations land in the console (`:console`).
+    let args: Vec<S> = args.into_iter().collect();
+    let logged_args: Option<Vec<String>> = (program == "git").then(|| {
+        args.iter()
+            .map(|a| a.as_ref().to_string_lossy().into_owned())
+            .collect()
+    });
+    let started = std::time::Instant::now();
+
+    let output = command.args(&args).output().map_err(|err| {
         let kind = if err.kind() == std::io::ErrorKind::NotFound {
             CommandOutputErrorKind::NotFound
         } else {
             CommandOutputErrorKind::SpawnFailed
         };
+        if let Some(logged) = logged_args.as_ref() {
+            crate::git_console::record(logged, None, false, started.elapsed(), &err.to_string());
+        }
         CommandOutputError {
             kind,
             status: None,
@@ -46,7 +58,7 @@ where
         }
     })?;
 
-    if output.status.success() {
+    let result = if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     } else {
         Err(CommandOutputError {
@@ -54,7 +66,21 @@ where
             status: output.status.code(),
             stderr: combine_streams_for_error(&output.stdout, &output.stderr),
         })
+    };
+    if let Some(logged) = logged_args.as_ref() {
+        let text = match &result {
+            Ok(stdout) => stdout.as_str(),
+            Err(e) => e.stderr.as_str(),
+        };
+        crate::git_console::record(
+            logged,
+            output.status.code(),
+            result.is_ok(),
+            started.elapsed(),
+            text,
+        );
     }
+    result
 }
 
 /// Build the `stderr` field of a failed-command error from the child's

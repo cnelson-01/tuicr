@@ -696,11 +696,15 @@ pub enum InputMode {
     FindResults,
     /// Command palette (`Ctrl-p`): search every action and run it.
     Palette,
+    /// Git console (`:console`): the git commands tuicr ran.
+    Console,
 }
 
 pub use blame::{BLAME_WIDTH, BlameState, overlay_label};
 pub use branches::BranchPicker;
+pub use console::ConsoleView;
 pub use find::{FIND_MAX_HITS, FindHit, FindState};
+pub use git_ops::{GitThen, PendingGit, RepoStatus};
 pub use history::HistoryAction;
 pub use layout::SPLIT_STEP_PCT;
 pub use local_changes::{CommitComposer, DiscardTarget, StashPicker};
@@ -899,6 +903,9 @@ pub enum ConfirmAction {
     DropStash,
     /// Run the history rewrite in `App::pending_history`?
     HistoryRewrite,
+    /// Run the git command in `App::pending_git` (force-delete a branch,
+    /// delete a tag, push after previewing the outgoing commits)?
+    GitCommand,
 }
 
 /// Push a `MappedComment` onto the appropriate bucket. Free function so the
@@ -1673,6 +1680,15 @@ pub struct App {
     /// A prefix key (`<leader>`, `z`, `Z`, `d`) waiting for its second key;
     /// drives the which-key popup.
     pub pending_prefix: Option<crate::input::catalog::Prefix>,
+    /// Upstream, ahead/behind, and any operation in progress, for the
+    /// header; refreshed whenever HEAD moves.
+    pub repo_status: Option<RepoStatus>,
+    /// The git command behind `ConfirmAction::GitCommand`.
+    pub pending_git: Option<PendingGit>,
+    /// Mode to return to once the git prompt is answered.
+    pub git_confirm_return: InputMode,
+    /// Git console view state (`:console`); `Some` while it is open.
+    pub console: Option<ConsoleView>,
     /// Branch picker modal state; `Some` while `input_mode == BranchPicker`.
     pub branch_picker: Option<BranchPicker>,
     /// Start point for the next `:branch <name>`, set by `n` in a selector.
@@ -2084,11 +2100,13 @@ mod comments;
 mod commit_filter;
 mod commits;
 mod compare;
+mod console;
 mod diff_load;
 mod editor_target;
 mod file_filter;
 mod find;
 mod gaps;
+mod git_ops;
 mod history;
 mod init;
 mod layout;

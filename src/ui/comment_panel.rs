@@ -571,6 +571,73 @@ pub fn render_confirm_dialog(frame: &mut Frame, app: &App, message: &str) {
     frame.render_widget(paragraph, inner);
 }
 
+/// A confirmation with lines of detail under the question (the commits a
+/// push sends), sized to fit them.
+pub fn render_confirm_dialog_with_detail(
+    frame: &mut Frame,
+    app: &App,
+    message: &str,
+    detail: &[String],
+) {
+    let theme = &app.theme;
+    let screen = frame.area();
+    let widest = detail
+        .iter()
+        .map(|l| l.chars().count())
+        .chain(std::iter::once(message.chars().count()))
+        .max()
+        .unwrap_or(0) as u16;
+    let width = (widest + 6).clamp(40, screen.width.saturating_sub(4).max(40));
+    let height = (detail.len() as u16 + 7).min(screen.height.saturating_sub(2));
+    let area = Rect {
+        x: screen.x + screen.width.saturating_sub(width) / 2,
+        y: screen.y + screen.height.saturating_sub(height) / 2,
+        width: width.min(screen.width),
+        height,
+    };
+    frame.render_widget(Clear, area);
+    let block = Block::default()
+        .title(" Confirm ")
+        .borders(Borders::ALL)
+        .style(styles::popup_style(theme))
+        .border_style(styles::border_style(theme, true));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            format!(" {message}"),
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+    ];
+    let room = (inner.height as usize).saturating_sub(5);
+    for line in detail.iter().take(room) {
+        lines.push(Line::from(Span::styled(
+            format!(" {line}"),
+            Style::default().fg(theme.fg_secondary),
+        )));
+    }
+    if detail.len() > room {
+        lines.push(Line::from(Span::styled(
+            format!(" \u{2026} and {} more", detail.len() - room),
+            Style::default().fg(theme.fg_dim),
+        )));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("  [Y]", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw("es    "),
+        Span::styled("[N]", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw("o"),
+    ]));
+    frame.render_widget(
+        Paragraph::new(lines).style(styles::popup_style(theme)),
+        inner,
+    );
+}
+
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     let vertical = Layout::vertical([Constraint::Percentage(percent_y)]).flex(Flex::Center);
     let horizontal = Layout::horizontal([Constraint::Percentage(percent_x)]).flex(Flex::Center);

@@ -295,7 +295,16 @@ remote-tracking ones. `:compare ma`, `↓`, `↓`, `Enter` picks the second matc
 | `:tag <name> [commit]` | Lightweight tag at the commit (default: the one `t` was pressed on, else HEAD) |
 | `:fetch` | Fetch every remote one by one (pruning, no submodules, never prompting) in the background; the status bar sums up what moved (`origin/main +3`) and names any remote that failed, such as one that wants credentials |
 | `:pull` / `:pull!` | Pull the upstream: fast-forward only, or rebase onto it with `!` |
-| `:push` | Push the current branch to its upstream (set on `origin` when missing); never forces, never prompts |
+| `:push` | Show the commits that would be pushed and where, then push on `y` (the upstream, set on `origin` when missing). Refuses when the branch is behind its upstream. Never prompts for credentials |
+| `:push!` | Force-push with `--force-with-lease` after the same preview, for history you rewrote (reword, drop, fixup); the lease refuses if the remote moved since your last fetch |
+| `:merge <branch>` | Merge `<branch>` into the current branch (`--no-edit`). On conflicts, `:merge` opens the resolver, `:continue` finishes, `:abort` backs out |
+| `:rebase <branch>` | Rebase the current branch onto `<branch>` |
+| `:continue` / `:skip` | Finish the merge / rebase / cherry-pick / revert in progress once conflicts are staged; skip the commit a rebase stopped on |
+| `:branch -d <name>` | Delete a branch; an unmerged one asks before `-D` |
+| `:branch -m [old] <new>` | Rename a branch (the current one when `old` is left out) |
+| `:upstream <remote/branch>` | Make the current branch track a remote branch |
+| `:tag -d <name>` | Delete a local tag (asks first) |
+| `:console` | Git console: every git command tuicr ran, with exit status, time, and output. `m` toggles reads, `c` clears |
 | `:commit` / `:commit <message>` | Commit the index; without a message the comment box opens as the message editor |
 | `:commit!` / `:amend` / `:commit! <message>` | Amend HEAD (the box is pre-filled with its message) |
 | `:unstage` | Unstage the file under the cursor |
@@ -454,8 +463,10 @@ Staged, unstaged, and conflicts rows stay visible while filtering.
 
 `<leader>b`, `B` in a selector, or `:branches` lists local branches (current marked `*`) and
 remote-tracking branches, with each local branch's upstream and ahead/behind counts. Log rows
-carry every ref as a chip: `[main]` local, dimmed `[origin/main]` remote, `[v1.0]` tag, and a
-bold chip (or `[HEAD]` when detached) on the checked-out commit.
+carry every ref as a chip: `[HEAD → main]` for the checked-out branch (`[HEAD]` when detached),
+`[main]` local, dimmed `[origin/main]` remote, and `<v1.0>` tag. The header shows the current
+branch's outgoing / incoming counts against its upstream (`git:main ↑2 ↓1`) and any merge,
+rebase, cherry-pick, or revert in progress.
 
 | Key | Action |
 |-----|--------|
@@ -467,6 +478,11 @@ bold chip (or `[HEAD]` when detached) on the checked-out commit.
 | `Ctrl-f` | Fetch all remotes and refresh the list (ahead/behind counts update) |
 | `Enter` | Check out the highlighted branch (a remote branch creates its local tracking branch) |
 | `Ctrl-s` | Stash the working tree, check out, then pop the stash |
+| `Ctrl-g` | Merge the highlighted branch into the current one |
+| `Ctrl-b` | Rebase the current branch onto the highlighted one |
+| `Ctrl-x` | Delete the highlighted local branch (an unmerged one asks first) |
+| `Ctrl-r` | Rename the highlighted local branch (opens `:branch -m <name> `) |
+| `Ctrl-t` | Make the current branch track the highlighted remote branch |
 | `Backspace` / `Ctrl-u` | Edit / clear the filter |
 | `Esc` | Clear the filter, then close |
 

@@ -77,7 +77,21 @@ pub fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         let vcs_type = &app.vcs_info.vcs_type;
         let branch = app.vcs_info.branch_name.as_deref().unwrap_or("detached");
-        chunks.push(format!("{vcs_type}:{branch}"));
+        // Outgoing / incoming counts against the upstream, and the
+        // operation in progress, like the JetBrains branch widget.
+        let mut chip = format!("{vcs_type}:{branch}");
+        if let Some(status) = app.repo_status.as_ref() {
+            if status.ahead > 0 {
+                chip.push_str(&format!(" \u{2191}{}", status.ahead));
+            }
+            if status.behind > 0 {
+                chip.push_str(&format!(" \u{2193}{}", status.behind));
+            }
+            if let Some(op) = status.operation {
+                chip.push_str(&format!(" \u{00b7} {} IN PROGRESS", op.to_uppercase()));
+            }
+        }
+        chunks.push(chip);
     }
     if let Some(source) = header_source_chunk(app) {
         chunks.push(source);
@@ -421,6 +435,7 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             InputMode::FindResults => " FIND ".to_string(),
             InputMode::MergeConflict => " MERGE ".to_string(),
             InputMode::Palette => " ACTIONS ".to_string(),
+            InputMode::Console => " CONSOLE ".to_string(),
         };
 
         let mode_width = mode_str.width();
@@ -570,11 +585,16 @@ fn mode_hints(app: &App) -> Vec<Hint> {
         InputMode::BranchPicker => vec![
             hint("type to filter"),
             hint("\u{21b5} checkout"),
-            hint("ctrl-s stash+switch"),
+            hint("^s stash+switch"),
+            hint("^g merge"),
+            hint("^b rebase onto"),
+            hint("^x delete"),
+            hint("^r rename"),
+            hint("^t track"),
             hint("tab pick"),
-            hint("ctrl-d compare"),
-            hint("ctrl-l log"),
-            hint("ctrl-f fetch"),
+            hint("^d compare"),
+            hint("^l log"),
+            hint("^f fetch"),
             pinned("esc close"),
         ],
         InputMode::CommitSelect => vec![
@@ -608,6 +628,12 @@ fn mode_hints(app: &App) -> Vec<Hint> {
             hint("u undo"),
             hint("w write"),
             pinned("esc back"),
+        ],
+        InputMode::Console => vec![
+            hint("j/k scroll"),
+            hint("m reads too"),
+            hint("c clear"),
+            pinned("esc close"),
         ],
         InputMode::Palette => vec![
             hint("type to search"),

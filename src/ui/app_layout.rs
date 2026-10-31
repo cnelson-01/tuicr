@@ -12,8 +12,8 @@ use crate::ui::inline_commit_selector::render_inline_commit_selector;
 use crate::ui::log_pane::render_log_pane;
 use crate::ui::selector::render_commit_select;
 use crate::ui::{
-    branch_picker, comment_panel, find_results, help_popup, merge_conflict, palette, stash_picker,
-    status_bar, styles, submit_modals, summary_popup,
+    branch_picker, comment_panel, console, find_results, help_popup, merge_conflict, palette,
+    stash_picker, status_bar, styles, submit_modals, summary_popup,
 };
 
 const FILE_LIST_MIN_HEIGHT: u16 = 4;
@@ -106,6 +106,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     status_bar::render_header(frame, app, chunks[0]);
     render_main_content(frame, app, chunks[1]);
+    if app.input_mode == InputMode::Console {
+        console::render_console(frame, app, chunks[1]);
+    }
     status_bar::render_status_bar(frame, app, chunks[2]);
     status_bar::render_command_completion_popup(frame, app, chunks[2]);
     palette::render_which_key(frame, app, chunks[2]);
@@ -145,9 +148,22 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 .as_ref()
                 .map(|(action, _)| action.prompt())
                 .unwrap_or_else(|| "Rewrite history?".to_string()),
+            Some(ConfirmAction::GitCommand) => {
+                if let Some(pending) = app.pending_git.as_ref() {
+                    comment_panel::render_confirm_dialog_with_detail(
+                        frame,
+                        app,
+                        &pending.prompt,
+                        &pending.detail,
+                    );
+                }
+                String::new()
+            }
             _ => "Copy review to clipboard?".to_string(),
         };
-        comment_panel::render_confirm_dialog(frame, app, &title);
+        if app.pending_confirm != Some(ConfirmAction::GitCommand) {
+            comment_panel::render_confirm_dialog(frame, app, &title);
+        }
     }
 
     // Submit-flow modals.

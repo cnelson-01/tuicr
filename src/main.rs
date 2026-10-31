@@ -15,11 +15,11 @@ use tuicr::editor::{EditorCommand, EditorError, EditorLaunch, EditorSurface, Edi
 use tuicr::handler::{
     handle_branch_picker_action, handle_command_action, handle_comment_action,
     handle_comment_navigator_action, handle_commit_select_action, handle_commit_selector_action,
-    handle_confirm_action, handle_diff_action, handle_file_list_action, handle_find_results_action,
-    handle_help_action, handle_merge_conflict_action, handle_mouse_event, handle_palette_action,
-    handle_search_action, handle_stash_picker_action, handle_submit_action_picker_action,
-    handle_submit_confirm_action, handle_submit_resolver_action, handle_summary_action,
-    handle_visual_action,
+    handle_confirm_action, handle_console_action, handle_diff_action, handle_file_list_action,
+    handle_find_results_action, handle_help_action, handle_merge_conflict_action,
+    handle_mouse_event, handle_palette_action, handle_search_action, handle_stash_picker_action,
+    handle_submit_action_picker_action, handle_submit_confirm_action,
+    handle_submit_resolver_action, handle_summary_action, handle_visual_action,
 };
 use tuicr::input::catalog::Prefix;
 use tuicr::input::{
@@ -442,6 +442,9 @@ fn main() -> anyhow::Result<()> {
     // Only re-render when state actually changed; the diff renderer rebuilds
     // every line on each draw, so idle redraws are expensive on large diffs.
     let mut needs_redraw = true;
+
+    // Upstream divergence and any operation in progress, for the header.
+    app.refresh_repo_status();
 
     // Main loop
     loop {
@@ -1037,6 +1040,7 @@ fn dispatch_action(app: &mut App, action: Action) {
         InputMode::StashPicker => handle_stash_picker_action(app, action),
         InputMode::FindResults => handle_find_results_action(app, action),
         InputMode::Palette => handle_palette_action(app, action),
+        InputMode::Console => handle_console_action(app, action),
         InputMode::Normal => match app.focused_panel {
             FocusedPanel::FileList => handle_file_list_action(app, action),
             FocusedPanel::Comments => handle_comment_navigator_action(app, action),

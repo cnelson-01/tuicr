@@ -884,6 +884,18 @@ impl VcsBackend for GitBackend {
         }
     }
 
+    fn run_git(&self, args: &[&str], network: bool) -> Result<String> {
+        let root = &self.info().root_path;
+        let result = if network {
+            let envs = non_interactive_git_env(root);
+            let owned: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+            run_git_env(root, &owned, &envs)
+        } else {
+            run_git_command(root, args)
+        };
+        self.refresh_after_cli_op(result)
+    }
+
     fn blame_file(&self, path: &Path, revision: Option<&str>) -> Result<Vec<Option<BlameLine>>> {
         let path = path.to_string_lossy();
         let mut args = vec!["blame", "--porcelain"];
@@ -1042,18 +1054,34 @@ fn run_git_env(workdir: &Path, args: &[String], envs: &[(&str, String)]) -> Resu
     for (key, value) in envs {
         command.env(key, value);
     }
-    let output = command
-        .output()
-        .map_err(|e| TuicrError::VcsCommand(format!("Failed to run git: {e}")))?;
+    let started = std::time::Instant::now();
+    let output = command.output().map_err(|e| {
+        crate::git_console::record(args, None, false, started.elapsed(), &e.to_string());
+        TuicrError::VcsCommand(format!("Failed to run git: {e}"))
+    })?;
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    // Network commands report progress and results on stderr.
+    let shown = if stdout.trim().is_empty() {
+        &stderr
+    } else {
+        &stdout
+    };
+    crate::git_console::record(
+        args,
+        output.status.code(),
+        output.status.success(),
+        started.elapsed(),
+        shown,
+    );
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(TuicrError::VcsCommand(if stderr.is_empty() {
             format!("git {} failed", args.join(" "))
         } else {
             stderr
         }));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    Ok(stdout)
 }
 
 /// Environment for network git calls made from under the TUI: never

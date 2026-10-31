@@ -98,7 +98,14 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         &["pull!", "pull --rebase"],
         CommandKind::Remote(RemoteOp::PullRebase),
     ),
-    CommandSpec::new(&["push"], CommandKind::Remote(RemoteOp::Push)),
+    CommandSpec::new(&["push"], CommandKind::PushPreview(false)),
+    CommandSpec::new(
+        &["push!", "push --force-with-lease"],
+        CommandKind::PushPreview(true),
+    ),
+    CommandSpec::new(&["continue"], CommandKind::ContinueOperation),
+    CommandSpec::new(&["skip"], CommandKind::SkipOperation),
+    CommandSpec::new(&["console", "gitlog"], CommandKind::Console),
     CommandSpec::new(&["commit"], CommandKind::Commit(false)),
     CommandSpec::new(&["commit!", "amend"], CommandKind::Commit(true)),
     CommandSpec::new(&["unstage"], CommandKind::UnstageFile),
@@ -207,6 +214,10 @@ enum CommandKind {
     ToggleLog,
     ToggleZen,
     Palette,
+    PushPreview(bool),
+    ContinueOperation,
+    SkipOperation,
+    Console,
     ResetSplit,
     /// `Some` sets, `None` toggles.
     SetIgnoreWhitespace(Option<bool>),
@@ -779,6 +790,17 @@ pub fn handle_command_action(app: &mut App, action: Action) {
             } else if let Some(pct) = parse_set_number(&cmd, "treewidth") {
                 app.set_file_list_pct(pct);
                 CommandAfterDispatch::ExitCommandMode
+            } else if let Some(result) = parse_git_op_command(&cmd) {
+                app.exit_command_mode();
+                match result {
+                    GitOpCommand::Merge(branch) => app.merge_into_current(&branch),
+                    GitOpCommand::Rebase(onto) => app.rebase_current_onto(&onto),
+                    GitOpCommand::DeleteBranch(name) => app.delete_branch(&name),
+                    GitOpCommand::RenameBranch(old, new) => app.rename_branch(old.as_deref(), &new),
+                    GitOpCommand::Upstream(up) => app.set_upstream(&up),
+                    GitOpCommand::DeleteTag(name) => app.delete_tag(&name),
+                }
+                CommandAfterDispatch::KeepMode
             } else if let Some((target, smart)) = parse_checkout_command(&cmd) {
                 app.checkout_target(target, smart);
                 CommandAfterDispatch::ExitCommandMode
@@ -1131,6 +1153,26 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
             let ignore = value.unwrap_or(!app.ignores_whitespace());
             app.set_ignore_whitespace(ignore);
             CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::PushPreview(force) => {
+            app.exit_command_mode();
+            app.push_preview(force);
+            CommandAfterDispatch::KeepMode
+        }
+        CommandKind::ContinueOperation => {
+            app.exit_command_mode();
+            app.continue_operation();
+            CommandAfterDispatch::KeepMode
+        }
+        CommandKind::SkipOperation => {
+            app.exit_command_mode();
+            app.skip_operation();
+            CommandAfterDispatch::KeepMode
+        }
+        CommandKind::Console => {
+            app.exit_command_mode();
+            app.open_console();
+            CommandAfterDispatch::KeepMode
         }
         CommandKind::Palette => {
             app.exit_command_mode();
@@ -1506,6 +1548,47 @@ fn parse_log_height_command(cmd: &str) -> Option<u16> {
     rest.parse().ok()
 }
 
+/// Branch, tag, merge, and rebase commands that take arguments.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum GitOpCommand {
+    /// `:merge <branch>` (bare `:merge` opens the conflict view).
+    Merge(String),
+    /// `:rebase <branch>`.
+    Rebase(String),
+    /// `:branch -d <name>` / `:branch -D <name>`.
+    DeleteBranch(String),
+    /// `:branch -m [old] <new>`.
+    RenameBranch(Option<String>, String),
+    /// `:upstream <remote/branch>`.
+    Upstream(String),
+    /// `:tag -d <name>`.
+    DeleteTag(String),
+}
+
+fn parse_git_op_command(cmd: &str) -> Option<GitOpCommand> {
+    let mut words = cmd.split_whitespace();
+    let verb = words.next()?;
+    let rest: Vec<&str> = words.collect();
+    let one = |v: &[&str]| (v.len() == 1).then(|| v[0].to_string());
+    match (verb, rest.as_slice()) {
+        ("merge", [branch]) => Some(GitOpCommand::Merge(branch.to_string())),
+        ("rebase", [onto]) => Some(GitOpCommand::Rebase(onto.to_string())),
+        ("upstream", [up]) => Some(GitOpCommand::Upstream(up.to_string())),
+        ("branch", ["-d" | "-D" | "--delete", names @ ..]) => {
+            one(names).map(GitOpCommand::DeleteBranch)
+        }
+        ("branch", ["-m" | "-M" | "--move", new]) => {
+            Some(GitOpCommand::RenameBranch(None, new.to_string()))
+        }
+        ("branch", ["-m" | "-M" | "--move", old, new]) => Some(GitOpCommand::RenameBranch(
+            Some(old.to_string()),
+            new.to_string(),
+        )),
+        ("tag", ["-d" | "--delete", names @ ..]) => one(names).map(GitOpCommand::DeleteTag),
+        _ => None,
+    }
+}
+
 /// `:set <name> N` / `:set <name>=N` for a numeric layout option.
 fn parse_set_number(cmd: &str, name: &str) -> Option<u16> {
     let rest = cmd
@@ -1642,6 +1725,14 @@ pub fn handle_confirm_action(app: &mut App, action: Action) {
     // Destructive local-change prompts: act, then return to the review or
     // the stash picker rather than running the quit flow below.
     match app.pending_confirm {
+        Some(app::ConfirmAction::GitCommand) => {
+            match action {
+                Action::ConfirmYes => app.confirm_git_yes(),
+                Action::ConfirmNo => app.confirm_git_no(),
+                _ => {}
+            }
+            return;
+        }
         Some(app::ConfirmAction::DiscardChanges) => {
             match action {
                 Action::ConfirmYes => app.confirm_discard(),
@@ -1933,6 +2024,26 @@ pub fn handle_stash_picker_action(app: &mut App, action: Action) {
 }
 
 /// Keys in the branch picker modal.
+/// Git console: scroll, toggle reads, clear, close.
+pub fn handle_console_action(app: &mut App, action: Action) {
+    match action {
+        Action::CursorDown(n) => app.console_scroll(-(n as isize)),
+        Action::CursorUp(n) => app.console_scroll(n as isize),
+        Action::PageDown => app.console_page(false),
+        Action::PageUp => app.console_page(true),
+        Action::GoToTop => app.console_scroll(isize::MAX / 2),
+        Action::GoToBottom => app.console_scroll(-(isize::MAX / 2)),
+        Action::ToggleExpand => app.console_toggle_mutating(),
+        Action::ClearLine => app.console_clear(),
+        Action::EnterCommandMode => {
+            app.close_console();
+            app.enter_command_mode();
+        }
+        Action::ExitMode => app.close_console(),
+        _ => {}
+    }
+}
+
 /// Command palette: typing filters, arrows move, Enter runs the entry.
 pub fn handle_palette_action(app: &mut App, action: Action) {
     match action {
@@ -1970,6 +2081,11 @@ pub fn handle_branch_picker_action(app: &mut App, action: Action) {
         Action::BranchPickerCompare => app.branch_picker_compare(),
         Action::BranchPickerLog => app.branch_picker_log(),
         Action::BranchPickerFetch => app.start_remote_op(RemoteOp::Fetch),
+        Action::BranchPickerDelete => app.branch_picker_delete(),
+        Action::BranchPickerRename => app.branch_picker_rename(),
+        Action::BranchPickerMerge => app.branch_picker_merge(),
+        Action::BranchPickerRebase => app.branch_picker_rebase(),
+        Action::BranchPickerTrack => app.branch_picker_track(),
         Action::InsertChar(c) => app.branch_picker_push(c),
         Action::DeleteChar => app.branch_picker_pop(),
         Action::ClearLine => app.branch_picker_clear(),
@@ -2548,7 +2664,39 @@ pub fn handle_submit_confirm_action(app: &mut App, action: Action) {
 
 #[cfg(test)]
 mod command_tests {
-    use super::{CommandKind, command_spec_for};
+    use super::{CommandKind, GitOpCommand, command_spec_for, parse_git_op_command};
+
+    #[test]
+    fn parses_branch_tag_merge_and_rebase_commands() {
+        assert_eq!(
+            parse_git_op_command("merge feature/x"),
+            Some(GitOpCommand::Merge("feature/x".into()))
+        );
+        assert_eq!(parse_git_op_command("merge"), None);
+        assert_eq!(
+            parse_git_op_command("rebase main"),
+            Some(GitOpCommand::Rebase("main".into()))
+        );
+        assert_eq!(
+            parse_git_op_command("branch -D old"),
+            Some(GitOpCommand::DeleteBranch("old".into()))
+        );
+        assert_eq!(
+            parse_git_op_command("branch -m new-name"),
+            Some(GitOpCommand::RenameBranch(None, "new-name".into()))
+        );
+        assert_eq!(
+            parse_git_op_command("branch -m a b"),
+            Some(GitOpCommand::RenameBranch(Some("a".into()), "b".into()))
+        );
+        assert_eq!(
+            parse_git_op_command("tag -d v1"),
+            Some(GitOpCommand::DeleteTag("v1".into()))
+        );
+        // Creating a branch or tag is not a git-op command.
+        assert_eq!(parse_git_op_command("branch topic"), None);
+        assert_eq!(parse_git_op_command("tag v2"), None);
+    }
 
     #[test]
     fn parses_relative_line_number_commands() {

@@ -62,28 +62,29 @@ screen, and the status-bar hints for most panes are partial or truncated.
 - [x] No commit details pane in the live preview (hash, author, date,
       parents, refs, full message). The message pseudo-file appears only for a
       committed single-commit review
-- [ ] No ahead/behind (incoming/outgoing) counts for the current branch
+- [x] No ahead/behind (incoming/outgoing) counts for the current branch
 
 ### Branches (JetBrains branch popup)
 
-- [ ] The picker can't delete, rename, merge into current, rebase current
+- [x] The picker can't delete, rename, merge into current, rebase current
       onto, push, or set upstream. It shows no ahead/behind, no last-commit
       subject or age, and no current-branch marker
-- [ ] No `:merge <branch>` (`:merge` opens only the conflict view)
-- [ ] No `:rebase <branch>`, `:continue`, `:skip`. You can abort an
+- [x] No `:merge <branch>` (`:merge` opens only the conflict view)
+- [x] No `:rebase <branch>`, `:continue`, `:skip`. You can abort an
       in-progress operation, but you can't finish one from the TUI
 
 ### Commits
 
 - [ ] No interactive rebase editor (JetBrains "Interactively Rebase from
       Here"): reorder, pick, reword, squash, fixup, drop, then run
-- [ ] Tags can be created but not deleted or pushed
+- [x] Tags can be created but not deleted or pushed (`:tag -d`; pushing tags
+      is still `git push --tags` outside tuicr)
 
 ### Remote
 
-- [ ] `:push` never shows what it will push. Add a confirm step that lists
+- [x] `:push` never shows what it will push. Add a confirm step that lists
       the outgoing commits
-- [ ] No force push. Reword, drop, and fixup on pushed commits leave the
+- [x] No force push. Reword, drop, and fixup on pushed commits leave the
       branch unpushable. Add `:push!` as `--force-with-lease`
 
 ### Local changes
@@ -99,5 +100,5 @@ screen, and the status-bar hints for most panes are partial or truncated.
 
 ### Transparency
 
-- [ ] No git console (JetBrains Console tab). Keep a log of the git commands
+- [x] No git console (JetBrains Console tab). Keep a log of the git commands
       tuicr ran, their exit status, and their output, viewable in the TUI

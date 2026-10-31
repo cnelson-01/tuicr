@@ -18,6 +18,8 @@ pub enum RemoteOp {
     /// `git pull --rebase`.
     PullRebase,
     Push,
+    /// `git push --force-with-lease`.
+    ForcePush,
 }
 
 impl RemoteOp {
@@ -26,6 +28,7 @@ impl RemoteOp {
             Self::Fetch => "Fetching",
             Self::Pull | Self::PullRebase => "Pulling",
             Self::Push => "Pushing",
+            Self::ForcePush => "Force-pushing",
         }
     }
 
@@ -35,6 +38,7 @@ impl RemoteOp {
             Self::Pull => "pull",
             Self::PullRebase => "pull --rebase",
             Self::Push => "push",
+            Self::ForcePush => "push --force-with-lease",
         }
     }
 }
@@ -77,6 +81,15 @@ impl App {
                     RemoteOp::Pull => vcs.pull(false),
                     RemoteOp::PullRebase => vcs.pull(true),
                     RemoteOp::Push => vcs.push(),
+                    RemoteOp::ForcePush => vcs
+                        .run_git(
+                            &["push", "--force-with-lease", "--recurse-submodules=no"],
+                            true,
+                        )
+                        .map(|_| {
+                            let branch = vcs.info().branch_name.clone().unwrap_or_default();
+                            format!("Force-pushed {branch} (with lease)")
+                        }),
                 });
             let _ = tx.send(RemoteOpAnswer { op, result });
         });

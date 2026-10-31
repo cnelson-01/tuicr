@@ -418,6 +418,7 @@ impl App {
             self.refresh_commit_selector_rows();
         }
         self.refresh_log_rows_keep_cursor();
+        self.refresh_repo_status();
         if self.diff_source.includes_worktree_changes()
             && let Err(e) = self.reload_diff_files()
         {
