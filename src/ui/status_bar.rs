@@ -1,5 +1,3 @@
-use std::borrow::Cow;
-
 use ratatui::{
     Frame,
     layout::Rect,
@@ -293,144 +291,6 @@ fn header_source_chunk(app: &App) -> Option<String> {
 pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
 
-    // In command/search mode, show the input on the left (vim-style)
-    let left_spans = if matches!(app.input_mode, InputMode::Command | InputMode::Search) {
-        let prefix = if app.input_mode == InputMode::Command {
-            ":"
-        } else {
-            "/"
-        };
-        let buffer = if app.input_mode == InputMode::Command {
-            &app.command_buffer
-        } else {
-            &app.search_buffer
-        };
-        let command_text = format!("{prefix}{buffer}");
-        vec![Span::styled(
-            command_text,
-            Style::default().fg(theme.fg_primary),
-        )]
-    } else if let Some(draft) = app.commit_filter_draft.as_ref() {
-        // The log pane's filter prompt lives here, like `/` search does.
-        vec![Span::styled(
-            format!("/{draft}"),
-            Style::default().fg(theme.fg_primary),
-        )]
-    } else {
-        let mode_str = match app.input_mode {
-            InputMode::Normal => {
-                if let Some(count) = app.pending_count {
-                    format!(" NORMAL {count} ")
-                } else {
-                    " NORMAL ".to_string()
-                }
-            }
-            InputMode::Command => " COMMAND ".to_string(),
-            InputMode::Search => " SEARCH ".to_string(),
-            InputMode::Comment => " COMMENT ".to_string(),
-            InputMode::Help => " HELP ".to_string(),
-            InputMode::MessageDetails => " ERROR ".to_string(),
-            InputMode::Summary => " SUMMARY ".to_string(),
-            InputMode::Confirm => " CONFIRM ".to_string(),
-            InputMode::CommitSelect => " SELECT ".to_string(),
-            InputMode::VisualSelect => {
-                if let Some((range, _)) = app.visual_selection_line_range() {
-                    if range.is_single() {
-                        format!(" VISUAL L{} ", range.start)
-                    } else {
-                        format!(" VISUAL L{}-L{} ", range.start, range.end)
-                    }
-                } else {
-                    " VISUAL ".to_string()
-                }
-            }
-            InputMode::SubmitResolver => " RESOLVE ".to_string(),
-            InputMode::SubmitConfirm => " SUBMIT ".to_string(),
-            InputMode::SubmitActionPicker => " SUBMIT ".to_string(),
-            InputMode::BranchPicker => "BRANCHES".to_string(),
-            InputMode::StashPicker => "STASHES".to_string(),
-            InputMode::FindResults => " FIND ".to_string(),
-            InputMode::MergeConflict => " MERGE ".to_string(),
-        };
-
-        let mode_span = Span::styled(mode_str, styles::mode_style(theme));
-
-        let hints: Cow<'static, str> = if app.message.is_some() {
-            Cow::Borrowed("")
-        } else if app.file_tree_prompt_editing() {
-            // File-tree prompts are a sub-state of Normal, so the mode chip
-            // still reads NORMAL; the hint is what tells the user Enter/Esc
-            // are the way out.
-            Cow::Borrowed("   \u{21b5} apply \u{00b7} esc cancel")
-        } else {
-            match app.input_mode {
-                InputMode::Normal if app.commit_filter_editing() => {
-                    Cow::Borrowed("   \u{21b5} apply \u{00b7} esc cancel")
-                }
-                InputMode::Normal if app.log_pane_focused() => Cow::Borrowed(
-                    "   j/k move \u{00b7} space pick \u{00b7} \u{21b5} load \u{00b7} p cherry-pick \u{00b7} b rebase \u{00b7} s squash \u{00b7} esc diff",
-                ),
-                InputMode::Normal if app.focused_panel == FocusedPanel::FileList => Cow::Borrowed(
-                    "   j/k move \u{00b7} \u{21b5} open \u{00b7} i/e filter \u{00b7} I/E clear \u{00b7} / search \u{00b7} r reviewed",
-                ),
-                InputMode::Normal => Cow::Borrowed(
-                    "   j/k scroll \u{00b7} {/} file \u{00b7} m/M comment \u{00b7} r file \u{00b7} R hunk \u{00b7} c comment \u{00b7} ? help",
-                ),
-                InputMode::Command => {
-                    Cow::Borrowed("   tab complete \u{00b7} \u{21b5} execute \u{00b7} esc cancel")
-                }
-                InputMode::Search => Cow::Borrowed("   \u{21b5} search \u{00b7} esc cancel"),
-                InputMode::Comment => Cow::Borrowed("   ctrl-s save \u{00b7} esc cancel"),
-                InputMode::Help => Cow::Borrowed("   / search · n/N match · q/?/esc close"),
-                InputMode::MessageDetails => Cow::Borrowed("   j/k scroll · q/esc close"),
-                InputMode::Summary => {
-                    Cow::Borrowed("   j/k select \u{00b7} \u{21b5} jump \u{00b7} q/esc close")
-                }
-                InputMode::Confirm => Cow::Borrowed("   y yes \u{00b7} n no"),
-                InputMode::FindResults => Cow::Borrowed(
-                    "   j/k move \u{00b7} \u{21b5} open \u{00b7} e editor \u{00b7} / new search \u{00b7} esc close",
-                ),
-                InputMode::StashPicker => Cow::Borrowed(
-                    "   j/k move \u{00b7} \u{21b5} pop \u{00b7} a apply \u{00b7} d drop \u{00b7} esc close",
-                ),
-                InputMode::BranchPicker => Cow::Borrowed(
-                    "   type to filter \u{00b7} tab pick \u{00b7} ctrl-d compare \u{00b7} ctrl-l log \u{00b7} \u{21b5} checkout \u{00b7} ctrl-s stash+switch",
-                ),
-                InputMode::CommitSelect => Cow::Borrowed(
-                    "   j/k navigate \u{00b7} space select \u{00b7} \u{21b5} confirm \u{00b7} esc back",
-                ),
-                InputMode::VisualSelect => Cow::Borrowed(
-                    "   j/k extend \u{00b7} c/\u{21b5} comment \u{00b7} y yank \u{00b7} esc/V cancel",
-                ),
-                InputMode::SubmitResolver => Cow::Borrowed(
-                    "   j/k move \u{00b7} \u{21b5} toggle \u{00b7} s submit \u{00b7} esc cancel",
-                ),
-                InputMode::SubmitConfirm => {
-                    Cow::Borrowed("   y submit \u{00b7} n cancel \u{00b7} esc cancel")
-                }
-                InputMode::SubmitActionPicker => {
-                    Cow::Borrowed("   j/k move \u{00b7} \u{21b5} submit \u{00b7} esc cancel")
-                }
-                InputMode::MergeConflict => Cow::Borrowed(
-                    "   n/N conflict \u{00b7} o/t/b take \u{00b7} u undo \u{00b7} w write \u{00b7} esc back",
-                ),
-            }
-        };
-        let hints_span = Span::styled(hints, Style::default().fg(theme.fg_secondary));
-
-        let mut spans = vec![mode_span, hints_span];
-        if app.input_mode == InputMode::Normal
-            && app.message.is_none()
-            && let Some((current, total)) = app.search_match_position()
-        {
-            spans.push(Span::styled(
-                format!("   [{current}/{total}]"),
-                Style::default().fg(theme.fg_secondary),
-            ));
-        }
-        spans
-    };
-
     // Right-aligned slot priority: active message > pr-flow spinners
     // (submit/reload/range) > remote-comments loading hint > modified
     // indicator. Surfaces the most important transient state without
@@ -501,7 +361,95 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         (Span::raw(""), 0)
     };
+    // In command/search mode, show the input on the left (vim-style)
     let total_width = area.width as usize;
+    let left_spans = if matches!(app.input_mode, InputMode::Command | InputMode::Search) {
+        let prefix = if app.input_mode == InputMode::Command {
+            ":"
+        } else {
+            "/"
+        };
+        let buffer = if app.input_mode == InputMode::Command {
+            &app.command_buffer
+        } else {
+            &app.search_buffer
+        };
+        let command_text = format!("{prefix}{buffer}");
+        vec![Span::styled(
+            command_text,
+            Style::default().fg(theme.fg_primary),
+        )]
+    } else if let Some(draft) = app.commit_filter_draft.as_ref() {
+        // The log pane's filter prompt lives here, like `/` search does.
+        vec![Span::styled(
+            format!("/{draft}"),
+            Style::default().fg(theme.fg_primary),
+        )]
+    } else {
+        let mode_str = match app.input_mode {
+            InputMode::Normal => {
+                if let Some(count) = app.pending_count {
+                    format!(" NORMAL {count} ")
+                } else {
+                    " NORMAL ".to_string()
+                }
+            }
+            InputMode::Command => " COMMAND ".to_string(),
+            InputMode::Search => " SEARCH ".to_string(),
+            InputMode::Comment => " COMMENT ".to_string(),
+            InputMode::Help => " HELP ".to_string(),
+            InputMode::MessageDetails => " ERROR ".to_string(),
+            InputMode::Summary => " SUMMARY ".to_string(),
+            InputMode::Confirm => " CONFIRM ".to_string(),
+            InputMode::CommitSelect => " SELECT ".to_string(),
+            InputMode::VisualSelect => {
+                if let Some((range, _)) = app.visual_selection_line_range() {
+                    if range.is_single() {
+                        format!(" VISUAL L{} ", range.start)
+                    } else {
+                        format!(" VISUAL L{}-L{} ", range.start, range.end)
+                    }
+                } else {
+                    " VISUAL ".to_string()
+                }
+            }
+            InputMode::SubmitResolver => " RESOLVE ".to_string(),
+            InputMode::SubmitConfirm => " SUBMIT ".to_string(),
+            InputMode::SubmitActionPicker => " SUBMIT ".to_string(),
+            InputMode::BranchPicker => "BRANCHES".to_string(),
+            InputMode::StashPicker => "STASHES".to_string(),
+            InputMode::FindResults => " FIND ".to_string(),
+            InputMode::MergeConflict => " MERGE ".to_string(),
+            InputMode::Palette => " ACTIONS ".to_string(),
+        };
+
+        let mode_width = mode_str.width();
+        let mode_span = Span::styled(mode_str, styles::mode_style(theme));
+
+        let hints: String = if app.message.is_some() {
+            String::new()
+        } else {
+            let room = total_width
+                .saturating_sub(mode_width)
+                .saturating_sub(right_width)
+                .saturating_sub(4);
+            format!("   {}", fit_hints(&mode_hints(app), room))
+        };
+        let hints_span = Span::styled(hints, Style::default().fg(theme.fg_secondary));
+
+        let mut spans = vec![mode_span, hints_span];
+        if app.input_mode == InputMode::Normal
+            && app.message.is_none()
+            && let Some((current, total)) = app.search_match_position()
+        {
+            spans.push(Span::styled(
+                format!("   [{current}/{total}]"),
+                Style::default().fg(theme.fg_secondary),
+            ));
+        }
+        spans
+    };
+
     let spans = build_right_aligned_spans(left_spans, right_span, right_width, total_width);
 
     let line = Line::from(spans);
@@ -511,6 +459,185 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         .block(Block::default());
 
     frame.render_widget(status, area);
+}
+
+/// One status-bar hint; `pinned` hints survive when the bar is too narrow
+/// for everything.
+struct Hint {
+    text: String,
+    pinned: bool,
+}
+
+fn hint(text: impl Into<String>) -> Hint {
+    Hint {
+        text: text.into(),
+        pinned: false,
+    }
+}
+
+fn pinned(text: impl Into<String>) -> Hint {
+    Hint {
+        text: text.into(),
+        pinned: true,
+    }
+}
+
+/// The keys worth knowing in the current mode and pane, most useful first.
+/// Normal-mode panes end with the palette and help keys, so every key is
+/// one search away even when the bar can't list it.
+fn mode_hints(app: &App) -> Vec<Hint> {
+    let leader = crate::input::catalog::display_leader(app.leader_key);
+    let actions = || pinned("^p actions");
+    if app.file_tree_prompt_editing() || app.commit_filter_editing() {
+        // File-tree prompts are a sub-state of Normal, so the mode chip
+        // still reads NORMAL; the hint is what tells the user Enter/Esc
+        // are the way out.
+        return vec![pinned("\u{21b5} apply"), pinned("esc cancel")];
+    }
+    match app.input_mode {
+        InputMode::Normal if app.log_pane_focused() => vec![
+            hint("j/k move"),
+            hint("\u{21b5} load"),
+            hint("space pick"),
+            hint("c checkout"),
+            hint("n branch"),
+            hint("p cherry-pick"),
+            hint("R reword"),
+            hint("f fixup"),
+            hint("D drop"),
+            hint("v revert"),
+            hint("x reset"),
+            hint("t tag"),
+            hint("/ filter"),
+            hint("esc diff"),
+            actions(),
+        ],
+        InputMode::Normal if app.focused_panel == FocusedPanel::FileList => vec![
+            hint("j/k move"),
+            hint("\u{21b5} open"),
+            hint("i/e filter"),
+            hint("I/E clear"),
+            hint("/ find"),
+            hint("r reviewed"),
+            hint("s/u stage"),
+            hint(format!("{leader}[ {leader}] width")),
+            actions(),
+            pinned("? help"),
+        ],
+        InputMode::Normal => vec![
+            hint("j/k move"),
+            hint("]/[ change"),
+            hint("}/{ file"),
+            hint("h/l pan"),
+            hint("c comment"),
+            hint("r reviewed"),
+            hint("s/S stage"),
+            hint(format!("{leader}g log")),
+            hint(format!("{leader}b branches")),
+            hint(format!("{leader} more")),
+            actions(),
+            pinned("? help"),
+        ],
+        InputMode::Command => vec![
+            pinned("tab complete"),
+            pinned("\u{21b5} execute"),
+            pinned("esc cancel"),
+        ],
+        InputMode::Search => vec![pinned("\u{21b5} search"), pinned("esc cancel")],
+        InputMode::Comment => vec![pinned("ctrl-s save"), pinned("esc cancel")],
+        InputMode::Help => vec![hint("/ search"), hint("n/N match"), pinned("q/?/esc close")],
+        InputMode::MessageDetails => vec![hint("j/k scroll"), pinned("q/esc close")],
+        InputMode::Summary => vec![
+            hint("j/k select"),
+            hint("\u{21b5} jump"),
+            pinned("q/esc close"),
+        ],
+        InputMode::Confirm => vec![pinned("y yes"), pinned("n no")],
+        InputMode::FindResults => vec![
+            hint("j/k move"),
+            hint("\u{21b5} open"),
+            hint("e editor"),
+            hint("/ new search"),
+            pinned("esc close"),
+        ],
+        InputMode::StashPicker => vec![
+            hint("j/k move"),
+            hint("\u{21b5} pop"),
+            hint("a apply"),
+            hint("d drop"),
+            pinned("esc close"),
+        ],
+        InputMode::BranchPicker => vec![
+            hint("type to filter"),
+            hint("\u{21b5} checkout"),
+            hint("ctrl-s stash+switch"),
+            hint("tab pick"),
+            hint("ctrl-d compare"),
+            hint("ctrl-l log"),
+            hint("ctrl-f fetch"),
+            pinned("esc close"),
+        ],
+        InputMode::CommitSelect => vec![
+            hint("j/k navigate"),
+            hint("space select"),
+            hint("\u{21b5} confirm"),
+            pinned("esc back"),
+        ],
+        InputMode::VisualSelect => vec![
+            hint("j/k extend"),
+            hint("c/\u{21b5} comment"),
+            hint("S/U stage lines"),
+            hint("y yank"),
+            pinned("esc/V cancel"),
+        ],
+        InputMode::SubmitResolver => vec![
+            hint("j/k move"),
+            hint("\u{21b5} toggle"),
+            hint("s submit"),
+            pinned("esc cancel"),
+        ],
+        InputMode::SubmitConfirm => vec![pinned("y submit"), pinned("n cancel")],
+        InputMode::SubmitActionPicker => vec![
+            hint("j/k move"),
+            hint("\u{21b5} submit"),
+            pinned("esc cancel"),
+        ],
+        InputMode::MergeConflict => vec![
+            hint("n/N conflict"),
+            hint("o/t/b take"),
+            hint("u undo"),
+            hint("w write"),
+            pinned("esc back"),
+        ],
+        InputMode::Palette => vec![
+            hint("type to search"),
+            hint("\u{2191}/\u{2193} move"),
+            pinned("\u{21b5} run"),
+            pinned("esc close"),
+        ],
+    }
+}
+
+/// Join hints with ` · `, dropping unpinned ones from the end until the
+/// line fits in `width` columns.
+fn fit_hints(hints: &[Hint], width: usize) -> String {
+    let join = |keep: &[&Hint]| {
+        keep.iter()
+            .map(|h| h.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" \u{00b7} ")
+    };
+    let mut keep: Vec<&Hint> = hints.iter().collect();
+    loop {
+        let line = join(&keep);
+        if line.width() <= width {
+            return line;
+        }
+        let Some(pos) = keep.iter().rposition(|h| !h.pinned) else {
+            return line;
+        };
+        keep.remove(pos);
+    }
 }
 
 pub fn render_command_completion_popup(frame: &mut Frame, app: &App, status_area: Rect) {
@@ -540,12 +667,23 @@ pub fn render_command_completion_popup(frame: &mut Frame, app: &App, status_area
     let start = completion_window_start(selected, completion.matches.len(), visible_rows);
     let end = start + visible_rows;
     let visible_matches = &completion.matches[start..end];
-    let content_width = visible_matches
+    let name_width = visible_matches
         .iter()
         .map(|command| command.chars().count())
         .max()
-        .unwrap_or(0)
-        + 2;
+        .unwrap_or(0);
+    // Each command's description from the action catalog, when it has one.
+    let descriptions: Vec<Option<&str>> = visible_matches
+        .iter()
+        .map(|command| crate::input::catalog::command_description(command))
+        .collect();
+    let desc_width = descriptions
+        .iter()
+        .flatten()
+        .map(|d| d.width() + 3)
+        .max()
+        .unwrap_or(0);
+    let content_width = name_width + 2 + desc_width;
     let popup_width = (content_width as u16 + 2).min(status_area.width);
     if popup_width == 0 {
         return;
@@ -570,7 +708,17 @@ pub fn render_command_completion_popup(frame: &mut Frame, app: &App, status_area
             } else {
                 Style::default().fg(app.theme.fg_secondary)
             };
-            Line::from(Span::styled(format!("{marker} {command}"), style))
+            let mut spans = vec![Span::styled(
+                format!("{marker} {command:<name_width$}"),
+                style,
+            )];
+            if let Some(desc) = descriptions[offset] {
+                spans.push(Span::styled(
+                    format!("   {desc}"),
+                    style.fg(app.theme.fg_dim),
+                ));
+            }
+            Line::from(spans)
         })
         .collect();
 
@@ -596,6 +744,19 @@ fn completion_window_start(selected: usize, match_count: usize, visible_rows: us
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fit_hints_drops_unpinned_hints_from_the_end() {
+        let hints = vec![
+            hint("aaaa"),
+            hint("bbbb"),
+            hint("cccc"),
+            pinned("^p actions"),
+        ];
+        assert_eq!(fit_hints(&hints, 100), "aaaa · bbbb · cccc · ^p actions");
+        assert_eq!(fit_hints(&hints, 24), "aaaa · bbbb · ^p actions");
+        assert_eq!(fit_hints(&hints, 5), "^p actions");
+    }
 
     fn test_message(message_type: MessageType) -> Message {
         Message {

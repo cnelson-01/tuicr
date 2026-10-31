@@ -41,14 +41,16 @@ JetBrains has Find Action (search every action by name, see its shortcut,
 run it), and every menu item shows its shortcut. tuicr has a long static `?`
 screen, and the status-bar hints for most panes are partial or truncated.
 
-- [ ] Command palette: fuzzy-search every key action and `:` command, with
+- [x] Command palette: fuzzy-search every key action and `:` command, with
       its key and a description; Enter runs it
-- [ ] Which-key popup: after a prefix key (`<leader>`, `z`, `Z`, `d`), list
+- [x] Which-key popup: after a prefix key (`<leader>`, `z`, `Z`, `d`), list
       the keys that can follow and what each does
-- [ ] `:` completion shows each command's description
-- [ ] Status-bar hints for the log pane and branch picker are incomplete or
+- [x] `:` completion shows each command's description
+- [x] Status-bar hints for the log pane and branch picker are incomplete or
       clipped. Make them fit the width, ending in `? more`
-- [ ] `?` opens at the section for the focused pane
+- [x] `?` opens at the section for the focused pane. Covered by the palette
+      instead: it lists the focused pane's actions first, and `?` now opens
+      with a Start Here section pointing at it
 
 ## 3. Git features
 

@@ -12,6 +12,7 @@ mod find_source_line_tests;
 mod find_tests;
 mod layout_tests;
 mod log_pane_tests;
+mod palette_tests;
 mod persistence_merge_tests;
 mod pr_info_tests;
 mod render_perf_tests;

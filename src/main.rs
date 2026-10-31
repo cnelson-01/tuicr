@@ -16,10 +16,12 @@ use tuicr::handler::{
     handle_branch_picker_action, handle_command_action, handle_comment_action,
     handle_comment_navigator_action, handle_commit_select_action, handle_commit_selector_action,
     handle_confirm_action, handle_diff_action, handle_file_list_action, handle_find_results_action,
-    handle_help_action, handle_merge_conflict_action, handle_mouse_event, handle_search_action,
-    handle_stash_picker_action, handle_submit_action_picker_action, handle_submit_confirm_action,
-    handle_submit_resolver_action, handle_summary_action, handle_visual_action,
+    handle_help_action, handle_merge_conflict_action, handle_mouse_event, handle_palette_action,
+    handle_search_action, handle_stash_picker_action, handle_submit_action_picker_action,
+    handle_submit_confirm_action, handle_submit_resolver_action, handle_summary_action,
+    handle_visual_action,
 };
+use tuicr::input::catalog::Prefix;
 use tuicr::input::{
     Action, map_file_tree_mode_with_q_quits, map_file_tree_prompt_mode,
     map_key_to_action_with_q_quits, map_log_pane_mode, map_target_filter_mode,
@@ -432,14 +434,9 @@ fn main() -> anyhow::Result<()> {
         app.set_warning(message.clone());
     }
 
-    // Track pending z command for zz centering
-    let mut pending_z = false;
-    // Track pending Z command for ZZ export+quit / ZQ quit
-    let mut pending_shift_z = false;
-    // Track pending d command for dd delete
-    let mut pending_d = false;
-    // Track pending leader command for leader-prefixed actions.
-    let mut pending_leader = false;
+    // Prefix keys (`z`, `Z`, `d`, `<leader>`) waiting for their second key
+    // live in `app.pending_prefix` so the which-key popup can list what
+    // may follow.
     // Track pending Ctrl+C for "press twice to exit" (with timestamp for 2s timeout)
     let mut pending_ctrl_c: Option<Instant> = None;
     // Only re-render when state actually changed; the diff renderer rebuilds
@@ -511,14 +508,21 @@ fn main() -> anyhow::Result<()> {
         let mut drained = 0;
         while !app.should_quit
             && let Some(timeout) = event_drain_timeout(drained)
-            && event::poll(timeout)?
         {
+            // Keys queued by the command palette run first, exactly as if
+            // they had been typed.
+            let event = if let Some(key) = app.injected_keys.pop_front() {
+                Event::Key(key)
+            } else if event::poll(timeout)? {
+                event::read()?
+            } else {
+                break;
+            };
             drained += 1;
             // Set before reading so the many `continue` paths below (leader
             // keys, zz/ZZ, dd, {count}G, …) still schedule a redraw on the
             // next iteration even though they short-circuit past the match.
             needs_redraw = true;
-            let event = event::read()?;
             // Down/Up Release flips the `*_released_since_arm` flag so the
             // primed two-press file walk in single-file view requires a
             // deliberate release + press; held-key auto-repeat (Repeat
@@ -578,8 +582,8 @@ fn main() -> anyhow::Result<()> {
                     }
 
                     // Handle pending z command for zz/zt/zb viewport positioning
-                    if pending_z {
-                        pending_z = false;
+                    if app.pending_prefix == Some(Prefix::Z) {
+                        app.pending_prefix = None;
                         match key.code {
                             crossterm::event::KeyCode::Char('z') => {
                                 app.center_cursor();
@@ -616,8 +620,8 @@ fn main() -> anyhow::Result<()> {
                     }
 
                     // Handle pending Z command for ZZ (export+quit) / ZQ (quit)
-                    if pending_shift_z {
-                        pending_shift_z = false;
+                    if app.pending_prefix == Some(Prefix::ShiftZ) {
+                        app.pending_prefix = None;
                         match key.code {
                             crossterm::event::KeyCode::Char('Z') => {
                                 // ZZ: save session, export, and quit (same as :wq)
@@ -639,8 +643,8 @@ fn main() -> anyhow::Result<()> {
                     }
 
                     // Handle pending d command for dd delete comment
-                    if pending_d {
-                        pending_d = false;
+                    if app.pending_prefix == Some(Prefix::D) {
+                        app.pending_prefix = None;
                         if key.code == crossterm::event::KeyCode::Char('d') {
                             if app.cursor_on_locked_comment() {
                                 let forge = app.forge_display_name();
@@ -663,8 +667,8 @@ fn main() -> anyhow::Result<()> {
                     }
 
                     // Handle pending leader command for panel focus, file list toggle, and review comments.
-                    if pending_leader {
-                        pending_leader = false;
+                    if app.pending_prefix == Some(Prefix::Leader) {
+                        app.pending_prefix = None;
                         match key.code {
                             crossterm::event::KeyCode::Char('e') => {
                                 app.toggle_file_list();
@@ -769,6 +773,10 @@ fn main() -> anyhow::Result<()> {
                                 app.set_ignore_whitespace(ignore);
                                 continue;
                             }
+                            crossterm::event::KeyCode::Char('p') => {
+                                app.open_palette();
+                                continue;
+                            }
                             _ => {}
                         }
                         // Otherwise fall through to normal handling
@@ -819,23 +827,28 @@ fn main() -> anyhow::Result<()> {
                     // Handle pending command setters (these work in any mode)
                     match action {
                         Action::PendingZCommand => {
-                            pending_z = true;
+                            app.pending_prefix = Some(Prefix::Z);
                             app.pending_count = None;
                             continue;
                         }
                         Action::PendingShiftZCommand => {
-                            pending_shift_z = true;
+                            app.pending_prefix = Some(Prefix::ShiftZ);
                             app.pending_count = None;
                             continue;
                         }
                         Action::PendingDCommand => {
-                            pending_d = true;
+                            app.pending_prefix = Some(Prefix::D);
                             app.pending_count = None;
                             continue;
                         }
                         Action::PendingLeaderCommand => {
-                            pending_leader = true;
+                            app.pending_prefix = Some(Prefix::Leader);
                             app.pending_count = None;
+                            continue;
+                        }
+                        Action::OpenPalette => {
+                            app.pending_count = None;
+                            app.open_palette();
                             continue;
                         }
                         _ => {}
@@ -1023,6 +1036,7 @@ fn dispatch_action(app: &mut App, action: Action) {
         InputMode::BranchPicker => handle_branch_picker_action(app, action),
         InputMode::StashPicker => handle_stash_picker_action(app, action),
         InputMode::FindResults => handle_find_results_action(app, action),
+        InputMode::Palette => handle_palette_action(app, action),
         InputMode::Normal => match app.focused_panel {
             FocusedPanel::FileList => handle_file_list_action(app, action),
             FocusedPanel::Comments => handle_comment_navigator_action(app, action),

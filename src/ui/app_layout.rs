@@ -12,7 +12,7 @@ use crate::ui::inline_commit_selector::render_inline_commit_selector;
 use crate::ui::log_pane::render_log_pane;
 use crate::ui::selector::render_commit_select;
 use crate::ui::{
-    branch_picker, comment_panel, find_results, help_popup, merge_conflict, stash_picker,
+    branch_picker, comment_panel, find_results, help_popup, merge_conflict, palette, stash_picker,
     status_bar, styles, submit_modals, summary_popup,
 };
 
@@ -108,6 +108,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     render_main_content(frame, app, chunks[1]);
     status_bar::render_status_bar(frame, app, chunks[2]);
     status_bar::render_command_completion_popup(frame, app, chunks[2]);
+    palette::render_which_key(frame, app, chunks[2]);
 
     // Keep help visible while its search prompt is active.
     if app.input_mode == InputMode::Help || app.searching_help() {
@@ -116,6 +117,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     if app.input_mode == InputMode::BranchPicker {
         branch_picker::render_branch_picker(frame, app);
+    }
+    if app.input_mode == InputMode::Palette {
+        palette::render_palette(frame, app);
     }
     // The stash picker stays under its own drop-confirmation prompt.
     if app.input_mode == InputMode::StashPicker

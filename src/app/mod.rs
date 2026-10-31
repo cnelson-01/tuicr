@@ -694,6 +694,8 @@ pub enum InputMode {
     StashPicker,
     /// Find-in-files results in place of the diff (`:find <text>`).
     FindResults,
+    /// Command palette (`Ctrl-p`): search every action and run it.
+    Palette,
 }
 
 pub use blame::{BLAME_WIDTH, BlameState, overlay_label};
@@ -702,6 +704,7 @@ pub use find::{FIND_MAX_HITS, FindHit, FindState};
 pub use history::HistoryAction;
 pub use layout::SPLIT_STEP_PCT;
 pub use local_changes::{CommitComposer, DiscardTarget, StashPicker};
+pub use palette::Palette;
 pub use remote::{RemoteOp, RemoteOpAnswer, RemoteOpInFlight};
 
 /// State for the fullscreen side-by-side merge conflict screen.
@@ -1662,6 +1665,14 @@ pub struct App {
     pub zen_saved: Option<ZenSaved>,
     /// Which layout splitter a left-button drag is moving, if any.
     pub splitter_drag: Option<Splitter>,
+    /// Command palette state; `Some` while `input_mode == Palette`.
+    pub palette: Option<Palette>,
+    /// Keys queued by the palette, consumed by the event loop ahead of the
+    /// terminal as if they were typed.
+    pub injected_keys: std::collections::VecDeque<crossterm::event::KeyEvent>,
+    /// A prefix key (`<leader>`, `z`, `Z`, `d`) waiting for its second key;
+    /// drives the which-key popup.
+    pub pending_prefix: Option<crate::input::catalog::Prefix>,
     /// Branch picker modal state; `Some` while `input_mode == BranchPicker`.
     pub branch_picker: Option<BranchPicker>,
     /// Start point for the next `:branch <name>`, set by `n` in a selector.
@@ -2085,6 +2096,7 @@ mod local_changes;
 mod log_pane;
 mod modes;
 mod navigation;
+mod palette;
 mod pr;
 mod remote;
 mod reviewed;

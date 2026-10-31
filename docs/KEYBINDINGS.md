@@ -2,6 +2,20 @@
 
 Full reference. Press `?` inside tuicr for an in-app version of this list.
 
+## Discovering keys
+
+| Key | Action |
+|-----|--------|
+| `Ctrl-p` | Command palette (also `<leader>p`, `:palette`, `:actions`). Type words from an action's name, group, or keys (`stage hunk`, `push`, `zen`); every word must match. The focused pane's actions rank first. `↑` / `↓` (or `Ctrl-n` / `Ctrl-p`, `Ctrl-j` / `Ctrl-k`) move, `Enter` runs, `Esc` clears the query, then closes |
+| `<leader>`, `z`, `Z`, `d` | Prefix keys. Press one and a popup lists every key that can follow it and what each does |
+
+The palette runs an action by focusing the pane it belongs to (log, file tree,
+diff) and replaying its keys, so a palette run behaves exactly like typing them.
+Actions that take an argument (`:tag NAME`, `:set split N`) open the command
+line pre-filled. `:` completions show each command's description. The status
+bar lists the focused pane's keys, dropping the least important to fit the
+width, and always ends with `^p actions`.
+
 `<leader>` defaults to `;`. Override it with `leader = ","` in `~/.config/tuicr/config.toml`.
 
 ## Navigation

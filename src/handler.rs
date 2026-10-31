@@ -67,6 +67,7 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     CommandSpec::new(&["set nolog"], CommandKind::SetLogVisible(false)),
     CommandSpec::new(&["log", "set log!"], CommandKind::ToggleLog),
     CommandSpec::new(&["zen"], CommandKind::ToggleZen),
+    CommandSpec::new(&["palette", "actions"], CommandKind::Palette),
     CommandSpec::new(
         &["set ignorews"],
         CommandKind::SetIgnoreWhitespace(Some(true)),
@@ -205,6 +206,7 @@ enum CommandKind {
     SetLogVisible(bool),
     ToggleLog,
     ToggleZen,
+    Palette,
     ResetSplit,
     /// `Some` sets, `None` toggles.
     SetIgnoreWhitespace(Option<bool>),
@@ -1130,6 +1132,11 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
             app.set_ignore_whitespace(ignore);
             CommandAfterDispatch::ExitCommandMode
         }
+        CommandKind::Palette => {
+            app.exit_command_mode();
+            app.open_palette();
+            CommandAfterDispatch::KeepMode
+        }
         CommandKind::ResetSplit => {
             app.set_sbs_split(app::DEFAULT_SBS_SPLIT_PCT);
             CommandAfterDispatch::ExitCommandMode
@@ -1926,6 +1933,33 @@ pub fn handle_stash_picker_action(app: &mut App, action: Action) {
 }
 
 /// Keys in the branch picker modal.
+/// Command palette: typing filters, arrows move, Enter runs the entry.
+pub fn handle_palette_action(app: &mut App, action: Action) {
+    match action {
+        Action::CursorDown(n) => app.palette_move(n as isize),
+        Action::CursorUp(n) => app.palette_move(-(n as isize)),
+        Action::PageDown => app.palette_move(10),
+        Action::PageUp => app.palette_move(-10),
+        Action::InsertChar(c) => app.palette_push(c),
+        Action::Paste(text) => {
+            for c in text.chars().filter(|c| !c.is_control()) {
+                app.palette_push(c);
+            }
+        }
+        Action::DeleteChar => app.palette_pop(),
+        Action::ClearLine => app.palette_clear(),
+        Action::SubmitInput => app.palette_run(),
+        Action::ExitMode => {
+            if app.palette.as_ref().is_some_and(|p| !p.query.is_empty()) {
+                app.palette_clear();
+            } else {
+                app.close_palette();
+            }
+        }
+        _ => {}
+    }
+}
+
 pub fn handle_branch_picker_action(app: &mut App, action: Action) {
     match action {
         Action::BranchPickerDown => app.branch_picker_down(),

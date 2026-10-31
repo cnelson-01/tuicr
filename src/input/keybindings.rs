@@ -245,6 +245,9 @@ pub enum Action {
     /// Fetch all remotes and refresh the picker (Ctrl-f).
     BranchPickerFetch,
 
+    /// Open the command palette (`Ctrl-p`).
+    OpenPalette,
+
     // No-op
     None,
 }
@@ -280,6 +283,7 @@ pub fn map_key_to_action_with_q_quits(
         InputMode::BranchPicker => map_branch_picker_mode(key),
         InputMode::StashPicker => map_stash_picker_mode(key),
         InputMode::FindResults => map_find_results_mode(key),
+        InputMode::Palette => map_palette_mode(key),
     }
 }
 
@@ -311,6 +315,7 @@ fn map_normal_mode_with_q_quits(key: KeyEvent, leader_key: char, q_quits: bool) 
         (KeyCode::Char('u'), KeyModifiers::CONTROL) => Action::HalfPageUp,
         (KeyCode::Char('f'), KeyModifiers::CONTROL) => Action::PageDown,
         (KeyCode::Char('b'), KeyModifiers::CONTROL) => Action::PageUp,
+        (KeyCode::Char('p'), KeyModifiers::CONTROL) => Action::OpenPalette,
         (KeyCode::PageDown, KeyModifiers::NONE) => Action::PageDown,
         (KeyCode::PageUp, KeyModifiers::NONE) => Action::PageUp,
         (KeyCode::Char('g'), KeyModifiers::NONE) => Action::GoToTop,
@@ -596,6 +601,26 @@ fn map_find_results_mode(key: KeyEvent) -> Action {
         (KeyCode::Char('g'), KeyModifiers::NONE) => Action::GoToTop,
         (KeyCode::Char('G'), _) => Action::GoToBottom,
         (KeyCode::Char(':'), _) => Action::EnterCommandMode,
+        _ => Action::None,
+    }
+}
+
+/// Command palette: typing filters, arrows / Ctrl-n / Ctrl-p (and Ctrl-j /
+/// Ctrl-k) move, Enter runs, Esc closes.
+fn map_palette_mode(key: KeyEvent) -> Action {
+    match (key.code, key.modifiers) {
+        (KeyCode::Down, _) => Action::CursorDown(1),
+        (KeyCode::Up, _) => Action::CursorUp(1),
+        (KeyCode::Char('n' | 'j'), KeyModifiers::CONTROL) => Action::CursorDown(1),
+        (KeyCode::Char('p' | 'k'), KeyModifiers::CONTROL) => Action::CursorUp(1),
+        (KeyCode::PageDown, _) => Action::PageDown,
+        (KeyCode::PageUp, _) => Action::PageUp,
+        (KeyCode::Char('u'), KeyModifiers::CONTROL) => Action::ClearLine,
+        (KeyCode::Enter, _) => Action::SubmitInput,
+        (KeyCode::Esc, _) => Action::ExitMode,
+        (KeyCode::Backspace, _) => Action::DeleteChar,
+        (KeyCode::Char(c), mods) if is_altgr_text(mods) => Action::InsertChar(c),
+        (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => Action::InsertChar(c),
         _ => Action::None,
     }
 }

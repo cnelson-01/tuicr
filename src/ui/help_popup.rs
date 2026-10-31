@@ -89,6 +89,60 @@ fn comment_mode_row(key: &str, description: &str) -> Line<'static> {
     ])
 }
 
+/// The keys that lead to every other key: the palette, which-key, and the
+/// layout controls for reading a diff. Shown first in `?`.
+fn start_here_lines(leader: char) -> Vec<Line<'static>> {
+    let bold = Style::default().add_modifier(Modifier::BOLD);
+    let section = Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+    let row = |keys: String, desc: &'static str| {
+        Line::from(vec![
+            Span::styled(format!("  {keys:<10}"), bold),
+            Span::raw(desc),
+        ])
+    };
+    vec![
+        Line::from(Span::styled("Start Here", section)),
+        Line::from(""),
+        row(
+            "Ctrl-p".to_string(),
+            "Search every action by name, see its keys, and run it (also `:palette`)",
+        ),
+        row(
+            format!("{leader} z Z d"),
+            "Prefix keys: pause after one to see what can follow",
+        ),
+        Line::from(""),
+        Line::from(Span::styled("Layout", section)),
+        Line::from(""),
+        row(
+            format!("{leader}< {leader}>"),
+            "Move the side-by-side divider (or drag it; `:set split N`)",
+        ),
+        row(
+            format!("{leader}[ {leader}]"),
+            "Narrow / widen the file tree (or drag its border; `:set treewidth N`)",
+        ),
+        row(format!("{leader}0"), "Reset the divider and the tree width"),
+        row(
+            format!("{leader}z"),
+            "Zen mode: hide every panel but the diff; again restores them",
+        ),
+        row(
+            format!("{leader}w"),
+            "Ignore whitespace changes (also `:ignorews`)",
+        ),
+        row(
+            "zH zL".to_string(),
+            "Pan half a column left / right (lines don't wrap; `:wrap` toggles)",
+        ),
+        row(
+            "zs ze".to_string(),
+            "Pan to the line start / to the end of the longest line",
+        ),
+        Line::from(""),
+    ]
+}
+
 pub fn render_help(frame: &mut Frame, app: &mut App) {
     let theme = &app.theme;
     let leader = leader_display(app.leader_key);
@@ -110,7 +164,8 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let help_text = vec![
+    let mut help_text = start_here_lines(leader);
+    help_text.extend(vec![
         Line::from(Span::styled(
             "Navigation",
             Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
@@ -1213,7 +1268,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
             ),
             Span::raw("Toggle this help"),
         ]),
-    ];
+    ]);
 
     // Update help state with total lines and viewport height
     let total_lines = help_text.len();
