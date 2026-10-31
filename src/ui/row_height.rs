@@ -8,9 +8,7 @@
 //!
 //! Every rendered-body format string used to reconstruct a row lives
 //! once, in the renderer's shared text builders in `ui::diff_view`; this
-//! module only calls them and concatenates the parts (cursor-indicator
-//! spacing is the sole literal kept locally, since the renderer
-//! constructs it as a styled span rather than as a shared string).
+//! module only calls them and concatenates the parts.
 //! Local comment-box annotations are pre-wrapped by `format_comment_lines`,
 //! so each is exactly one row. Remote comment rows are not pre-wrapped; their
 //! formatted spans are measured here with the same outer wrap pass used by
@@ -18,7 +16,8 @@
 
 use ratatui::text::{Line, Span};
 
-use crate::app::{AnnotatedLine, App, DiffViewMode, sbs_overhead};
+use crate::app::{AnnotatedLine, App, DiffViewMode, WrapStyle, sbs_overhead};
+use crate::model::LineSide;
 use crate::ui::text_utils::wrap_spans;
 use crate::ui::{comment_panel, diff_view};
 
@@ -59,7 +58,7 @@ pub(crate) fn annotation_row_height(app: &App, idx: usize) -> usize {
             })
             .map_or(1, |line| formatted_line_height(line, viewport_width)),
 
-        AnnotatedLine::RemoteThreadLine { thread_idx } => app
+        AnnotatedLine::RemoteThreadLine { thread_idx, .. } => app
             .forge_review_threads
             .get(*thread_idx)
             .and_then(|thread| {
@@ -108,32 +107,21 @@ pub(crate) fn annotation_row_height(app: &App, idx: usize) -> usize {
             wrap_side_max(&content, &content, content_width)
         }
 
-        // Unified code rows wrap with a hanging indent under the code
-        // (see `wrap_spans_hanging`), so only the code counts.
         AnnotatedLine::DiffLine { .. } | AnnotatedLine::ExpandedContext { .. }
-            if app.diff_view_mode == DiffViewMode::Unified =>
+            if app.diff_view_mode == DiffViewMode::Unified
+                && app.wrap_style == WrapStyle::Gutter
+                && viewport_width > crate::app::unified_gutter(app.lineno_width()) as usize =>
         {
-            let text = full_row_text(app, annotation);
-            let gutter = crate::app::unified_gutter(app.lineno_width()) as usize;
-            if viewport_width <= gutter + 1 {
-                return wrap_len(&text, viewport_width);
-            }
-            let mut skipped = 0usize;
-            let code: String = text
-                .chars()
-                .skip_while(|c| {
-                    if skipped >= gutter {
-                        return false;
-                    }
-                    skipped += unicode_width::UnicodeWidthChar::width(*c).unwrap_or(0);
-                    true
-                })
-                .collect();
-            wrap_len(&code, viewport_width - gutter).max(1)
+            let content_width =
+                viewport_width - crate::app::unified_gutter(app.lineno_width()) as usize;
+            wrap_len(
+                app.content_for_side(idx, LineSide::New).unwrap_or_default(),
+                content_width,
+            )
         }
 
         _ => {
-            let text = full_row_text(app, annotation);
+            let text = full_row_text(app, idx, annotation);
             wrap_len(&text, viewport_width)
         }
     }
@@ -153,8 +141,9 @@ fn repeated_annotation_row(app: &App, idx: usize, annotation: &AnnotatedLine) ->
             (
                 AnnotatedLine::RemoteThreadLine {
                     thread_idx: candidate,
+                    ..
                 },
-                AnnotatedLine::RemoteThreadLine { thread_idx },
+                AnnotatedLine::RemoteThreadLine { thread_idx, .. },
             ) => candidate == thread_idx,
             _ => false,
         })
@@ -218,11 +207,12 @@ fn expanded_line_content(app: &App, gap_id: &crate::app::GapId, idx: usize) -> O
 
 /// Reconstruct the concatenated text of a rendered logical line by calling
 /// the same text builders the renderer uses. Used for the "wrap at full
-/// inner width" branch: unified mode, and SBS non-content rows.
-fn full_row_text(app: &App, annotation: &AnnotatedLine) -> String {
+/// inner width" branch: non-content rows, flow-wrapped unified content rows,
+/// and gutter-wrapped ones when the viewport leaves no room beside the gutter.
+fn full_row_text(app: &App, idx: usize, annotation: &AnnotatedLine) -> String {
     let lw = app.lineno_width();
-    let indicator = " ";
-    let indicator_spaced = "  ";
+    let indicator = diff_view::cursor_indicator(idx, app.diff_state.cursor_line);
+    let indicator_spaced = diff_view::cursor_indicator_spaced(idx, app.diff_state.cursor_line);
 
     match annotation {
         AnnotatedLine::ReviewCommentsHeader => {
@@ -323,7 +313,13 @@ fn full_row_text(app: &App, annotation: &AnnotatedLine) -> String {
             let dl = expanded_diff_line(app, gap_id, *line_idx);
             let (lineno, content) = match dl {
                 Some(dl) => (
-                    diff_view::expanded_context_lineno_field(&dl, lw),
+                    diff_view::expanded_context_lineno_field(
+                        &dl,
+                        lw,
+                        app.relative_line_numbers,
+                        idx,
+                        app.diff_state.cursor_line,
+                    ),
                     dl.content,
                 ),
                 None => (" ".repeat(lw + 1), String::new()),
@@ -344,7 +340,14 @@ fn full_row_text(app: &App, annotation: &AnnotatedLine) -> String {
                 .and_then(|h| h.lines.get(*line_idx));
             match dl {
                 Some(dl) => {
-                    let lineno = diff_view::unified_line_number_field(dl, lw);
+                    let lineno = diff_view::unified_line_number_field(
+                        dl,
+                        lw,
+                        app.relative_line_numbers,
+                        idx,
+                        app.diff_state.cursor_line,
+                        app.diff_files[*file_idx].is_commit_message,
+                    );
                     let prefix = diff_view::unified_line_origin_marker(dl);
                     format!("{indicator}{lineno}{prefix} {}", dl.content)
                 }
@@ -389,7 +392,10 @@ fn full_row_text(app: &App, annotation: &AnnotatedLine) -> String {
                 let path = f.display_path().display().to_string();
                 format!(
                     "{indicator}{}",
-                    diff_view::spacing_next_file_hint_text(&path)
+                    diff_view::spacing_next_file_hint_text(
+                        &path,
+                        app.supports_keyboard_enhancement
+                    )
                 )
             } else {
                 indicator.to_string()
@@ -476,9 +482,10 @@ mod tests {
             Ok((start_line..=end_line)
                 .map(|n| DiffLine {
                     origin: LineOrigin::Context,
-                    content: format!("ctx line {n}"),
+                    content: format!("ctx line {n} {}", "c".repeat(70)),
                     old_lineno: Some(n),
                     new_lineno: Some(n),
+                    raw_content: None,
                     highlighted_spans: None,
                 })
                 .collect())
@@ -515,6 +522,7 @@ mod tests {
                     content: "context short".to_string(),
                     old_lineno: Some(30),
                     new_lineno: Some(30),
+                    raw_content: None,
                     highlighted_spans: None,
                 },
                 DiffLine {
@@ -522,6 +530,7 @@ mod tests {
                     content: long_left,
                     old_lineno: Some(31),
                     new_lineno: None,
+                    raw_content: None,
                     highlighted_spans: None,
                 },
                 DiffLine {
@@ -529,6 +538,7 @@ mod tests {
                     content: long_right,
                     old_lineno: None,
                     new_lineno: Some(31),
+                    raw_content: None,
                     highlighted_spans: None,
                 },
                 DiffLine {
@@ -536,6 +546,7 @@ mod tests {
                     content: "y".to_string(),
                     old_lineno: None,
                     new_lineno: Some(32),
+                    raw_content: None,
                     highlighted_spans: None,
                 },
             ],
@@ -551,6 +562,7 @@ mod tests {
                 content: "tail".to_string(),
                 old_lineno: Some(100),
                 new_lineno: Some(100),
+                raw_content: None,
                 highlighted_spans: None,
             }],
             old_start: 100,
@@ -662,9 +674,8 @@ mod tests {
                 id: "comment-1".to_string(),
                 author: Some("reviewer".to_string()),
                 body: "a long inline review comment ".repeat(12),
-                created_at: None,
-                in_reply_to: None,
                 url: "https://example.com/comment".to_string(),
+                ..Default::default()
             }],
         }];
         // `sort_files_by_directory` reorders diff_files by parent directory,
@@ -828,14 +839,70 @@ mod tests {
 
     #[test]
     fn parity_unified_with_wrap() {
-        let mut app = make_app();
-        app.set_diff_wrap(true);
-        // Tall viewport so every logical line, including BinaryOrEmpty on the
-        // second file, is fully visible and captured by `observed_heights`.
-        render_diff(&mut app, DiffViewMode::Unified, 40, 200);
-        assert_coverage(&app, DiffViewMode::Unified);
-        assert_remote_rows_wrap(&app);
-        assert_parity(&app);
+        for wrap_style in [WrapStyle::Flow, WrapStyle::Gutter] {
+            let mut app = make_app();
+            app.wrap_style = wrap_style;
+            app.set_diff_wrap(true);
+            // Tall viewport so every logical line, including BinaryOrEmpty on the
+            // second file, is fully visible and captured by `observed_heights`.
+            render_diff(&mut app, DiffViewMode::Unified, 40, 200);
+            assert_coverage(&app, DiffViewMode::Unified);
+            assert_remote_rows_wrap(&app);
+            assert_parity(&app);
+        }
+    }
+
+    #[test]
+    fn parity_unified_content_rows_at_narrow_widths() {
+        for (relative, commit_message) in
+            [(false, false), (true, false), (false, true), (true, true)]
+        {
+            for (expanded, wrap_style) in [
+                (false, WrapStyle::Flow),
+                (true, WrapStyle::Flow),
+                (false, WrapStyle::Gutter),
+                (true, WrapStyle::Gutter),
+            ] {
+                for active in [false, true] {
+                    for width in 1..=10 {
+                        let mut app = make_app();
+                        app.diff_view_mode = DiffViewMode::Unified;
+                        app.wrap_style = wrap_style;
+                        app.relative_line_numbers = relative;
+                        app.set_diff_wrap(true);
+                        app.show_file_list = true;
+                        for file in &mut app.diff_files {
+                            if !file.is_binary {
+                                file.is_commit_message = commit_message;
+                            }
+                        }
+                        app.sync_viewport_width(width);
+                        app.rebuild_annotations();
+                        let idx = app
+                            .line_annotations
+                            .iter()
+                            .position(|annotation| {
+                                if expanded {
+                                    matches!(annotation, AnnotatedLine::ExpandedContext { .. })
+                                } else {
+                                    matches!(annotation, AnnotatedLine::DiffLine { .. })
+                                }
+                            })
+                            .expect("code annotation present");
+                        app.diff_state.cursor_line = idx + usize::from(!active);
+                        app.diff_state.scroll_offset = idx;
+                        render_diff(&mut app, DiffViewMode::Unified, width as u16 + 2, 200);
+                        let (observed_idx, observed) = observed_heights(&app)[0];
+                        assert_eq!(observed_idx, idx);
+                        assert_eq!(
+                            annotation_row_height(&app, idx),
+                            observed,
+                            "width={width}, relative={relative}, commit_message={commit_message}, expanded={expanded}, active={active}, wrap_style={wrap_style:?}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

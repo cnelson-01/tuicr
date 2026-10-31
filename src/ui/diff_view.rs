@@ -14,6 +14,7 @@ use crate::ui::comment_panel;
 use crate::ui::diff_side_by_side::render_side_by_side_diff;
 use crate::ui::diff_unified::render_unified_diff;
 use crate::ui::styles;
+use crate::ui::text_utils::col_of_char;
 use unicode_width::UnicodeWidthStr;
 
 /// Static header rule used for file/section headers; avoids `"═".repeat(40)` per frame.
@@ -71,8 +72,26 @@ pub(super) fn hidden_lines_body_text(count: usize) -> String {
 
 /// Unified-mode line-number gutter field for a diff line — a right-aligned
 /// number followed by a single space, or all spaces when the side is absent.
-pub(super) fn unified_line_number_field(dl: &DiffLine, lw: usize) -> String {
+pub(super) fn unified_line_number_field(
+    dl: &DiffLine,
+    lw: usize,
+    relative_line_numbers: bool,
+    line_idx: usize,
+    current_line_idx: usize,
+    is_commit_message: bool,
+) -> String {
     let blank = || " ".repeat(lw + 1);
+    if is_commit_message {
+        return blank();
+    }
+    if relative_line_numbers {
+        return relative_line_number_field(
+            dl.new_lineno.or(dl.old_lineno),
+            line_idx,
+            current_line_idx,
+            lw,
+        );
+    }
     let format_n = |n: u32| format!("{n:>lw$} ");
     match dl.origin {
         LineOrigin::Addition => dl.new_lineno.map(format_n).unwrap_or_else(blank),
@@ -85,6 +104,21 @@ pub(super) fn unified_line_number_field(dl: &DiffLine, lw: usize) -> String {
     }
 }
 
+/// Gutter number for `source_line` under relative numbering: the rendered-row
+/// distance from the cursor, except on the cursor row itself, which keeps its
+/// source line number (Vim's `number` + `relativenumber`).
+pub(super) fn relative_line_number(
+    source_line: u32,
+    line_idx: usize,
+    current_line_idx: usize,
+) -> u32 {
+    if line_idx == current_line_idx {
+        source_line
+    } else {
+        line_idx.abs_diff(current_line_idx) as u32
+    }
+}
+
 pub(super) fn relative_line_number_field(
     source_line: Option<u32>,
     line_idx: usize,
@@ -92,19 +126,58 @@ pub(super) fn relative_line_number_field(
     lw: usize,
 ) -> String {
     source_line
-        .map(|_| format!("{:>lw$} ", line_idx.abs_diff(current_line_idx)))
+        .map(|line| {
+            let n = relative_line_number(line, line_idx, current_line_idx);
+            format!("{n:>lw$} ")
+        })
         .unwrap_or_else(|| " ".repeat(lw + 1))
 }
 
 #[cfg(test)]
 mod relative_line_number_tests {
-    use super::relative_line_number_field;
+    use super::{relative_line_number_field, unified_line_number_field};
+    use crate::model::{DiffLine, LineOrigin};
+
+    fn line(origin: LineOrigin, old: Option<u32>, new: Option<u32>) -> DiffLine {
+        DiffLine {
+            origin,
+            content: String::new(),
+            old_lineno: old,
+            new_lineno: new,
+            raw_content: None,
+            highlighted_spans: None,
+        }
+    }
 
     #[test]
     fn uses_rendered_row_distance_and_preserves_missing_sides() {
         assert_eq!(relative_line_number_field(Some(100), 14, 10, 3), "  4 ");
-        assert_eq!(relative_line_number_field(Some(100), 10, 10, 3), "  0 ");
+        assert_eq!(relative_line_number_field(Some(100), 6, 10, 3), "  4 ");
         assert_eq!(relative_line_number_field(None, 14, 10, 3), "    ");
+    }
+
+    #[test]
+    fn cursor_row_shows_its_source_line_number() {
+        assert_eq!(relative_line_number_field(Some(100), 10, 10, 3), "100 ");
+        assert_eq!(relative_line_number_field(None, 10, 10, 3), "    ");
+    }
+
+    #[test]
+    fn unified_cursor_row_matches_absolute_numbering() {
+        let cases = [
+            line(LineOrigin::Addition, None, Some(52)),
+            line(LineOrigin::Deletion, Some(42), None),
+            line(LineOrigin::Context, Some(41), Some(51)),
+        ];
+        for dl in cases {
+            assert_eq!(
+                unified_line_number_field(&dl, 3, true, 7, 7, false),
+                unified_line_number_field(&dl, 3, false, 7, 7, false),
+                "{:?}",
+                dl.origin
+            );
+            assert_eq!(unified_line_number_field(&dl, 3, true, 9, 7, false), "  2 ");
+        }
     }
 }
 
@@ -118,12 +191,22 @@ pub(super) fn unified_line_origin_marker(dl: &DiffLine) -> &'static str {
 }
 
 /// Body text of the `Spacing` inter-file row in unified single-file view —
-/// a hint pointing at the file `j` would walk into next. Callers prepend the
-/// one-cell cursor indicator. Multi-file view and side-by-side always emit a
-/// bare indicator instead, so this builder is only used by the unified
-/// single-file branch (and by `row_height` mirroring it).
-pub(super) fn spacing_next_file_hint_text(next_path: &str) -> String {
-    format!("  \u{2193}  {next_path}")
+/// a hint naming the key that moves into the next file. Where the terminal
+/// reports key releases, `j`/Down walks on after a release, so the hint is
+/// `↓`. Elsewhere `j` stops at the file's last line and only `}` moves on.
+/// Callers prepend the one-cell cursor indicator. Multi-file view and
+/// side-by-side always emit a bare indicator instead, so this builder is only
+/// used by the unified single-file branch (and by `row_height` mirroring it).
+pub(super) fn spacing_next_file_hint_text(
+    next_path: &str,
+    supports_keyboard_enhancement: bool,
+) -> String {
+    let key = if supports_keyboard_enhancement {
+        '\u{2193}'
+    } else {
+        '}'
+    };
+    format!("  {key}  {next_path}")
 }
 
 /// Label text for a `BinaryOrEmpty` row (unified & SBS both render this
@@ -143,7 +226,16 @@ pub(super) fn binary_or_empty_label(file: &DiffFile) -> &'static str {
 
 /// Line-number gutter field for an expanded-context row (uses new-side
 /// numbers only).
-pub(super) fn expanded_context_lineno_field(dl: &DiffLine, lw: usize) -> String {
+pub(super) fn expanded_context_lineno_field(
+    dl: &DiffLine,
+    lw: usize,
+    relative_line_numbers: bool,
+    line_idx: usize,
+    current_line_idx: usize,
+) -> String {
+    if relative_line_numbers {
+        return relative_line_number_field(dl.new_lineno, line_idx, current_line_idx, lw);
+    }
     dl.new_lineno
         .map(|n| format!("{n:>lw$} "))
         .unwrap_or_else(|| " ".repeat(lw + 1))
@@ -170,6 +262,16 @@ pub(super) fn diff_visible_range(app: &App, inner: Rect) -> (usize, usize) {
 }
 
 pub(super) fn render_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
+    let offset_before_render = app.diff_state.scroll_offset;
+    render_diff_view_once(frame, app, area);
+    if app.diff_state.scroll_offset == offset_before_render {
+        return;
+    }
+    app.color_visible_hunks(frame.area().height as usize);
+    render_diff_view_once(frame, app, area);
+}
+
+fn render_diff_view_once(frame: &mut Frame, app: &mut App, area: Rect) {
     match app.diff_view_mode {
         DiffViewMode::Unified => render_unified_diff(frame, app, area),
         DiffViewMode::SideBySide => render_side_by_side_diff(frame, app, area),
@@ -356,6 +458,7 @@ pub(super) fn scroll_comment_input_into_view(
     cursor_line: Option<usize>,
     viewport_height: usize,
     total_lines: usize,
+    row_height: impl Fn(usize) -> usize,
 ) {
     let Some((box_start, box_end)) = box_range else {
         return;
@@ -364,21 +467,31 @@ pub(super) fn scroll_comment_input_into_view(
         return;
     }
 
-    let box_height = box_end.saturating_sub(box_start) + 1;
+    let topmost_offset_showing = |last: usize| {
+        let mut offset = last;
+        let mut rows = row_height(last).max(1);
+        while offset > 0 {
+            let rows_of_line_above = row_height(offset - 1).max(1);
+            if rows + rows_of_line_above > viewport_height {
+                break;
+            }
+            rows += rows_of_line_above;
+            offset -= 1;
+        }
+        offset
+    };
 
-    if box_height <= viewport_height {
-        if box_start < *scroll_offset {
-            *scroll_offset = box_start;
-        } else if box_end >= *scroll_offset + viewport_height {
-            *scroll_offset = box_end + 1 - viewport_height;
-        }
-    } else if let Some(cursor) = cursor_line {
-        // Box too tall for viewport: keep the text cursor line visible.
-        if cursor < *scroll_offset {
-            *scroll_offset = cursor;
-        } else if cursor >= *scroll_offset + viewport_height {
-            *scroll_offset = cursor + 1 - viewport_height;
-        }
+    let offset_showing_box_end = topmost_offset_showing(box_end);
+    let box_fits_in_viewport = offset_showing_box_end <= box_start;
+
+    let offsets_keeping_the_input_visible = if box_fits_in_viewport {
+        Some((offset_showing_box_end, box_start))
+    } else {
+        cursor_line.map(|cursor| (topmost_offset_showing(cursor), cursor))
+    };
+
+    if let Some((topmost, bottommost)) = offsets_keeping_the_input_visible {
+        *scroll_offset = (*scroll_offset).clamp(topmost, bottommost);
     }
 
     // Clamp so we never scroll past the last line. This must match
@@ -517,16 +630,19 @@ fn paint_annotation_group(
         return;
     }
 
+    let row_ranges = app.content_row_char_ranges(content, paint.geom.content_width);
     for which_row in 0..group_height {
-        let row_char_start = which_row * paint.geom.content_width;
-        let row_char_end = row_char_start + paint.geom.content_width;
+        let (row_char_start, row_char_end) = row_ranges
+            .get(which_row)
+            .copied()
+            .unwrap_or((total_chars, total_chars));
         let isect_lo = lo.max(row_char_start);
         let isect_hi = hi.min(row_char_end);
         if isect_hi <= isect_lo {
             continue;
         }
-        let col_lo_off = (isect_lo - row_char_start) as u16;
-        let col_hi_off = (isect_hi - row_char_start) as u16;
+        let col_lo_off = col_of_char(content, row_char_start, isect_lo) as u16;
+        let col_hi_off = col_of_char(content, row_char_start, isect_hi) as u16;
         let col_lo = (paint.geom.content_x_start + col_lo_off).min(pane_last_col);
         let col_hi_excl = paint.geom.content_x_start + col_hi_off;
         if col_hi_excl == 0 {
@@ -1203,6 +1319,14 @@ pub(super) fn apply_horizontal_scroll(line: Line, scroll_x: usize) -> Line {
 mod tests {
     use super::*;
 
+    fn unwrapped(_line: usize) -> usize {
+        1
+    }
+
+    fn two_rows_per_line(_line: usize) -> usize {
+        2
+    }
+
     #[test]
     fn pan_code_row_keeps_the_gutter_and_reports_cuts() {
         let line = Line::from(vec![
@@ -1230,7 +1354,7 @@ mod tests {
         // given: box at lines 5-7, viewport shows lines 0-9
         let mut scroll = 0;
         // when
-        scroll_comment_input_into_view(&mut scroll, Some((5, 7)), Some(6), 10, 100);
+        scroll_comment_input_into_view(&mut scroll, Some((5, 7)), Some(6), 10, 100, unwrapped);
         // then
         assert_eq!(scroll, 0);
     }
@@ -1240,7 +1364,7 @@ mod tests {
         // given: box at lines 20-22, viewport shows lines 0-9
         let mut scroll = 0;
         // when
-        scroll_comment_input_into_view(&mut scroll, Some((20, 22)), Some(21), 10, 100);
+        scroll_comment_input_into_view(&mut scroll, Some((20, 22)), Some(21), 10, 100, unwrapped);
         // then: scroll so box_end (22) is the last visible line => scroll = 22 - 10 + 1 = 13
         assert_eq!(scroll, 13);
     }
@@ -1250,7 +1374,7 @@ mod tests {
         // given: box at lines 5-7, viewport shows lines 20-29
         let mut scroll = 20;
         // when
-        scroll_comment_input_into_view(&mut scroll, Some((5, 7)), Some(6), 10, 100);
+        scroll_comment_input_into_view(&mut scroll, Some((5, 7)), Some(6), 10, 100, unwrapped);
         // then: scroll so box_start (5) is the first visible line
         assert_eq!(scroll, 5);
     }
@@ -1260,7 +1384,7 @@ mod tests {
         // given: box spans 20 lines, viewport only 10 lines
         let mut scroll = 0;
         // when
-        scroll_comment_input_into_view(&mut scroll, Some((30, 49)), Some(45), 10, 100);
+        scroll_comment_input_into_view(&mut scroll, Some((30, 49)), Some(45), 10, 100, unwrapped);
         // then: scroll so cursor (45) is the last visible line => scroll = 45 - 10 + 1 = 36
         assert_eq!(scroll, 36);
     }
@@ -1270,7 +1394,7 @@ mod tests {
         // given: scroll already past max (e.g., content shrank)
         let mut scroll = 200;
         // when
-        scroll_comment_input_into_view(&mut scroll, Some((95, 97)), Some(96), 10, 100);
+        scroll_comment_input_into_view(&mut scroll, Some((95, 97)), Some(96), 10, 100, unwrapped);
         // then: pulled back so the box is the first visible line
         assert_eq!(scroll, 95);
     }
@@ -1280,7 +1404,14 @@ mod tests {
         // given: a box range beyond the rendered content
         let mut scroll = 0;
         // when
-        scroll_comment_input_into_view(&mut scroll, Some((150, 152)), Some(151), 10, 100);
+        scroll_comment_input_into_view(
+            &mut scroll,
+            Some((150, 152)),
+            Some(151),
+            10,
+            100,
+            unwrapped,
+        );
         // then: clamped to max_scroll = 100 - 1 = 99, matching App::max_scroll_offset
         assert_eq!(scroll, 99);
     }
@@ -1291,9 +1422,41 @@ mod tests {
         // leaving blank rows below the content, then a 4-line input box opened
         let mut scroll = 78;
         // when
-        scroll_comment_input_into_view(&mut scroll, Some((99, 102)), Some(100), 40, 104);
+        scroll_comment_input_into_view(&mut scroll, Some((99, 102)), Some(100), 40, 104, unwrapped);
         // then: the box is already visible, so the centering must survive
         assert_eq!(scroll, 78);
+    }
+
+    #[test]
+    fn should_count_wrapped_rows_when_pulling_the_box_into_view() {
+        let mut scroll = 0;
+
+        scroll_comment_input_into_view(
+            &mut scroll,
+            Some((20, 22)),
+            Some(21),
+            10,
+            100,
+            two_rows_per_line,
+        );
+
+        assert_eq!(scroll, 18);
+    }
+
+    #[test]
+    fn should_keep_the_text_cursor_visible_when_wrapping_makes_the_box_too_tall() {
+        let mut scroll = 0;
+
+        scroll_comment_input_into_view(
+            &mut scroll,
+            Some((20, 23)),
+            Some(22),
+            6,
+            100,
+            two_rows_per_line,
+        );
+
+        assert_eq!(scroll, 20);
     }
 
     #[test]
@@ -1301,7 +1464,7 @@ mod tests {
         // given
         let mut scroll = 42;
         // when
-        scroll_comment_input_into_view(&mut scroll, None, None, 10, 100);
+        scroll_comment_input_into_view(&mut scroll, None, None, 10, 100, unwrapped);
         // then
         assert_eq!(scroll, 42);
     }
@@ -1311,7 +1474,7 @@ mod tests {
         // given: viewport shows 0-9, box starts at 8 and ends at 10 (footer off-screen)
         let mut scroll = 0;
         // when
-        scroll_comment_input_into_view(&mut scroll, Some((8, 10)), Some(9), 10, 100);
+        scroll_comment_input_into_view(&mut scroll, Some((8, 10)), Some(9), 10, 100, unwrapped);
         // then: scroll so box_end (10) is visible => scroll = 10 - 10 + 1 = 1
         assert_eq!(scroll, 1);
     }

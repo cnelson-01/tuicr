@@ -197,9 +197,8 @@ impl App {
             return false;
         }
 
-        match self.reload_persisted_session_if_changed(false) {
-            Ok(0) => false,
-            Ok(_) => true,
+        match self.reload_persisted_session(false) {
+            Ok(reload) => reload.changed > 0,
             Err(err) => {
                 self.set_warning(format!("Review reload failed: {err}"));
                 true
@@ -219,20 +218,26 @@ impl App {
             || self.pr_submit_rx.is_some()
     }
 
+    /// Merge external edits to the persisted session. Returns how many
+    /// comments were added.
     pub fn reload_persisted_session_if_changed(&mut self, force: bool) -> Result<usize> {
+        Ok(self.reload_persisted_session(force)?.added)
+    }
+
+    fn reload_persisted_session(&mut self, force: bool) -> Result<PersistedReload> {
         let path = match self.session_path_or_resolve() {
             Ok(path) => path,
-            Err(_) => return Ok(0),
+            Err(_) => return Ok(PersistedReload::default()),
         };
 
         if !path.exists() {
             self.session_file_state = None;
-            return Ok(0);
+            return Ok(PersistedReload::default());
         }
 
         let state = SessionFileState::from_path(&path)?;
         if !force && self.session_file_state == Some(state) {
-            return Ok(0);
+            return Ok(PersistedReload::default());
         }
 
         let latest = crate::persistence::storage::load_session(&path)?;
@@ -247,7 +252,10 @@ impl App {
             self.rebuild_annotations();
         }
         let after_count = Self::comment_count(&self.session);
-        Ok(after_count.saturating_sub(before_count))
+        Ok(PersistedReload {
+            added: after_count.saturating_sub(before_count),
+            changed,
+        })
     }
 
     pub(in crate::app) fn merge_external_session_changes(
@@ -412,18 +420,18 @@ impl App {
                 return true;
             }
 
-            let mut emptied_line = None;
+            let mut removed_from_line = None;
             for (line, comments) in &mut review.line_comments {
                 if let Some(index) = comments.iter().position(|comment| comment.id == id) {
                     comments.remove(index);
-                    if comments.is_empty() {
-                        emptied_line = Some(*line);
-                    }
+                    removed_from_line = Some((*line, comments.is_empty()));
                     break;
                 }
             }
-            if let Some(line) = emptied_line {
-                review.line_comments.remove(&line);
+            if let Some((line, emptied)) = removed_from_line {
+                if emptied {
+                    review.line_comments.remove(&line);
+                }
                 return true;
             }
         }
@@ -593,9 +601,22 @@ impl App {
     pub(in crate::app) fn opened_pr_with_persisted_session(
         opened: crate::forge::pr_open::OpenedPullRequest,
     ) -> Result<crate::forge::pr_open::OpenedPullRequest> {
-        match Self::load_pr_session_for_opened(&opened)? {
-            Some(session) => Ok(crate::forge::pr_open::OpenedPullRequest { session, ..opened }),
-            None => Ok(opened),
+        if let Some(session) = Self::load_pr_session_for_opened(&opened)? {
+            return Ok(crate::forge::pr_open::OpenedPullRequest { session, ..opened });
+        }
+        // First open since the head moved: carry the old head's review forward,
+        // as an in-app reload at a new head does. Best-effort: an unreadable
+        // old-head session must not block the PR, so it opens fresh instead.
+        match crate::persistence::load_previous_head_pr_session(&opened.key) {
+            Ok(Some(previous)) => {
+                let session = Self::reviewed_state_carried_forward(
+                    &previous,
+                    opened.session.clone(),
+                    &opened.diff_files,
+                );
+                Ok(crate::forge::pr_open::OpenedPullRequest { session, ..opened })
+            }
+            Ok(None) | Err(_) => Ok(opened),
         }
     }
 
@@ -605,11 +626,13 @@ impl App {
     ) -> Result<crate::forge::pr_open::OpenedPullRequest> {
         self.save_current_session_merging_external()?;
         let previous_session = self.session.clone();
+        let mut fresh_session = opened.session.clone();
+        self.seed_configured_visibility(&mut fresh_session);
         let session = match Self::load_pr_session_for_opened(&opened)? {
             Some(session) => session,
             None => Self::reviewed_state_carried_forward(
                 &previous_session,
-                opened.session.clone(),
+                fresh_session,
                 &opened.diff_files,
             ),
         };
@@ -709,4 +732,14 @@ impl App {
             })
             .collect()
     }
+}
+
+/// What [`App::reload_persisted_session`] merged from disk.
+#[derive(Debug, Default, Clone, Copy)]
+struct PersistedReload {
+    /// Comments added by another writer.
+    added: usize,
+    /// Every merged change, including external deletions and edits, which
+    /// need a redraw even though they add nothing.
+    changed: usize,
 }

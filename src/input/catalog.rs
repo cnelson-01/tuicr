@@ -88,6 +88,7 @@ pub const ENTRIES: &[Entry] = &[
     e(Global, "Help", "<leader>p", "Command palette", Keys("<leader>p")),
     e(Global, "Help", "?", "Full key reference", Keys("?")),
     e(Global, "Help", ":messages", "Show the full current error message", Cmd("messages")),
+    e(Global, "Help", "Ctrl-l", "Clear and redraw the whole screen", Keys("<C-l>")),
     // ── Navigate ─────────────────────────────────────────────────────────
     e(Diff, "Navigate", "j / k", "Move the cursor down / up", Keys("j")),
     e(Diff, "Navigate", "Ctrl-d / Ctrl-u", "Half page down / up", Keys("<C-d>")),
@@ -117,7 +118,8 @@ pub const ENTRIES: &[Entry] = &[
     e(Diff, "View", "ze", "Pan to the end of the longest line", Keys("ze")),
     e(Global, "View", ":wrap", "Toggle line wrap (off: pan instead)", Cmd("wrap")),
     e(Global, "View", "<leader>w", "Toggle ignore-whitespace", Keys("<leader>w")),
-    e(Global, "View", ":set relativenumber!", "Toggle relative line numbers", Cmd("set relativenumber!")),
+    e(Global, "View", "<leader>n", "Toggle relative line numbers", Keys("<leader>n")),
+    e(Global, "View", ":theme", "Pick a colour theme, previewed live", Cmd("theme")),
     e(Global, "View", "<leader>a", "Toggle the blame gutter (annotate)", Keys("<leader>a")),
     e(Diff, "View", "<leader>A", "Open the commit that last changed this line", Keys("<leader>A")),
     // ── Layout ───────────────────────────────────────────────────────────
@@ -155,6 +157,9 @@ pub const ENTRIES: &[Entry] = &[
     e(Global, "Review", ":reviewed", "Show / hide reviewed files", Cmd("reviewed")),
     e(Global, "Review", ":w", "Save the review", Cmd("w")),
     e(Global, "Review", ":clip", "Copy the review to the clipboard", Cmd("clip")),
+    e(Global, "Review", ":clearc", "Delete every comment (prefills; Enter runs)", Prompt("clearc")),
+    e(Global, "Review", ":clear", "Delete every comment and reviewed mark (prefills)", Prompt("clear")),
+    e(Diff, "Review", "V then s", "Suggest a change for the selected lines", Keys("V")),
     e(Diff, "Edit", "e", "Open the file in $EDITOR at this line", Keys("e")),
     e(Global, "Edit", ":e", "Reload the diff", Cmd("e")),
     // ── File tree ────────────────────────────────────────────────────────
@@ -221,7 +226,7 @@ pub const ENTRIES: &[Entry] = &[
     e(Branches, "Branches", "Ctrl-s", "Stash, check out, pop", Keys("<leader>b")),
     e(Branches, "Branches", "Tab", "Pick for compare / log", Keys("<leader>b")),
     e(Branches, "Branches", "Ctrl-d", "Compare with the current branch", Keys("<leader>b")),
-    e(Branches, "Branches", "Ctrl-l", "Show the picked branches in the log", Keys("<leader>b")),
+    e(Branches, "Branches", "Ctrl-o", "Show the picked branches in the log", Keys("<leader>b")),
     e(Global, "Branches", ":merge BRANCH", "Merge a branch into the current one", Prompt("merge ")),
     e(Global, "Branches", ":rebase BRANCH", "Rebase the current branch onto another", Prompt("rebase ")),
     e(Global, "Branches", ":branch -d NAME", "Delete a branch (asks if unmerged)", Prompt("branch -d ")),

@@ -134,7 +134,7 @@ impl App {
         self.commit_filter_generation += 1;
         let generation = self.commit_filter_generation;
         let limit = initial_commit_limit();
-        let options = self.vcs_open_options;
+        let options = self.vcs_open_options.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         self.commit_filter_rx = Some(rx);
         self.commit_filter_shown = query.clone();

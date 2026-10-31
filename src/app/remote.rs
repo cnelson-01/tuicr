@@ -74,7 +74,7 @@ impl App {
             ));
             return;
         }
-        let options = self.vcs_open_options;
+        let options = self.vcs_open_options.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         self.remote_op = Some(RemoteOpInFlight { op, rx });
         self.set_sticky_warning(format!("{}\u{2026}", op.verb()));

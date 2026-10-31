@@ -13,7 +13,7 @@ use crate::ui::log_pane::render_log_pane;
 use crate::ui::selector::render_commit_select;
 use crate::ui::{
     branch_picker, comment_panel, console, find_results, help_popup, merge_conflict, palette,
-    rebase_editor, stash_picker, status_bar, styles, submit_modals, summary_popup,
+    rebase_editor, stash_picker, status_bar, styles, submit_modals, summary_popup, theme_picker,
 };
 
 const FILE_LIST_MIN_HEIGHT: u16 = 4;
@@ -21,6 +21,10 @@ const COMMENT_NAVIGATOR_MIN_HEIGHT: u16 = 4;
 const COMMENT_NAVIGATOR_MAX_HEIGHT: u16 = 12;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
+    // Color what this frame shows before any line is built; see
+    // `App::color_visible_hunks`.
+    app.color_visible_hunks(frame.area().height as usize);
+
     frame.render_widget(
         Block::default().style(styles::panel_style(&app.theme)),
         frame.area(),
@@ -32,6 +36,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
 
     let selector_background = app.input_mode == InputMode::CommitSelect
+        || (app.input_mode == InputMode::Confirm
+            && app.pending_confirm.map(ConfirmAction::return_mode)
+                == Some(InputMode::CommitSelect))
         || (app.input_mode == InputMode::Command
             && app.command_return_mode == InputMode::CommitSelect)
         || (app.input_mode == InputMode::Help
@@ -74,12 +81,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         if app.input_mode == InputMode::Palette {
             palette::render_palette(frame, app);
         }
-        if app.input_mode == InputMode::Confirm
-            && let Some((action, _)) = app.pending_history.as_ref()
-        {
-            let title = action.prompt();
-            comment_panel::render_confirm_dialog(frame, app, &title);
-        }
+        render_active_confirm(frame, app);
         return;
     }
 
@@ -90,13 +92,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         || (app.input_mode == InputMode::Confirm && app.merge_view.is_some())
     {
         merge_conflict::render_merge_conflict(frame, app);
-        if app.input_mode == InputMode::Confirm {
-            comment_panel::render_confirm_dialog(
-                frame,
-                app,
-                "All conflicts resolved \u{2014} commit now?",
-            );
-        }
+        render_active_confirm(frame, app);
         return;
     }
 
@@ -145,37 +141,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     // Comment input is now rendered inline in the diff view
 
-    // Render confirm dialog if in confirm mode
-    if app.input_mode == InputMode::Confirm {
-        let title = match app.pending_confirm {
-            Some(ConfirmAction::DiscardChanges) => app
-                .pending_discard
-                .as_ref()
-                .map(DiscardTarget::prompt)
-                .unwrap_or_else(|| "Discard these changes?".to_string()),
-            Some(ConfirmAction::DropStash) => "Drop this stash? This cannot be undone.".to_string(),
-            Some(ConfirmAction::HistoryRewrite) => app
-                .pending_history
-                .as_ref()
-                .map(|(action, _)| action.prompt())
-                .unwrap_or_else(|| "Rewrite history?".to_string()),
-            Some(ConfirmAction::GitCommand) => {
-                if let Some(pending) = app.pending_git.as_ref() {
-                    comment_panel::render_confirm_dialog_with_detail(
-                        frame,
-                        app,
-                        &pending.prompt,
-                        &pending.detail,
-                    );
-                }
-                String::new()
-            }
-            _ => "Copy review to clipboard?".to_string(),
-        };
-        if app.pending_confirm != Some(ConfirmAction::GitCommand) {
-            comment_panel::render_confirm_dialog(frame, app, &title);
-        }
-    }
+    render_active_confirm(frame, app);
 
     // Submit-flow modals.
     if app.input_mode == InputMode::SubmitResolver {
@@ -186,6 +152,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
     if app.input_mode == InputMode::SubmitActionPicker {
         submit_modals::render_submit_action_picker(frame, app);
+    }
+    if app.input_mode == InputMode::ThemePicker {
+        theme_picker::render_theme_picker(frame, app);
     }
 
     // Position terminal cursor for IME when in Comment mode
@@ -295,4 +264,43 @@ fn render_content_view(frame: &mut Frame, app: &mut App, area: Rect) {
     } else {
         render_diff_view(frame, app, area);
     }
+}
+
+/// The prompt to draw, if keys are currently routed to it. Gating on the mode
+/// as well as `pending_confirm` keeps a prompt that outlived its mode (e.g. a
+/// PR open landing mid-prompt) from being drawn where Y/N cannot reach it.
+fn active_confirm(app: &App) -> Option<ConfirmAction> {
+    (app.input_mode == InputMode::Confirm)
+        .then_some(app.pending_confirm)
+        .flatten()
+}
+
+/// Draw the Y/N prompt for the pending confirm, if one is up. Prompts that
+/// act on something name it, and a git command lists its detail (the commits
+/// a push would send) under the question.
+fn render_active_confirm(frame: &mut Frame, app: &App) {
+    let Some(confirm) = active_confirm(app) else {
+        return;
+    };
+    let title = match confirm {
+        ConfirmAction::DiscardChanges => app.pending_discard.as_ref().map(DiscardTarget::prompt),
+        ConfirmAction::HistoryRewrite => app
+            .pending_history
+            .as_ref()
+            .map(|(action, _)| action.prompt()),
+        ConfirmAction::GitCommand => {
+            if let Some(pending) = app.pending_git.as_ref() {
+                comment_panel::render_confirm_dialog_with_detail(
+                    frame,
+                    app,
+                    &pending.prompt,
+                    &pending.detail,
+                );
+                return;
+            }
+            None
+        }
+        _ => None,
+    };
+    comment_panel::render_confirm_dialog(frame, app, title.as_deref().unwrap_or(confirm.prompt()));
 }

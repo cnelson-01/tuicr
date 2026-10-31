@@ -67,6 +67,15 @@ tuicr review list --repo git@ssh.dev.azure.com:v3/myorg/myproject/myrepo
 #   -> [ ..., { "slug": "az:myorg/myproject/myrepo/pr/123", "kind": "pr", ... } ]
 ```
 
+GitLab groups nest the same way, so a repo under `group/subgroup` has
+`group/subgroup` as its owner:
+
+```bash
+tuicr review list --repo https://gitlab.com/org/team/svc
+tuicr review list --repo git@gitlab.com:org/team/svc.git
+#   -> [ ..., { "slug": "gl:org/team/svc/pr/123", "kind": "pr", ... } ]
+```
+
 `--repo` for `add` / `comments` is only consulted when resolving a *local*
 slug; PR slugs and JSON paths ignore it.
 
@@ -92,6 +101,36 @@ Target flags:
 - use `--side old|new` for inline comments
 - use `--username <name>` to identify the comment author; otherwise tuicr uses
   the configured `username` or `"user"`
+
+## Delete and clear comments
+
+Delete one comment by id:
+
+```bash
+tuicr review delete --session agavra/tuicr@main/worktree --comment-id <id>
+```
+
+The id is the `id` field reported by `tuicr review comments`. Deleting a
+comment that does not exist is an error.
+
+Clear every comment in a session:
+
+```bash
+tuicr review clearc --session agavra/tuicr@main/worktree
+```
+
+`clearc` keeps review marks. `clear` also resets them:
+
+```bash
+tuicr review clear --session agavra/tuicr@main/worktree
+```
+
+All three commands remove the session itself once nothing is left — no
+comments and no review marks — the same cleanup the TUI performs on exit.
+A session open in a running tuicr is kept, so an agent can empty it and keep
+adding to it while the TUI watches. If the TUI created that session it removes
+it on exit when still empty; otherwise the empty session stays behind, hidden
+on the Sessions tab (`a` shows it, `dd` deletes it).
 
 ## JSON Input
 

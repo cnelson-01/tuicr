@@ -50,6 +50,63 @@ pub(crate) fn wrap_segments(text: &str, content_area: usize) -> Vec<&str> {
     segments
 }
 
+fn comment_content_width(width: usize) -> usize {
+    // Reserve the prefix, a cell to prevent ratatui wrapping exact-fit rows,
+    // and a cell for the cursor at the end of a segment.
+    width.saturating_sub(BORDER_PREFIX_WIDTH + 2)
+}
+
+/// Move one displayed row using the same box width and wrapping as
+/// `format_comment_input_lines`. Retain the preferred screen column when
+/// the destination row is shorter.
+pub(crate) fn move_comment_cursor(
+    buffer: &str,
+    cursor: usize,
+    width: usize,
+    down: bool,
+    preferred_column: &mut Option<usize>,
+) -> usize {
+    let mut rows = Vec::new();
+    let mut start = 0;
+    for line in buffer.split('\n') {
+        for segment in wrap_segments(line, comment_content_width(width)) {
+            rows.push(start..start + segment.len());
+            start += segment.len();
+        }
+        start += 1;
+    }
+    let current = rows
+        .iter()
+        .rposition(|row| row.start <= cursor)
+        .unwrap_or(0);
+    let target = if down {
+        current.checked_add(1)
+    } else {
+        current.checked_sub(1)
+    };
+    let Some(target) = target.filter(|&index| index < rows.len()) else {
+        return cursor;
+    };
+    let row = &rows[target];
+    let column =
+        *preferred_column.get_or_insert_with(|| buffer[rows[current].start..cursor].width());
+    let text = &buffer[row.clone()];
+    // At a soft-wrap boundary, the cursor belongs to the following row.
+    // A cursor can sit after a row's text only at a newline or the buffer's end.
+    let end_stop = (!rows
+        .get(target + 1)
+        .is_some_and(|next| next.start == row.end))
+    .then_some(text.len());
+    // Presentation selectors can shrink prefix widths; choose the last fitting boundary.
+    let byte = text
+        .char_indices()
+        .map(|(byte, _)| byte)
+        .chain(end_stop)
+        .rfind(|&byte| text[..byte].width() <= column)
+        .unwrap_or(0);
+    row.start + byte
+}
+
 /// Emit spans covering `line_text[start..end)` using the per-line markdown
 /// highlight `runs` (concatenation of run text equals `line_text`). Falls back
 /// to a single unstyled span when highlighting is unavailable. Offsets are byte
@@ -140,10 +197,7 @@ pub fn format_comment_input_lines(
         "Alt-Enter"
     };
 
-    // "    │  " is the per-line content prefix; everything past that is content.
-    // Subtract two extra: one so ratatui never wraps an exact-fit line, and
-    // one so the terminal cursor at end-of-segment stays clear of the border.
-    let content_area = width.saturating_sub(BORDER_PREFIX_WIDTH + 2);
+    let content_area = comment_content_width(width);
 
     let mut result = Vec::new();
     let mut cursor_line_offset: usize = 1;
@@ -337,6 +391,7 @@ pub fn format_remote_thread_lines(
         let author = comment.author.as_deref().unwrap_or("unknown");
         if is_first {
             let mut badge_text = format!("[{} @{author}", forge_badge_label(forge_kind));
+            badge_text.push_str(draft_suffix(comment));
             if thread.is_resolved {
                 badge_text.push_str(" resolved");
             } else if thread.is_outdated {
@@ -352,7 +407,10 @@ pub fn format_remote_thread_lines(
         } else {
             result.push(Line::from(vec![
                 Span::styled("    ├── ".to_string(), border_style),
-                Span::styled(format!("↳ @{author} "), reply_badge_style),
+                Span::styled(
+                    format!("↳ @{author}{} ", draft_suffix(comment)),
+                    reply_badge_style,
+                ),
                 Span::styled("─".repeat(28), border_style),
             ]));
         }
@@ -374,6 +432,11 @@ pub fn format_remote_thread_lines(
     )]));
 
     result
+}
+
+/// ` draft` for a comment that is still the viewer's unpublished draft.
+fn draft_suffix(comment: &crate::forge::remote_comments::RemoteReviewComment) -> &'static str {
+    if comment.is_draft { " draft" } else { "" }
 }
 
 /// Format a remote review summary (the body of a `PullRequestReview`) as a
@@ -1136,9 +1199,7 @@ mod tests {
                 id: "comment".to_string(),
                 author: Some("alice".to_string()),
                 body: "body".to_string(),
-                created_at: None,
-                in_reply_to: None,
-                url: String::new(),
+                ..Default::default()
             }],
         };
 
@@ -1152,6 +1213,42 @@ mod tests {
 
         assert!(header.contains("[gitlab @alice]"));
         assert!(!header.contains("[github @alice]"));
+    }
+
+    #[test]
+    fn remote_thread_marks_unpublished_drafts() {
+        let comment =
+            |id: &str, is_draft: bool| crate::forge::remote_comments::RemoteReviewComment {
+                id: id.to_string(),
+                author: Some("me".to_string()),
+                body: "body".to_string(),
+                is_draft,
+                ..Default::default()
+            };
+        let thread = crate::forge::remote_comments::RemoteReviewThread {
+            id: "thread".to_string(),
+            path: "src/lib.rs".to_string(),
+            line: Some(1),
+            side: crate::forge::remote_comments::RemoteCommentSide::Right,
+            is_resolved: false,
+            is_outdated: false,
+            comments: vec![comment("root", true), comment("reply", true)],
+        };
+
+        let lines =
+            format_remote_thread_lines(&test_theme(), &thread, false, Some(ForgeKind::Gerrit));
+        let text: Vec<String> = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
+            .collect();
+
+        assert!(text[0].contains("[gerrit @me draft]"), "{}", text[0]);
+        assert!(text[2].contains("↳ @me draft "), "{}", text[2]);
     }
 
     #[test]

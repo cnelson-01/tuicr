@@ -32,7 +32,7 @@ impl RemoteCommentSide {
 /// Anchor fields (`path`, `line`, `side`) live on the parent
 /// `RemoteReviewThread`, not on each comment, mirroring GitHub's GraphQL
 /// schema where `PullRequestReviewComment` does not carry these directly.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteReviewComment {
     /// Forge-assigned comment node ID (opaque string).
     pub id: String,
@@ -45,6 +45,10 @@ pub struct RemoteReviewComment {
     pub in_reply_to: Option<String>,
     /// Permalink to the comment on the forge.
     pub url: String,
+    /// An unpublished draft only its author can see — what `:submit draft`
+    /// leaves behind on forges that store drafts per comment (Gerrit).
+    #[serde(default)]
+    pub is_draft: bool,
 }
 
 /// State of a remote review at submit time. GitHub exposes one of
@@ -197,24 +201,35 @@ pub fn filter_threads(
         .collect()
 }
 
-/// Count the number of rendered lines a thread occupies in the diff view.
-/// Used by `App::rebuild_annotations` to push the matching number of
-/// annotations so cursor/hit-test math stays in sync with rendering.
+/// Map every rendered thread row to the comment whose content it displays.
+///
+/// The final closing rule belongs to the final comment. An empty thread has
+/// only its closing rule and uses index zero; it cannot resolve to content,
+/// but retaining that row preserves annotation/render parity for malformed
+/// forge data.
 ///
 /// Layout (must match `ui::comment_panel::format_remote_thread_lines`):
 /// - 1 header line for the root comment (`╭─ [github @author] L42 ──`)
 /// - 1 separator line per reply (`├─ ↳ @author ──`)
 /// - 1 body line per `\n`-split line in each comment's body
 /// - 1 footer line at the end of the thread (`╰────`)
-pub fn thread_display_lines(thread: &RemoteReviewThread) -> usize {
-    let mut total = 0;
-    for comment in &thread.comments {
-        // header (root) or separator (reply) + body lines
-        total += 1 + comment.body.split('\n').count();
+pub fn thread_display_comment_indices(thread: &RemoteReviewThread) -> Vec<usize> {
+    let mut indices = Vec::new();
+    for (comment_idx, comment) in thread.comments.iter().enumerate() {
+        indices.extend(std::iter::repeat_n(
+            comment_idx,
+            1 + comment.body.split('\n').count(),
+        ));
     }
-    // single closing rule for the whole thread
-    total += 1;
-    total
+    indices.push(thread.comments.len().saturating_sub(1));
+    indices
+}
+
+/// Count the number of rendered lines a thread occupies in the diff view.
+/// Uses the shared row-to-comment mapping so annotations and navigation
+/// cannot drift apart.
+pub fn thread_display_lines(thread: &RemoteReviewThread) -> usize {
+    thread_display_comment_indices(thread).len()
 }
 
 /// Count the number of rendered lines a review summary occupies in the
@@ -278,9 +293,8 @@ mod tests {
                 id: format!("{id}-root"),
                 author: Some("alice".to_string()),
                 body: "Root body".to_string(),
-                created_at: None,
-                in_reply_to: None,
                 url: format!("https://example.com/{id}"),
+                ..Default::default()
             }],
         }
     }

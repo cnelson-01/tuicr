@@ -140,21 +140,56 @@ pub(crate) fn delete_session_if_empty(path: &Path) -> Result<bool> {
     delete_session_if_empty_in_dir(path, &reviews_dir)
 }
 
+/// Like [`delete_session_if_empty`], but leaves the file alone while a live
+/// tuicr has it open. For out-of-process callers such as `tuicr review
+/// delete`: the owning TUI polls the file to merge external edits, and
+/// cleans up an empty session itself on exit.
+pub(crate) fn delete_session_if_empty_and_inactive(path: &Path) -> Result<bool> {
+    let reviews_dir = get_reviews_dir()?;
+    delete_session_if_empty_and_inactive_in_dir(path, &reviews_dir)
+}
+
+pub(crate) fn delete_session_if_empty_and_inactive_in_dir(
+    path: &Path,
+    reviews_dir: &Path,
+) -> Result<bool> {
+    maybe_migrate(reviews_dir)?;
+    with_reviews_dir_lock(reviews_dir, || {
+        if is_session_active_unlocked(reviews_dir, path) {
+            return Ok(false);
+        }
+        delete_session_if_empty_unlocked(path, reviews_dir)
+    })
+}
+
 pub(crate) fn delete_session_if_empty_in_dir(path: &Path, reviews_dir: &Path) -> Result<bool> {
     maybe_migrate(reviews_dir)?;
     with_reviews_dir_lock(reviews_dir, || {
-        if !path.exists() {
-            return Ok(false);
-        }
-
-        let session = load_session(path)?;
-        if session.has_comments() || session.has_reviewed_state() {
-            return Ok(false);
-        }
-
-        remove_session_at(path, reviews_dir, &session)?;
-        Ok(true)
+        delete_session_if_empty_unlocked(path, reviews_dir)
     })
+}
+
+fn delete_session_if_empty_unlocked(path: &Path, reviews_dir: &Path) -> Result<bool> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    let session = load_session(path)?;
+    if session.has_comments() || session.has_reviewed_state() {
+        return Ok(false);
+    }
+    remove_session_at(path, reviews_dir, &session)?;
+    Ok(true)
+}
+
+/// Whether a live tuicr has `path` open. The caller must hold the reviews-dir
+/// lock, which [`mark_session_active_in_dir`] also takes.
+fn is_session_active_unlocked(reviews_dir: &Path, path: &Path) -> bool {
+    let target = normalize_active_path(path);
+    load_active_sessions_unlocked(reviews_dir)
+        .unwrap_or_default()
+        .sessions
+        .iter()
+        .any(|entry| entry.is_fresh() && normalize_active_path(&entry.path) == target)
 }
 
 /// Delete a session file and its manifest entry unconditionally. Returns
@@ -170,24 +205,87 @@ pub(crate) fn delete_session(path: &Path) -> Result<bool> {
 
 pub(crate) fn delete_session_in_dir(path: &Path, reviews_dir: &Path) -> Result<bool> {
     maybe_migrate(reviews_dir)?;
+    with_reviews_dir_lock(reviews_dir, || delete_session_unlocked(path, reviews_dir))
+}
+
+/// Outcome of [`delete_inactive_session_in_dir`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeleteOutcome {
+    /// The session file and its manifest entry were removed.
+    Deleted,
+    /// No file was there; any manifest entry still pointing at it was pruned.
+    Missing,
+    /// Another live tuicr has the session open, so nothing was removed: its
+    /// next autosave would write the file straight back.
+    Active,
+}
+
+/// Like [`delete_session_in_dir`], but refuses a session a live tuicr has
+/// open. The active check runs under the same lock that
+/// [`mark_session_active_in_dir`] takes, so it sees the registry as of the
+/// delete, not as of whenever the caller listed sessions.
+///
+/// A process that has loaded a session but not yet registered it can still
+/// lose it here; that window is short and only costs it a recreated file.
+pub(crate) fn delete_inactive_session_in_dir(
+    path: &Path,
+    reviews_dir: &Path,
+) -> Result<DeleteOutcome> {
+    maybe_migrate(reviews_dir)?;
     with_reviews_dir_lock(reviews_dir, || {
-        if !path.exists() {
-            return Ok(false);
+        if is_session_active_unlocked(reviews_dir, path) {
+            return Ok(DeleteOutcome::Active);
         }
-        let session = load_session(path)?;
-        remove_session_at(path, reviews_dir, &session)?;
-        Ok(true)
+        Ok(if delete_session_unlocked(path, reviews_dir)? {
+            DeleteOutcome::Deleted
+        } else {
+            DeleteOutcome::Missing
+        })
     })
+}
+
+/// Remove the session at `path` and its manifest entry. The caller must hold
+/// the reviews-dir lock. A file that is already gone still has its manifest
+/// entry pruned, so listings stop surfacing it.
+fn delete_session_unlocked(path: &Path, reviews_dir: &Path) -> Result<bool> {
+    if !path.exists() {
+        prune_manifest_path(reviews_dir, path)?;
+        return Ok(false);
+    }
+    let session = load_session(path)?;
+    remove_session_at(path, reviews_dir, &session)?;
+    Ok(true)
+}
+
+/// Drop every manifest entry pointing at `path`, whatever its slug. Used when
+/// the file is gone and its slug can no longer be read from it.
+fn prune_manifest_path(reviews_dir: &Path, path: &Path) -> Result<()> {
+    let relative = manifest_relative_path(path, reviews_dir);
+    let Ok(mut manifest) = manifest::load_manifest(reviews_dir) else {
+        return Ok(());
+    };
+    let before = manifest.len();
+    for bucket in manifest.entries.values_mut() {
+        bucket.retain(|entry| entry.path != relative);
+    }
+    manifest.entries.retain(|_, bucket| !bucket.is_empty());
+    if manifest.len() != before {
+        manifest::save_manifest(reviews_dir, &manifest)?;
+    }
+    Ok(())
+}
+
+fn manifest_relative_path(path: &Path, reviews_dir: &Path) -> PathBuf {
+    path.strip_prefix(reviews_dir)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// Remove `path` and prune its manifest entry. The caller must already hold
 /// the reviews-dir lock and have loaded `session` from `path`.
 fn remove_session_at(path: &Path, reviews_dir: &Path, session: &ReviewSession) -> Result<()> {
     let slug = slug_for_session(session)?.to_string();
-    let relative = path
-        .strip_prefix(reviews_dir)
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|_| path.to_path_buf());
+    let relative = manifest_relative_path(path, reviews_dir);
 
     let mut manifest = manifest::load_manifest(reviews_dir).unwrap_or_default();
     if let Some(bucket) = manifest.entries.get_mut(&slug) {
@@ -642,6 +740,30 @@ pub(crate) fn pr_session_path_in_dir(reviews_dir: &Path, slug: &str) -> Result<O
 /// requested head (the old head's file may still be on disk but is not
 /// surfaced).
 pub fn load_pr_session(key: &PrSessionKey) -> Result<Option<(PathBuf, ReviewSession)>> {
+    load_manifest_pr_session(key, |head_sha| head_sha == key.head_sha)
+}
+
+/// Look up the persisted session this PR was last reviewed at when that was
+/// a different head (the PR was pushed to or rebased since). Returns `None`
+/// if no entry exists for the slug, the entry is already at `key`'s head, or
+/// it belongs to another repository or PR: slugs leave out the host, so the
+/// same `owner/repo#N` on two hosts shares an entry.
+pub fn load_previous_head_pr_session(key: &PrSessionKey) -> Result<Option<ReviewSession>> {
+    Ok(
+        load_manifest_pr_session(key, |head_sha| head_sha != key.head_sha)?
+            .map(|(_path, session)| session)
+            .filter(|session| {
+                session.pr_session_key.as_ref().is_some_and(|previous| {
+                    previous.repository == key.repository && previous.number == key.number
+                })
+            }),
+    )
+}
+
+fn load_manifest_pr_session(
+    key: &PrSessionKey,
+    head_matches: impl Fn(&str) -> bool,
+) -> Result<Option<(PathBuf, ReviewSession)>> {
     let reviews_dir = get_reviews_dir()?;
     maybe_migrate(&reviews_dir)?;
 
@@ -652,7 +774,7 @@ pub fn load_pr_session(key: &PrSessionKey) -> Result<Option<(PathBuf, ReviewSess
     };
 
     match &entry.kind {
-        ManifestKind::Pr { head_sha, .. } if head_sha == &key.head_sha => {
+        ManifestKind::Pr { head_sha, .. } if head_matches(head_sha) => {
             let full_path = reviews_dir.join(&entry.path);
             let session = load_session(&full_path)?;
             Ok(Some((full_path, session)))
@@ -895,6 +1017,16 @@ mod tests {
         )
     }
 
+    /// A repo in a nested GitLab group: the owner is the whole `org/team`
+    /// namespace, not just the group it sits directly under.
+    fn make_gitlab_pr_key(number: u64, head_sha: &str) -> PrSessionKey {
+        PrSessionKey::new(
+            ForgeRepository::gitlab("gitlab.com", "org/team", "svc"),
+            number,
+            head_sha.to_string(),
+        )
+    }
+
     /// A checkout with a real `origin`, so the selector's coordinate comes from
     /// the remote URL rather than the directory name.
     fn make_repo_with_origin(url: &str) -> tempfile::TempDir {
@@ -935,6 +1067,31 @@ mod tests {
         let loaded = load_session(&path).unwrap();
         assert_eq!(session.id, loaded.id);
         assert_eq!(session.base_commit, loaded.base_commit);
+    }
+
+    #[test]
+    fn should_keep_an_empty_session_a_live_tuicr_has_open() {
+        // An agent emptying a session through `tuicr review delete` must not
+        // pull the file out from under the TUI polling it (#769).
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+        let session = make_local_session(
+            make_repo(),
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+        let path = save_session(&session).unwrap();
+        mark_session_active_in_dir(&session, &path, &reviews_dir).unwrap();
+
+        assert!(!delete_session_if_empty_and_inactive_in_dir(&path, &reviews_dir).unwrap());
+        assert!(path.exists(), "the open session must survive");
+
+        // Once the TUI is gone, an empty session is cleaned up as before.
+        clear_active_session_for_pid_in_dir(&reviews_dir).unwrap();
+        assert!(delete_session_if_empty_and_inactive_in_dir(&path, &reviews_dir).unwrap());
+        assert!(!path.exists());
     }
 
     #[test]
@@ -998,6 +1155,57 @@ mod tests {
         let reviews_dir = get_reviews_dir().unwrap();
         let missing = reviews_dir.join("does-not-exist.json");
         assert!(!delete_session(&missing).unwrap());
+    }
+
+    #[test]
+    fn should_prune_manifest_entry_when_deleting_a_session_whose_file_is_gone() {
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+        let session = make_local_session(
+            make_repo(),
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+        let path = save_session(&session).unwrap();
+        fs::remove_file(&path).unwrap();
+        assert_eq!(list_all_sessions_in_dir(&reviews_dir).unwrap().len(), 1);
+
+        let outcome = delete_inactive_session_in_dir(&path, &reviews_dir).unwrap();
+
+        assert_eq!(outcome, DeleteOutcome::Missing);
+        assert!(
+            list_all_sessions_in_dir(&reviews_dir).unwrap().is_empty(),
+            "a stale manifest entry would resurrect the row on the next listing"
+        );
+    }
+
+    #[test]
+    fn should_refuse_to_delete_a_session_marked_active_after_listing() {
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+        let session = make_local_session(
+            make_repo(),
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        );
+        let path = save_session(&session).unwrap();
+        // Registered only now, as if another tuicr opened it after a caller
+        // took its listing snapshot.
+        mark_session_active_in_dir(&session, &path, &reviews_dir).unwrap();
+
+        let outcome = delete_inactive_session_in_dir(&path, &reviews_dir).unwrap();
+
+        assert_eq!(outcome, DeleteOutcome::Active);
+        assert!(path.exists());
+
+        clear_active_session_for_pid_in_dir(&reviews_dir).unwrap();
+        let outcome = delete_inactive_session_in_dir(&path, &reviews_dir).unwrap();
+        assert_eq!(outcome, DeleteOutcome::Deleted);
+        assert!(!path.exists());
     }
 
     #[test]
@@ -1555,6 +1763,53 @@ mod tests {
                 .iter()
                 .any(|s| s.starts_with("myorg/myproject/myrepo@main/worktree")),
             "expected the local session under an org/project owner, got {slugs:?}"
+        );
+    }
+
+    #[test]
+    fn should_find_gitlab_subgroup_pr_session_by_repo_url_coordinate() {
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+        let key = make_gitlab_pr_key(123, "abcdef0123456789");
+        save_session(&make_pr_session(&key)).unwrap();
+
+        let listed = list_sessions_for_selector_in_dir(
+            &reviews_dir,
+            Path::new("https://gitlab.com/org/team/svc"),
+        )
+        .unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].0, "gl:org/team/svc/pr/123");
+    }
+
+    #[test]
+    fn should_surface_gitlab_subgroup_pr_session_from_its_checkout() {
+        let _g = with_test_reviews_dir();
+        let reviews_dir = get_reviews_dir().unwrap();
+
+        let checkout = make_repo_with_origin("git@gitlab.com:org/team/svc.git");
+        save_session(&make_local_session(
+            checkout.path().to_path_buf(),
+            "abc1234",
+            Some("main"),
+            SessionDiffSource::WorkingTree,
+            None,
+        ))
+        .unwrap();
+        let key = make_gitlab_pr_key(123, "abcdef0123456789");
+        save_session(&make_pr_session(&key)).unwrap();
+
+        let listed = list_sessions_for_selector_in_dir(&reviews_dir, checkout.path()).unwrap();
+        let slugs: Vec<&str> = listed.iter().map(|(slug, _)| slug.as_str()).collect();
+        assert!(
+            slugs.contains(&"gl:org/team/svc/pr/123"),
+            "expected the PR session, got {slugs:?}"
+        );
+        assert!(
+            slugs
+                .iter()
+                .any(|s| s.starts_with("org/team/svc@main/worktree")),
+            "expected the local session under the full namespace, got {slugs:?}"
         );
     }
 

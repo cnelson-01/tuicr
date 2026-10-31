@@ -14,7 +14,7 @@ use crate::error::{Result, TuicrError};
 #[cfg(test)]
 use crate::model::FileStatus;
 use crate::model::{DiffFile, DiffHunk, DiffLine, FilePatch, LineOrigin};
-use crate::syntax::{SyntaxHighlighter, needs_full_file_highlight};
+use crate::syntax::SyntaxHighlighter;
 
 /// Convert backend-structured file patches into renderable diff files.
 pub fn parse_file_patches(
@@ -90,7 +90,7 @@ fn parse_hunk<'a, I>(
     header: &str,
     lines: &mut std::iter::Peekable<I>,
     file_path: &Path,
-    highlighter: &SyntaxHighlighter,
+    _highlighter: &SyntaxHighlighter,
 ) -> Result<DiffHunk>
 where
     I: Iterator<Item = &'a str>,
@@ -179,21 +179,10 @@ where
             ));
         };
 
-        line_contents.push(super::tabify(content));
+        line_contents.push(content.to_string());
         line_origins.push(origin);
         line_numbers.push((old_ln, new_ln));
     }
-
-    let highlight_sequences =
-        SyntaxHighlighter::split_diff_lines_for_highlighting(&line_contents, &line_origins);
-    let (old_highlighted_lines, new_highlighted_lines) = if !needs_full_file_highlight(file_path) {
-        (
-            highlighter.highlight_file_lines(file_path, &highlight_sequences.old_lines),
-            highlighter.highlight_file_lines(file_path, &highlight_sequences.new_lines),
-        )
-    } else {
-        (None, None)
-    };
 
     let lines = line_contents
         .into_iter()
@@ -201,19 +190,13 @@ where
         .map(|(index, content)| {
             let origin = line_origins[index];
             let (old_lineno, new_lineno) = line_numbers[index];
-            let highlighted_spans = highlighter.highlighted_line_for_diff_with_background(
-                old_highlighted_lines.as_deref(),
-                new_highlighted_lines.as_deref(),
-                highlight_sequences.old_line_indices[index],
-                highlight_sequences.new_line_indices[index],
-                origin,
-            );
             DiffLine {
                 origin,
-                content,
+                raw_content: content.contains('\t').then(|| content.clone()),
+                content: super::tabify(&content),
                 old_lineno,
                 new_lineno,
-                highlighted_spans,
+                highlighted_spans: None,
             }
         })
         .collect();
@@ -304,6 +287,14 @@ pub(crate) fn git_fixture_file_patches(patch: &str) -> Vec<FilePatch> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preserves_raw_tabs_for_suggestions() {
+        let files = parse("@@ -1 +1 @@\n-old\n+\tnew\n").unwrap();
+        let line = &files[0].hunks[0].lines[1];
+        assert_eq!(line.content, "    new");
+        assert_eq!(line.raw_content.as_deref(), Some("\tnew"));
+    }
 
     fn parse(patch: &str) -> Result<Vec<DiffFile>> {
         parse_file_patches(

@@ -1,5 +1,6 @@
 use ratatui::style::{Color, Modifier, Style};
 
+use crate::model::LineOrigin;
 use crate::theme::Theme;
 
 pub fn selected_style(theme: &Theme) -> Style {
@@ -20,6 +21,32 @@ pub fn diff_del_style(theme: &Theme) -> Style {
 
 pub fn diff_context_style(theme: &Theme) -> Style {
     Style::default().fg(theme.diff_context)
+}
+
+/// Live background a syntax-highlighted diff span should show for a line of
+/// the given origin. `DiffLine.highlighted_spans` bakes in whatever
+/// `syntax_add_bg`/`syntax_del_bg` was active when the diff was loaded (or
+/// last rehighlighted); this lets renderers override that per-frame from the
+/// currently active theme instead of trusting the cached span's own
+/// background, so add/del backgrounds never lag behind the active theme even
+/// if a rehighlight was skipped or missed. `None` for context lines, which
+/// never carry a baked-in background (`syntax::apply_diff_background`
+/// intentionally excludes them).
+pub fn diff_syntax_bg(theme: &Theme, origin: LineOrigin) -> Option<Color> {
+    match origin {
+        LineOrigin::Addition => Some(theme.syntax_add_bg),
+        LineOrigin::Deletion => Some(theme.syntax_del_bg),
+        LineOrigin::Context => None,
+    }
+}
+
+/// Apply `diff_syntax_bg` to `style`, leaving it untouched when there is no
+/// live override for `origin` (context lines).
+pub fn patch_highlighted_span_bg(style: Style, theme: &Theme, origin: LineOrigin) -> Style {
+    match diff_syntax_bg(theme, origin) {
+        Some(bg) => style.bg(bg),
+        None => style,
+    }
 }
 
 pub fn expanded_context_style(theme: &Theme) -> Style {
@@ -86,8 +113,16 @@ pub fn file_status_style(theme: &Theme, status: char) -> Style {
     Style::default().fg(color)
 }
 
+/// Override only the marker foreground, preserving the caller's legacy style.
+pub fn selection_marker_style(theme: &Theme, fallback: Style) -> Style {
+    match theme.selection_marker {
+        Some(color) => fallback.fg(color),
+        None => fallback,
+    }
+}
+
 pub fn current_line_indicator_style(theme: &Theme) -> Style {
-    Style::default().fg(theme.border_focused)
+    selection_marker_style(theme, Style::default().fg(theme.border_focused))
 }
 
 pub fn hash_style(theme: &Theme) -> Style {
@@ -172,7 +207,7 @@ pub fn help_indicator_style(theme: &Theme) -> Style {
 }
 
 pub fn range_bar_style(theme: &Theme) -> Style {
-    Style::default().fg(theme.border_focused)
+    current_line_indicator_style(theme)
 }
 
 pub fn error_inline_style(theme: &Theme) -> Style {
@@ -202,4 +237,50 @@ const GRAPH_TRACK_PALETTE: &[Color] = &[
 /// Style for a commit-graph track by palette slot (wraps around).
 pub fn graph_track_style(_theme: &Theme, color_index: usize) -> Style {
     Style::default().fg(GRAPH_TRACK_PALETTE[color_index % GRAPH_TRACK_PALETTE.len()])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selection_marker_changes_only_marker_foregrounds() {
+        let mut theme = Theme::github_dark();
+        let legacy_pointer = selected_style(&theme);
+        assert_eq!(
+            selection_marker_style(&theme, legacy_pointer),
+            legacy_pointer
+        );
+        assert_eq!(
+            current_line_indicator_style(&theme).fg,
+            Some(theme.border_focused)
+        );
+        assert_eq!(range_bar_style(&theme).fg, Some(theme.border_focused));
+        let unchanged = (
+            border_style(&theme, true),
+            hash_style(&theme),
+            selected_style(&theme),
+            visual_selection_style(&theme),
+        );
+
+        theme.selection_marker = Some(Color::Rgb(36, 45, 56));
+        assert_eq!(
+            current_line_indicator_style(&theme).fg,
+            theme.selection_marker
+        );
+        assert_eq!(range_bar_style(&theme).fg, theme.selection_marker);
+        assert_eq!(
+            selection_marker_style(&theme, legacy_pointer).bg,
+            legacy_pointer.bg
+        );
+        assert_eq!(
+            unchanged,
+            (
+                border_style(&theme, true),
+                hash_style(&theme),
+                selected_style(&theme),
+                visual_selection_style(&theme)
+            )
+        );
+    }
 }

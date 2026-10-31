@@ -86,6 +86,7 @@ tuicr                       # Pick from a commit selector
 tuicr tui                   # Same TUI, explicit subcommand
 tuicr -w                    # Uncommitted changes (skip selector)
 tuicr -r main..HEAD         # Commit range
+tuicr --file f.md --line 42 # Annotate a file, starting at line 42
 tuicr pr 125                # GitHub, Gitea, Bitbucket, or Azure DevOps PR, or Gerrit change
 tuicr pr 125 --remote up    # Use a named Git remote's fetch URL
 tuicr mr 125                # GitLab MR
@@ -113,6 +114,8 @@ the view scrolls automatically to keep it visible. Press `Enter` to jump to the 
 in the continuous diff, leaving single-file view if necessary, or `Esc` to return to the diff. If
 its file or hunk is already marked reviewed, tuicr reveals the target without clearing that
 reviewed state.
+Press `dd` to delete the selected local draft, even if its original line or file is absent from
+this diff. Return with `Esc` and use `:w` to save the deletion, as with diff-view deletion.
 Auto-detects git, jj, or mercurial. SHA-256 Git repositories automatically use the Git CLI backend,
 including when reviewing root commits; ordinary SHA-1 repositories still default to libgit2.
 
@@ -189,7 +192,8 @@ unified-diff API, so the diff is built with `git diff base...head`. See
 `:submit` offers Comment, Approve, Request changes, or Draft on a Gerrit change. Inline comments
 post as Gerrit comments (multi-line ranges included) and the review-level comment becomes the
 change message; Approve votes `Code-Review +2` and Request changes votes `-1`. Draft keeps
-everything as Gerrit draft comments so you can publish from the web UI. Auth is your Gerrit HTTP
+everything as Gerrit draft comments so you can publish from the web UI; tuicr keeps showing them,
+marked `draft`. Auth is your Gerrit HTTP
 password in `GERRIT_USERNAME` / `GERRIT_PASSWORD`. Run tuicr from a local clone — the diff is
 built with `git diff base..head` after fetching the change's patch-set ref. See
 [docs/GERRIT.md](docs/GERRIT.md) for setup, detection of self-hosted hosts, and limitations.
@@ -209,7 +213,7 @@ I reviewed your code and have the following comments. Please address them.
 
 Paste it back to any coding agent (Claude, Codex, Cursor, etc).
 
-For an agent-driven workflow where your agent opens tuicr in a cmux, tmux, Zellij, or
+For an agent-driven workflow where your agent opens tuicr in a cmux, Rex, tmux, Zellij, or
 Herdr split pane, see [skills/tuicr/SKILL.md](skills/tuicr/SKILL.md).
 
 ### To stdout
@@ -224,7 +228,8 @@ tuicr --stdout | pbcopy
 ## Review session CLI
 
 `tuicr review` exposes saved sessions without opening the TUI. It can list
-sessions, add comments, and print stored comments for agent and script
+sessions, add, delete, and clear comments, and print stored comments for
+agent and script
 integrations. See [docs/REVIEW_CLI.md](docs/REVIEW_CLI.md).
 
 The TUI creates a persisted session file when a review target becomes active,
@@ -235,7 +240,9 @@ TUI sessions with `"active": true`.
 Inside the TUI, the review target selector's **Sessions** tab lists the saved
 reviews for the current checkout, so you can resume one by picking it instead of
 retyping the commit range it was opened with. Open it with `:sessions` or cycle
-to it with `Tab`.
+to it with `Tab`. Press `dd` to delete the review under the cursor after a
+confirmation prompt, and `a` to reveal reviews holding no comments and no
+reviewed files, which are hidden by default.
 
 ## Library API
 
@@ -317,23 +324,29 @@ and its keys, or `?` for the full reference.
 | `{` / `}` | Previous / next file |
 | `[` / `]` | Previous / next hunk |
 | `m` / `M` | Next / previous comment |
-| `/` | Search the diff, the file tree, or help — whichever is focused/open (case-insensitive) |
+| `/` | Search the diff by case-insensitive regex, or search the file tree/help by text — whichever is focused/open |
 | `n` / `N` | Next / previous search match (wraps); matches stay highlighted — `Esc` clears |
 | `i` / `e` (file tree) | Filter files in / out by regex; narrows the tree **and** the diff |
 | `I` / `E` (file tree) | Clear the include / exclude filter |
 | `c` / `C` | Add line / file comment |
 | `v` / `V` | Visual mode (range comment) |
+| `s` (visual mode) | Suggest changes to the selected code lines |
 | `r` | Toggle file reviewed |
 | `R` | Toggle hunk reviewed |
 | `e` | Open focused file in `$EDITOR` (in PR review: the PR's revision, as a read-only copy when the checkout differs) |
 | `y` | Copy review to clipboard |
 | `:edit` | Open focused file in `$EDITOR` |
 | `:submit` | Push review to GitHub, GitLab, Gitea, Bitbucket, Azure DevOps, or Gerrit |
+| `:theme` | Open a live-preview theme picker (`/` to filter); `:theme <name>` applies directly. Session-only; set `theme` in `config.toml` to keep it |
 | `Tab` in `:` prompt | Complete or cycle commands |
 | `;<` / `;>`, `;[` / `;]` | Move the side-by-side divider, resize the file tree (or drag them) |
 | `;z` | Zen mode: diff only |
 | `;g` / `;b` | Log pane (commit graph) / branch picker |
+| `Ctrl-l` | Redraw the whole screen |
 | `?` | Toggle full help |
+
+While composing a comment in the default editor, `↑` / `↓` move one displayed row,
+including wrapped rows, preserving the column where possible.
 
 Full reference in [docs/KEYBINDINGS.md](docs/KEYBINDINGS.md).
 

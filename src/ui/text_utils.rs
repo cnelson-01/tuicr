@@ -1,5 +1,6 @@
-use ratatui::{style::Style, text::Span};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use ratatui::{buffer::CellWidth, style::Style, text::Span};
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 pub(super) fn truncate_str(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
@@ -130,6 +131,53 @@ pub(super) fn truncate_or_pad_spans(
     }
 }
 
+/// A compiled diff search shared by navigation and rendering.
+pub(crate) struct SearchPattern {
+    regex: regex::Regex,
+    literal_folded: Option<String>,
+}
+
+impl SearchPattern {
+    pub(crate) fn new(source: &str) -> Result<Self, regex::Error> {
+        let regex = regex::RegexBuilder::new(source)
+            .case_insensitive(true)
+            .build()?;
+        // Preserve the existing Unicode folding for plain-text searches.
+        // Never fold regex syntax: e.g. \\S and \\s have different meanings.
+        let literal_folded = (!source.contains([
+            '\\', '.', '*', '+', '?', '(', ')', '|', '[', ']', '{', '}', '^', '$',
+        ]))
+        .then(|| fold_for_search(source));
+        Ok(Self {
+            regex,
+            literal_folded,
+        })
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        self.regex.as_str()
+    }
+
+    pub(crate) fn is_match(&self, text: &str) -> bool {
+        match &self.literal_folded {
+            Some(needle) => contains_fold(text, needle),
+            None => self.regex.is_match(text),
+        }
+    }
+
+    fn ranges(&self, text: &str) -> Vec<(usize, usize)> {
+        match &self.literal_folded {
+            Some(needle) => search_match_ranges(text, needle),
+            None => merge_touching_ranges(
+                self.regex
+                    .find_iter(text)
+                    .filter(|m| !m.is_empty())
+                    .map(|m| (m.start(), m.end())),
+            ),
+        }
+    }
+}
+
 fn fold_char(ch: char) -> impl Iterator<Item = char> {
     ch.to_lowercase().map(|c| if c == 'ς' { 'σ' } else { c })
 }
@@ -211,26 +259,42 @@ fn merge_touching_ranges(matches: impl Iterator<Item = (usize, usize)>) -> Vec<(
     ranges
 }
 
-pub(super) fn apply_search_highlight_pairs(
+pub(super) trait SearchMatcher {
+    fn match_ranges(&self, text: &str) -> Vec<(usize, usize)>;
+}
+
+impl SearchMatcher for str {
+    fn match_ranges(&self, text: &str) -> Vec<(usize, usize)> {
+        search_match_ranges(text, self)
+    }
+}
+
+impl SearchMatcher for SearchPattern {
+    fn match_ranges(&self, text: &str) -> Vec<(usize, usize)> {
+        self.ranges(text)
+    }
+}
+
+pub(super) fn apply_search_highlight_pairs<P: SearchMatcher + ?Sized>(
     pairs: &[(Style, String)],
-    needle_lower: &str,
+    pattern: &P,
     highlight: Style,
 ) -> Option<Vec<(Style, String)>> {
     let text: String = pairs.iter().map(|(_, t)| t.as_str()).collect();
-    let ranges = search_match_ranges(&text, needle_lower);
+    let ranges = pattern.match_ranges(&text);
     if ranges.is_empty() {
         return None;
     }
     Some(split_pairs_at_ranges(pairs, ranges, highlight))
 }
 
-pub(super) fn apply_search_highlight_text(
+pub(super) fn apply_search_highlight_text<P: SearchMatcher + ?Sized>(
     text: &str,
     style: Style,
-    needle_lower: &str,
+    pattern: &P,
     highlight: Style,
 ) -> Option<Vec<(Style, String)>> {
-    let ranges = search_match_ranges(text, needle_lower);
+    let ranges = pattern.match_ranges(text);
     if ranges.is_empty() {
         return None;
     }
@@ -241,13 +305,13 @@ pub(super) fn apply_search_highlight_text(
     ))
 }
 
-pub(super) fn apply_search_highlight_spans(
+pub(super) fn apply_search_highlight_spans<P: SearchMatcher + ?Sized>(
     spans: Vec<Span<'static>>,
-    needle_lower: &str,
+    pattern: &P,
     highlight: Style,
 ) -> Vec<Span<'static>> {
     let text: String = spans.iter().map(|span| span.content.as_ref()).collect();
-    let ranges = search_match_ranges(&text, needle_lower);
+    let ranges = pattern.match_ranges(&text);
     if ranges.is_empty() {
         return spans;
     }
@@ -307,58 +371,121 @@ fn split_pairs_at_ranges(
     out
 }
 
-/// Wrap a code row with a hanging indent: the first `gutter` columns (line
-/// number and marker) stay on the first visual row, the code wraps at
-/// `width - gutter`, and continuation rows start under the code with a
-/// blank gutter instead of at column 0.
-pub(super) fn wrap_spans_hanging<'a>(
-    spans: &[Span<'a>],
-    gutter: usize,
-    width: usize,
-) -> Vec<Vec<Span<'a>>> {
-    if width <= gutter + 1 {
-        return wrap_spans(spans, width);
+/// Cells one grapheme cluster takes when ratatui draws it. Tabs count as one
+/// cell, as they always have in `wrap_spans`; other control characters are
+/// not drawn at all.
+fn grapheme_cells(grapheme: &str) -> usize {
+    if grapheme == "\t" {
+        1
+    } else if grapheme.contains(char::is_control) {
+        0
+    } else {
+        usize::from(grapheme.cell_width())
     }
-    let mut head: Vec<Span<'a>> = Vec::new();
-    let mut body: Vec<Span<'a>> = Vec::new();
-    let mut used = 0usize;
-    for span in spans {
-        if used >= gutter {
-            body.push(span.clone());
-            continue;
+}
+
+/// Cells `text` takes when ratatui draws it.
+fn text_cells(text: &str) -> usize {
+    text.graphemes(true).map(grapheme_cells).sum()
+}
+
+/// `text` from char `start` on.
+fn chars_from(text: &str, start: usize) -> &str {
+    let byte = text
+        .char_indices()
+        .nth(start)
+        .map_or(text.len(), |(b, _)| b);
+    &text[byte..]
+}
+
+/// Cell column of char `offset` on a row of `text` that starts at char
+/// `row_start`. An offset inside a grapheme cluster resolves to the start of
+/// that cluster.
+pub(crate) fn col_of_char(text: &str, row_start: usize, offset: usize) -> usize {
+    let mut char_idx = row_start;
+    let mut col = 0;
+    for grapheme in chars_from(text, row_start).graphemes(true) {
+        char_idx += grapheme.chars().count();
+        if char_idx > offset {
+            break;
         }
-        let mut split_at = span.content.len();
-        let mut w = used;
-        for (i, ch) in span.content.char_indices() {
-            if w >= gutter {
-                split_at = i;
-                break;
-            }
-            w += unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-        }
-        let (a, b) = span.content.split_at(split_at);
-        head.push(Span::styled(a.to_string(), span.style));
-        used = w;
-        if !b.is_empty() {
-            body.push(Span::styled(b.to_string(), span.style));
-        }
+        col += grapheme_cells(grapheme);
     }
-    let mut rows = wrap_spans(&body, width - gutter);
-    if rows.is_empty() {
-        rows.push(Vec::new());
+    col
+}
+
+/// Char offset of the grapheme cluster drawn at cell `col` on the row of
+/// `text` spanning chars `[start, end)`, or `end` past the row's last cell.
+/// Every cell of a wide cluster maps to the cluster's first char.
+pub(crate) fn char_at_col(text: &str, (start, end): (usize, usize), col: usize) -> usize {
+    let mut char_idx = start;
+    let mut cluster_col = 0;
+    for grapheme in chars_from(text, start).graphemes(true) {
+        if char_idx >= end {
+            break;
+        }
+        let cells = grapheme_cells(grapheme);
+        if cells > 0 && col < cluster_col + cells {
+            return char_idx;
+        }
+        cluster_col += cells;
+        char_idx += grapheme.chars().count();
     }
-    rows.into_iter()
-        .enumerate()
-        .map(|(i, row)| {
-            let mut out = if i == 0 {
-                head.clone()
-            } else {
-                vec![Span::raw(" ".repeat(gutter))]
-            };
-            out.extend(row);
-            out
+    end
+}
+
+/// Char range `[start, end)` of `text` on each row when it is cut every
+/// `width` cells, keeping grapheme clusters whole.
+pub(crate) fn fixed_width_row_char_ranges(text: &str, width: usize) -> Vec<(usize, usize)> {
+    let width = width.max(1);
+    let mut ranges = Vec::new();
+    let (mut start, mut end, mut row_cells) = (0, 0, 0);
+    for grapheme in text.graphemes(true) {
+        let cells = grapheme_cells(grapheme);
+        if row_cells + cells > width && end > start {
+            ranges.push((start, end));
+            start = end;
+            row_cells = 0;
+        }
+        row_cells += cells;
+        end += grapheme.chars().count();
+    }
+    ranges.push((start, end));
+    ranges
+}
+
+/// Char range `[start, end)` of `text` on each row `wrap_spans` breaks it into.
+pub(crate) fn wrapped_row_char_ranges(text: &str, width: usize) -> Vec<(usize, usize)> {
+    let mut start = 0;
+    wrap_spans(&[Span::raw(text)], width)
+        .iter()
+        .map(|row| {
+            let len: usize = row.iter().map(|span| span.content.chars().count()).sum();
+            let range = (start, start + len);
+            start += len;
+            range
         })
         .collect()
+}
+
+pub(super) fn wrap_spans_hanging<'a>(
+    spans: &[Span<'a>],
+    content_start: Option<usize>,
+    width: usize,
+) -> Vec<Vec<Span<'a>>> {
+    let Some((gutter, body)) = content_start.and_then(|start| spans.split_at_checked(start)) else {
+        return wrap_spans(spans, width);
+    };
+    let indent: usize = gutter.iter().map(|span| span.content.width()).sum();
+    if indent >= width {
+        return wrap_spans(spans, width);
+    }
+    let mut rows = wrap_spans(body, width - indent);
+    rows[0].splice(0..0, gutter.iter().cloned());
+    for row in &mut rows[1..] {
+        row.insert(0, Span::raw(" ".repeat(indent)));
+    }
+    rows
 }
 
 pub(super) fn wrap_spans<'a>(spans: &[Span<'a>], width: usize) -> Vec<Vec<Span<'a>>> {
@@ -368,24 +495,24 @@ pub(super) fn wrap_spans<'a>(spans: &[Span<'a>], width: usize) -> Vec<Vec<Span<'
     if spans.is_empty() || spans.iter().all(|s| s.content.is_empty()) {
         return vec![vec![]];
     }
-    let total: usize = spans.iter().map(|s| s.content.width()).sum();
+    let total: usize = spans.iter().map(|s| text_cells(&s.content)).sum();
     if total <= width {
         return vec![spans.to_vec()];
     }
 
     #[derive(Clone, Copy)]
-    struct Item {
-        ch: char,
+    struct Item<'s> {
+        grapheme: &'s str,
         style: Style,
         w: usize,
     }
 
-    fn flush_unit(
-        unit: &mut Vec<Item>,
+    fn flush_unit<'s>(
+        unit: &mut Vec<Item<'s>>,
         unit_w: &mut usize,
-        current: &mut Vec<Item>,
+        current: &mut Vec<Item<'s>>,
         current_w: &mut usize,
-        rows: &mut Vec<Vec<Item>>,
+        rows: &mut Vec<Vec<Item<'s>>>,
         width: usize,
     ) {
         if unit.is_empty() {
@@ -444,14 +571,14 @@ pub(super) fn wrap_spans<'a>(spans: &[Span<'a>], width: usize) -> Vec<Vec<Span<'
     let mut word_w: usize = 0;
 
     for span in spans {
-        for ch in span.content.chars() {
-            let w = UnicodeWidthChar::width(ch).unwrap_or(if ch == '\t' { 1 } else { 0 });
+        for grapheme in span.content.graphemes(true) {
+            let w = grapheme_cells(grapheme);
             let item = Item {
-                ch,
+                grapheme,
                 style: span.style,
                 w,
             };
-            if ch == ' ' || ch == '\t' {
+            if grapheme == " " || grapheme == "\t" {
                 flush_unit(
                     &mut word,
                     &mut word_w,
@@ -495,13 +622,13 @@ pub(super) fn wrap_spans<'a>(spans: &[Span<'a>], width: usize) -> Vec<Vec<Span<'
             let mut cur_style: Option<Style> = None;
             for it in row {
                 match cur_style {
-                    Some(s) if s == it.style => buf.push(it.ch),
+                    Some(s) if s == it.style => buf.push_str(it.grapheme),
                     _ => {
                         if let Some(s) = cur_style {
                             out.push(Span::styled(std::mem::take(&mut buf), s));
                         }
                         cur_style = Some(it.style);
-                        buf.push(it.ch);
+                        buf.push_str(it.grapheme);
                     }
                 }
             }
@@ -525,7 +652,7 @@ mod tests {
             Span::raw("+ "),
             Span::raw("abcdefghijklmnop"),
         ];
-        let rows = wrap_spans_hanging(&spans, 6, 12);
+        let rows = wrap_spans_hanging(&spans, Some(2), 12);
         let text: Vec<String> = rows
             .iter()
             .map(|r| r.iter().map(|s| s.content.as_ref()).collect())
@@ -535,8 +662,11 @@ mod tests {
 
     #[test]
     fn hanging_wrap_falls_back_when_there_is_no_room_for_code() {
-        let spans = vec![Span::raw(" 12 + abc")];
-        assert_eq!(wrap_spans_hanging(&spans, 6, 6), wrap_spans(&spans, 6));
+        let spans = vec![Span::raw(" 12 "), Span::raw("+ "), Span::raw("abc")];
+        assert_eq!(
+            wrap_spans_hanging(&spans, Some(2), 6),
+            wrap_spans(&spans, 6)
+        );
     }
 
     fn flatten<'a>(row: &[Span<'a>]) -> Vec<(Style, String)> {
@@ -612,6 +742,45 @@ mod tests {
             total_chars, width,
             "padded spans should have exactly {width} chars, got {total_chars}"
         );
+    }
+
+    #[test]
+    fn should_highlight_regex_matches_across_syntax_spans_and_unicode_boundaries() {
+        let red = Style::default().fg(Color::Red);
+        let blue = Style::default().fg(Color::Blue);
+        let hl = Style::default().bg(Color::Yellow);
+        let pairs = vec![(red, "éfoo".to_string()), (blue, "12 bar34!".to_string())];
+        let pattern = SearchPattern::new(r"(foo|bar)\d+").unwrap();
+        assert!(pattern.is_match("éfoo12 bar34!"));
+        assert_eq!(
+            apply_search_highlight_pairs(&pairs, &pattern, hl).unwrap(),
+            vec![
+                (red, "é".to_string()),
+                (red.patch(hl), "foo".to_string()),
+                (blue.patch(hl), "12".to_string()),
+                (blue, " ".to_string()),
+                (blue.patch(hl), "bar34".to_string()),
+                (blue, "!".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn should_navigate_zero_width_regex_matches_without_painting_empty_ranges() {
+        let pattern = SearchPattern::new(r"^|$").unwrap();
+        assert!(pattern.is_match("hello"));
+        assert!(pattern.ranges("hello").is_empty());
+        let pattern = SearchPattern::new(r"^|foo").unwrap();
+        assert_eq!(pattern.ranges("xfoo"), vec![(1, 4)]);
+    }
+
+    #[test]
+    fn should_preserve_unicode_folding_for_plain_search_patterns() {
+        for (text, query) in [("İstanbul", "i"), ("ΟΔΟΣ", "οδος")] {
+            let pattern = SearchPattern::new(query).unwrap();
+            assert!(pattern.is_match(text));
+            assert!(!pattern.ranges(text).is_empty());
+        }
     }
 
     #[test]
@@ -754,6 +923,57 @@ mod tests {
     }
 
     #[test]
+    fn should_wrap_body_beside_gutter_with_blank_continuation_gutters() {
+        let green = Style::default().fg(Color::Green);
+        let blue = Style::default().fg(Color::Blue);
+        let gutter = [Span::raw(" 1 "), Span::styled("▌ ", green)];
+        for (body, width, expected) in [
+            (
+                "hello world foo",
+                11,
+                vec![" 1 ▌ hello ", "     world ", "     foo"],
+            ),
+            ("abcdefghij", 9, vec![" 1 ▌ abcd", "     efgh", "     ij"]),
+            ("中文測試", 9, vec![" 1 ▌ 中文", "     測試"]),
+            ("hello", 10, vec![" 1 ▌ hello"]),
+            ("", 10, vec![" 1 ▌ "]),
+        ] {
+            let mut spans = gutter.to_vec();
+            spans.push(Span::styled(body, blue));
+            let rows = wrap_spans_hanging(&spans, Some(gutter.len()), width);
+            let text: Vec<String> = rows
+                .iter()
+                .map(|row| row.iter().map(|span| span.content.as_ref()).collect())
+                .collect();
+            assert_eq!(text, expected);
+            assert_eq!(rows[0][1].style, green);
+            for row in rows {
+                assert!(row.iter().map(|span| span.content.width()).sum::<usize>() <= width);
+                if !body.is_empty() {
+                    assert_eq!(row.last().unwrap().style, blue);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn should_fall_back_to_plain_wrapping() {
+        let spans = [Span::raw(" 1 ▌ "), Span::raw("hello world")];
+        for width in 0..=5 {
+            assert_eq!(
+                wrap_spans_hanging(&spans, Some(1), width),
+                wrap_spans(&spans, width)
+            );
+        }
+        for content_start in [None, Some(3)] {
+            assert_eq!(
+                wrap_spans_hanging(&spans, content_start, 8),
+                wrap_spans(&spans, 8)
+            );
+        }
+    }
+
+    #[test]
     fn should_return_single_row_when_input_fits() {
         let spans = vec![Span::raw("hello")];
         let rows = wrap_spans(&spans, 10);
@@ -847,6 +1067,87 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0][0].content, "中文");
         assert_eq!(rows[1][0].content, "測試");
+    }
+
+    #[test]
+    fn should_wrap_emoji_presentation_sequences_as_two_cells() {
+        // given - U+2764 is one cell on its own; with U+FE0F it is drawn as two
+        let spans = vec![Span::raw("❤\u{FE0F}❤\u{FE0F}")];
+        // when
+        let rows = wrap_spans(&spans, 3);
+        // then
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0][0].content, "❤\u{FE0F}");
+        assert_eq!(rows[1][0].content, "❤\u{FE0F}");
+    }
+
+    #[test]
+    fn should_not_split_zwj_sequences_across_rows() {
+        // given
+        let family = "👨\u{200D}👩\u{200D}👧";
+        let spans = vec![Span::raw(format!("ab{family}"))];
+        // when
+        let rows = wrap_spans(&spans, 3);
+        // then
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0][0].content, "ab");
+        assert_eq!(rows[1][0].content, family);
+    }
+
+    #[test]
+    fn should_map_cells_to_the_grapheme_cluster_drawn_there() {
+        // given - cells: 中 0-1, e+U+0301 2, family 3-4, ❤️ 5-6, x 7
+        let text = "中e\u{301}👨\u{200D}👩\u{200D}👧❤\u{FE0F}x";
+        let total = text.chars().count();
+        // when
+        let offsets: Vec<usize> = (0..9)
+            .map(|col| char_at_col(text, (0, total), col))
+            .collect();
+        // then
+        assert_eq!(offsets, [0, 0, 1, 3, 3, 8, 8, 10, 11]);
+    }
+
+    #[test]
+    fn should_map_cells_relative_to_the_row_start() {
+        // given - the row holds "文測" out of "中文測試"
+        let text = "中文測試";
+        // when
+        let offsets: Vec<usize> = (0..5).map(|col| char_at_col(text, (1, 3), col)).collect();
+        // then
+        assert_eq!(offsets, [1, 1, 2, 2, 3]);
+    }
+
+    #[test]
+    fn should_place_chars_at_the_cell_their_cluster_starts_on() {
+        // given
+        let text = "中e\u{301}👨\u{200D}👩\u{200D}👧❤\u{FE0F}x";
+        // when
+        let cols: Vec<usize> = (0..=11)
+            .map(|offset| col_of_char(text, 0, offset))
+            .collect();
+        // then - offsets inside a cluster resolve to the cluster's first cell
+        assert_eq!(cols, [0, 2, 2, 3, 3, 3, 3, 3, 5, 5, 7, 8]);
+        assert_eq!(col_of_char("中文測試", 2, 4), 4);
+    }
+
+    #[test]
+    fn should_cut_fixed_width_rows_by_cells_without_splitting_clusters() {
+        assert_eq!(fixed_width_row_char_ranges("中文測試", 5), [(0, 2), (2, 4)]);
+        assert_eq!(
+            fixed_width_row_char_ranges("ae\u{301}bc", 2),
+            [(0, 3), (3, 5)]
+        );
+        assert_eq!(fixed_width_row_char_ranges("中", 1), [(0, 1)]);
+        assert_eq!(fixed_width_row_char_ranges("", 4), [(0, 0)]);
+    }
+
+    #[test]
+    fn should_report_wrapped_row_ranges_in_chars_for_wide_text() {
+        assert_eq!(wrapped_row_char_ranges("中文測試", 5), [(0, 2), (2, 4)]);
+        assert_eq!(
+            wrapped_row_char_ranges("ab👨\u{200D}👩\u{200D}👧", 3),
+            [(0, 2), (2, 7)]
+        );
     }
 
     #[test]

@@ -62,6 +62,7 @@ impl App {
         }
 
         self.line_annotations.clear();
+        self.colored_hunks.clear();
 
         // Pre-index remote threads by (path, line, side) for quick lookup
         // during the file/hunk walk. Threads whose visibility is
@@ -111,7 +112,7 @@ impl App {
 
         // Emit annotation entries for remote review-level threads (line: None).
         {
-            use crate::forge::remote_comments::{PrCommentsVisibility, thread_display_lines};
+            use crate::forge::remote_comments::PrCommentsVisibility;
             let visibility = self.session.remote_comments_visibility;
             if !matches!(visibility, PrCommentsVisibility::Hide) {
                 for (thread_idx, thread) in self.forge_review_threads.iter().enumerate() {
@@ -121,11 +122,11 @@ impl App {
                     let Some(_muted) = visibility.render_decision(thread) else {
                         continue;
                     };
-                    let n = thread_display_lines(thread);
-                    for _ in 0..n {
-                        self.line_annotations
-                            .push(AnnotatedLine::RemoteThreadLine { thread_idx });
-                    }
+                    Self::push_remote_thread_annotations(
+                        &mut self.line_annotations,
+                        thread_idx,
+                        thread,
+                    );
                 }
             }
         }
@@ -466,6 +467,21 @@ impl App {
         RemoteThreadIndex { by_file }
     }
 
+    /// Push one annotation for every rendered row in a remote thread, retaining
+    /// the comment that owns each header, body, separator, and footer row.
+    fn push_remote_thread_annotations(
+        annotations: &mut Vec<AnnotatedLine>,
+        thread_idx: usize,
+        thread: &crate::forge::remote_comments::RemoteReviewThread,
+    ) {
+        for comment_idx in crate::forge::remote_comments::thread_display_comment_indices(thread) {
+            annotations.push(AnnotatedLine::RemoteThreadLine {
+                thread_idx,
+                comment_idx,
+            });
+        }
+    }
+
     fn push_remote_threads(
         annotations: &mut Vec<AnnotatedLine>,
         threads: &[crate::forge::remote_comments::RemoteReviewThread],
@@ -482,12 +498,7 @@ impl App {
         };
         for thread_idx in thread_indices {
             if let Some(thread) = threads.get(*thread_idx) {
-                let n = crate::forge::remote_comments::thread_display_lines(thread);
-                for _ in 0..n {
-                    annotations.push(AnnotatedLine::RemoteThreadLine {
-                        thread_idx: *thread_idx,
-                    });
-                }
+                Self::push_remote_thread_annotations(annotations, *thread_idx, thread);
             }
         }
     }

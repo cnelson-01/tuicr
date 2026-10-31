@@ -37,11 +37,55 @@ struct SbsRowMeta {
     right_pad_style: Style,
 }
 
+type WrappedRows = Vec<Vec<Span<'static>>>;
+
+/// Each side's wrapped rows at its own column width (the divider can sit
+/// off-centre). An empty side is one blank row.
+fn sbs_wrapped_sides(
+    meta: &SbsRowMeta,
+    left_width: usize,
+    right_width: usize,
+) -> (WrappedRows, WrappedRows) {
+    let side = |content: &[Span<'static>], width: usize| {
+        if content.is_empty() {
+            vec![Vec::new()]
+        } else {
+            wrap_spans(content, width)
+        }
+    };
+    (
+        side(&meta.left_content, left_width),
+        side(&meta.right_content, right_width),
+    )
+}
+
+fn sbs_row_height(
+    lines: &[Line],
+    sbs_meta: &std::collections::HashMap<usize, SbsRowMeta>,
+    idx: usize,
+    wrap: bool,
+    (left_width, right_width): (usize, usize),
+    viewport_width: usize,
+) -> usize {
+    if !wrap || left_width == 0 || right_width == 0 {
+        return 1;
+    }
+    match sbs_meta.get(&idx) {
+        Some(meta) => {
+            let (left_rows, right_rows) = sbs_wrapped_sides(meta, left_width, right_width);
+            left_rows.len().max(right_rows.len())
+        }
+        None => lines
+            .get(idx)
+            .map_or(1, |line| wrap_spans(&line.spans, viewport_width).len()),
+    }
+}
+
 fn content_spans_for_diff_line(
     theme: &Theme,
     dl: &DiffLine,
     origin: LineOrigin,
-    search: Option<(&str, Style)>,
+    search: Option<(&crate::ui::text_utils::SearchPattern, Style)>,
     emphasis: Option<&[std::ops::Range<usize>]>,
 ) -> Vec<Span<'static>> {
     let base = match origin {
@@ -50,7 +94,14 @@ fn content_spans_for_diff_line(
         LineOrigin::Deletion => styles::diff_del_style(theme),
     };
     let mut spans: Vec<Span<'static>> = if let Some(ref h) = dl.highlighted_spans {
-        h.iter().map(|(s, t)| Span::styled(t.clone(), *s)).collect()
+        h.iter()
+            .map(|(s, t)| {
+                Span::styled(
+                    t.clone(),
+                    styles::patch_highlighted_span_bg(*s, theme, origin),
+                )
+            })
+            .collect()
     } else {
         vec![Span::styled(dl.content.clone(), base)]
     };
@@ -71,7 +122,7 @@ fn searched_cell_spans(
     pairs: &[(Style, String)],
     width: usize,
     pad_style: Style,
-    search: Option<(&str, Style)>,
+    search: Option<(&crate::ui::text_utils::SearchPattern, Style)>,
 ) -> Vec<Span<'static>> {
     if let Some((needle, hl)) = search
         && let Some(highlighted) = apply_search_highlight_pairs(pairs, needle, hl)
@@ -85,7 +136,7 @@ fn plain_cell_spans(
     content: &str,
     style: Style,
     width: usize,
-    search: Option<(&str, Style)>,
+    search: Option<(&crate::ui::text_utils::SearchPattern, Style)>,
 ) -> Vec<Span<'static>> {
     if let Some((needle, hl)) = search
         && let Some(highlighted) = apply_search_highlight_text(content, style, needle, hl)
@@ -394,7 +445,10 @@ impl SideBySideContext<'_> {
         crate::ui::diff_view::comment_box_visible(top, rows, (self.visible_start, self.visible_end))
     }
 
-    fn search_for(&self, line_idx: usize) -> Option<(&str, Style)> {
+    fn search_for(
+        &self,
+        line_idx: usize,
+    ) -> Option<(&crate::ui::text_utils::SearchPattern, Style)> {
         let needle = self.app.search_paint_at(line_idx)?;
         Some((needle, self.search_style))
     }
@@ -402,7 +456,7 @@ impl SideBySideContext<'_> {
     fn display_lineno(&self, source_line: Option<u32>, line_idx: usize) -> Option<u32> {
         source_line.map(|line| {
             if self.app.relative_line_numbers {
-                line_idx.abs_diff(self.current_line_idx) as u32
+                crate::ui::diff_view::relative_line_number(line, line_idx, self.current_line_idx)
             } else {
                 line
             }
@@ -1080,12 +1134,24 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
     app.comment_input_annotation_offset = annotation_offset;
 
     // Auto-scroll so the comment input box stays visible while the user types.
+    let wrap = app.diff_state.wrap_lines;
+    let viewport_width = inner.width as usize;
     scroll_comment_input_into_view(
         &mut app.diff_state.scroll_offset,
         comment_input_box_range,
         comment_cursor_logical_line,
         inner.height as usize,
         lines.len(),
+        |idx| {
+            sbs_row_height(
+                &lines,
+                &sbs_meta,
+                idx,
+                wrap,
+                (left_width, right_width),
+                viewport_width,
+            )
+        },
     );
 
     let visible_lines_unscrolled: Vec<Line> = lines
@@ -1116,8 +1182,6 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
     app.diff_state.max_content_width = max_content_width;
 
     let scroll_offset = app.diff_state.scroll_offset;
-    let wrap = app.diff_state.wrap_lines;
-    let viewport_width = inner.width as usize;
     let visible_lines_unscrolled_for_overlay = visible_lines_unscrolled.clone();
     // Single pass: wrap each logical line once, producing both the visual
     // rows to render and the per-line height used by every row-mapping
@@ -1133,17 +1197,8 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
             let logical_idx = scroll_offset + i;
             match sbs_meta.get(&logical_idx) {
                 Some(m) => {
-                    let left_rows = if m.left_content.is_empty() {
-                        vec![Vec::new()]
-                    } else {
-                        wrap_spans(&m.left_content, left_width)
-                    };
-                    let right_rows = if m.right_content.is_empty() {
-                        vec![Vec::new()]
-                    } else {
-                        wrap_spans(&m.right_content, right_width)
-                    };
-                    let n = left_rows.len().max(right_rows.len()).max(1);
+                    let (left_rows, right_rows) = sbs_wrapped_sides(m, left_width, right_width);
+                    let n = left_rows.len().max(right_rows.len());
                     heights.push(n);
                     let empty_row: Vec<Span> = Vec::new();
                     for k in 0..n {
@@ -2003,7 +2058,7 @@ fn add_deletion_spans(
     content_width: usize,
     lw: usize,
     display_lineno: Option<u32>,
-    search: Option<(&str, Style)>,
+    search: Option<(&crate::ui::text_utils::SearchPattern, Style)>,
 ) {
     let line_num = display_lineno
         .map(|n| format!("{n:>lw$}"))
@@ -2018,8 +2073,16 @@ fn add_deletion_spans(
     // Use syntax highlighting if available
     if let Some(ref highlighted) = diff_line.highlighted_spans {
         let syntax_pad_style = Style::default().fg(theme.diff_del).bg(theme.syntax_del_bg);
-        let content_spans =
-            searched_cell_spans(highlighted, content_width, syntax_pad_style, search);
+        let patched: Vec<(Style, String)> = highlighted
+            .iter()
+            .map(|(s, t)| {
+                (
+                    styles::patch_highlighted_span_bg(*s, theme, LineOrigin::Deletion),
+                    t.clone(),
+                )
+            })
+            .collect();
+        let content_spans = searched_cell_spans(&patched, content_width, syntax_pad_style, search);
         spans.extend(content_spans);
     } else {
         spans.extend(plain_cell_spans(
@@ -2039,7 +2102,7 @@ fn add_addition_spans(
     content_width: usize,
     lw: usize,
     display_lineno: Option<u32>,
-    search: Option<(&str, Style)>,
+    search: Option<(&crate::ui::text_utils::SearchPattern, Style)>,
 ) {
     let line_num = display_lineno
         .map(|n| format!("{n:>lw$}"))
@@ -2054,8 +2117,16 @@ fn add_addition_spans(
     // Use syntax highlighting if available
     if let Some(ref highlighted) = diff_line.highlighted_spans {
         let syntax_pad_style = Style::default().fg(theme.diff_add).bg(theme.syntax_add_bg);
-        let content_spans =
-            searched_cell_spans(highlighted, content_width, syntax_pad_style, search);
+        let patched: Vec<(Style, String)> = highlighted
+            .iter()
+            .map(|(s, t)| {
+                (
+                    styles::patch_highlighted_span_bg(*s, theme, LineOrigin::Addition),
+                    t.clone(),
+                )
+            })
+            .collect();
+        let content_spans = searched_cell_spans(&patched, content_width, syntax_pad_style, search);
         spans.extend(content_spans);
     } else {
         spans.extend(plain_cell_spans(
@@ -2380,6 +2451,7 @@ mod remote_comments_side_by_side_snapshot_tests {
                 content: "first".to_string(),
                 old_lineno: Some(1),
                 new_lineno: Some(1),
+                raw_content: None,
                 highlighted_spans: None,
             },
             DiffLine {
@@ -2387,6 +2459,7 @@ mod remote_comments_side_by_side_snapshot_tests {
                 content: "second".to_string(),
                 old_lineno: None,
                 new_lineno: Some(2),
+                raw_content: None,
                 highlighted_spans: None,
             },
         ];
@@ -2424,9 +2497,8 @@ mod remote_comments_side_by_side_snapshot_tests {
                 id: "C".to_string(),
                 author: Some("alice".to_string()),
                 body: "sbs hello".to_string(),
-                created_at: None,
-                in_reply_to: None,
                 url: "https://example.com".to_string(),
+                ..Default::default()
             }],
         }
     }
@@ -2517,6 +2589,7 @@ mod remote_comments_side_by_side_snapshot_tests {
                 content: format!("line {n}"),
                 old_lineno: None,
                 new_lineno: Some(n),
+                raw_content: None,
                 highlighted_spans: None,
             })
             .collect();
@@ -2578,7 +2651,6 @@ mod remote_comments_side_by_side_snapshot_tests {
         let mut app = make_pr_app();
         app.forge_review_threads = vec![thread()];
         app.rebuild_annotations();
-        // when
         let buffer = draw(&mut app);
         // then
         let body = body_text(&buffer);
@@ -2594,7 +2666,6 @@ mod remote_comments_side_by_side_snapshot_tests {
         let mut app = make_pr_app();
         app.forge_review_threads = vec![thread()];
         app.set_remote_comments_visibility(PrCommentsVisibility::Hide);
-        // when
         let buffer = draw(&mut app);
         // then
         let body = body_text(&buffer);
@@ -2611,6 +2682,7 @@ mod remote_comments_side_by_side_snapshot_tests {
                 content: left.to_string(),
                 old_lineno: Some(1),
                 new_lineno: None,
+                raw_content: None,
                 highlighted_spans: None,
             },
             DiffLine {
@@ -2618,6 +2690,7 @@ mod remote_comments_side_by_side_snapshot_tests {
                 content: right.to_string(),
                 old_lineno: None,
                 new_lineno: Some(1),
+                raw_content: None,
                 highlighted_spans: None,
             },
         ];
@@ -2648,6 +2721,7 @@ mod remote_comments_side_by_side_snapshot_tests {
             content: left.to_string(),
             old_lineno: Some(1),
             new_lineno: None,
+            raw_content: None,
             highlighted_spans: None,
         }];
         let hunks = vec![DiffHunk {
@@ -2869,6 +2943,7 @@ mod remote_comments_side_by_side_snapshot_tests {
                 content: line.to_string(),
                 old_lineno: None,
                 new_lineno: Some(i as u32 + 1),
+                raw_content: None,
                 highlighted_spans: None,
             })
             .collect();
@@ -3103,5 +3178,146 @@ mod remote_comments_side_by_side_snapshot_tests {
             .unwrap() as u16;
         let point = app.cell_to_sel_point(col, row).expect("a selection point");
         assert_eq!(point.char_offset, 60, "column maps to the panned text");
+    }
+
+    fn wrapping_diff_file(count: u32) -> DiffFile {
+        let lines: Vec<DiffLine> = (1..=count)
+            .map(|i| DiffLine {
+                origin: LineOrigin::Addition,
+                content: format!("line {i} {}", "x".repeat(200)),
+                old_lineno: None,
+                new_lineno: Some(i),
+                raw_content: None,
+                highlighted_spans: None,
+            })
+            .collect();
+        let hunks = vec![DiffHunk {
+            header: format!("@@ -0,0 +1,{count} @@"),
+            lines,
+            old_start: 0,
+            old_count: 0,
+            new_start: 1,
+            new_count: count,
+        }];
+        let content_hash = DiffFile::compute_content_hash(&hunks);
+        DiffFile {
+            old_path: None,
+            new_path: Some(PathBuf::from("src/lib.rs")),
+            status: FileStatus::Added,
+            hunks,
+            is_binary: false,
+            is_too_large: false,
+            is_commit_message: false,
+            content_hash,
+        }
+    }
+
+    #[test]
+    fn should_show_comment_input_at_eof_when_lines_wrap() {
+        let mut app = make_pr_app();
+        app.diff_files = vec![wrapping_diff_file(40)];
+        app.set_diff_wrap(true);
+        app.rebuild_annotations();
+        let _ = draw_sbs(&mut app, 160, 20);
+        app.jump_to_bottom();
+        app.enter_comment_mode(false, Some((40, LineSide::New)));
+        let buf = draw_sbs(&mut app, 160, 20);
+        let body = body_text(&buf);
+        assert!(
+            body.contains("Type your comment..."),
+            "expected the comment input box to be visible in:\n{body}"
+        );
+    }
+
+    /// Context at old 40-41 / new 50-51, a deleted line 42 replaced by new 52,
+    /// then context at old 43 / new 53.
+    fn relative_numbering_file() -> DiffFile {
+        let line = |origin, content: &str, old_lineno, new_lineno| DiffLine {
+            origin,
+            content: content.to_string(),
+            old_lineno,
+            new_lineno,
+            raw_content: None,
+            highlighted_spans: None,
+        };
+        let lines = vec![
+            line(LineOrigin::Context, "alpha", Some(40), Some(50)),
+            line(LineOrigin::Context, "bravo", Some(41), Some(51)),
+            line(LineOrigin::Deletion, "charlie", Some(42), None),
+            line(LineOrigin::Addition, "delta", None, Some(52)),
+            line(LineOrigin::Context, "echo", Some(43), Some(53)),
+        ];
+        let hunks = vec![DiffHunk {
+            header: "@@ -40,4 +50,4 @@".to_string(),
+            lines,
+            old_start: 40,
+            old_count: 4,
+            new_start: 50,
+            new_count: 4,
+        }];
+        let content_hash = DiffFile::compute_content_hash(&hunks);
+        DiffFile {
+            old_path: Some(PathBuf::from("src/lib.rs")),
+            new_path: Some(PathBuf::from("src/lib.rs")),
+            status: FileStatus::Modified,
+            hunks,
+            is_binary: false,
+            is_too_large: false,
+            is_commit_message: false,
+            content_hash,
+        }
+    }
+
+    /// Numbers printed on the screen row of `annotation`. Content words in
+    /// `relative_numbering_file` have no digits, so these are the gutters.
+    fn gutter_numbers(app: &App, buffer: &Buffer, annotation: usize) -> Vec<u32> {
+        let inner = app.diff_inner_area.unwrap();
+        let row = app
+            .diff_row_to_annotation
+            .iter()
+            .position(|&idx| idx == annotation)
+            .unwrap();
+        let text: String = (inner.x..inner.x + inner.width)
+            .map(|x| buffer[(x, inner.y + row as u16)].symbol().to_string())
+            .collect();
+        text.split_whitespace()
+            .filter_map(|token| token.parse().ok())
+            .collect()
+    }
+
+    #[test]
+    fn should_show_absolute_numbers_on_cursor_row_with_relative_numbers() {
+        let mut app = make_pr_app_with(vec![relative_numbering_file()]);
+        app.relative_line_numbers = true;
+        app.rebuild_annotations();
+        let find = |app: &App, old: u32, new: u32| {
+            app.line_annotations
+                .iter()
+                .position(|annotation| {
+                    matches!(
+                        annotation,
+                        crate::app::AnnotatedLine::SideBySideLine { old_lineno, new_lineno, .. }
+                            if *old_lineno == Some(old) && *new_lineno == Some(new)
+                    )
+                })
+                .unwrap()
+        };
+        let alpha = find(&app, 40, 50);
+        let bravo = find(&app, 41, 51);
+        let changed = find(&app, 42, 52);
+        let echo = find(&app, 43, 53);
+
+        // Each gutter shows the cursor row's own old/new number.
+        app.diff_state.cursor_line = changed;
+        let buffer = draw_sbs(&mut app, 160, 20);
+        assert_eq!(gutter_numbers(&app, &buffer, changed), vec![42, 52]);
+        assert_eq!(gutter_numbers(&app, &buffer, bravo), vec![1, 1]);
+        assert_eq!(gutter_numbers(&app, &buffer, alpha), vec![2, 2]);
+        assert_eq!(gutter_numbers(&app, &buffer, echo), vec![1, 1]);
+
+        app.diff_state.cursor_line = bravo;
+        let buffer = draw_sbs(&mut app, 160, 20);
+        assert_eq!(gutter_numbers(&app, &buffer, bravo), vec![41, 51]);
+        assert_eq!(gutter_numbers(&app, &buffer, changed), vec![1, 1]);
     }
 }

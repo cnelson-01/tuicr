@@ -36,13 +36,31 @@ width, and always ends with `^p actions`.
 | `{` / `}` | Jump to previous / next file |
 | `[` / `]` | Jump to previous / next hunk |
 | `m` / `M` | Jump to next / previous comment |
-| `/` | Search within diff (case-insensitive); matches on diff content are highlighted and the status bar shows the `[current/total]` position (headers, comments, and PR info are searchable but not highlighted) |
+| `/` | Search within diff (case-insensitive regex); matches on diff content are highlighted and the status bar shows the `[current/total]` position (headers, comments, and PR info are searchable but not highlighted) |
 | `n` / `N` | Next / previous search match (wraps around) |
 | `Esc` | Clear search-match highlighting; the pattern is kept so `n` / `N` still work |
 | `Enter` | Expand or collapse hidden context between hunks |
 | `zt` | Scroll cursor to top of screen |
 | `zz` | Center cursor on screen |
 | `zb` | Scroll cursor to bottom of screen |
+| `Ctrl-l` | Clear and redraw the whole screen |
+
+`Ctrl-l` works in every mode, including while typing a comment, a `:` command or
+a search. Use it when the terminal leaves stale text on screen, for example after
+a font size change in a window that wasn't visible. tuicr also redraws in full
+whenever the terminal reports a resize.
+
+## Diff search
+
+Diff `/` search uses the Rust `regex` syntax, case-insensitively by default,
+like the file-tree include/exclude filters. For example, `foo|bar` matches either
+word, `^fn\s+` finds function declarations, and `foo\.bar` matches a literal dot.
+Plain-text searches keep their existing Unicode case folding. The same compiled
+pattern drives navigation and highlighting in both diff layouts; side-by-side
+columns are matched independently. Zero-width matches (such as `^`) are navigable
+but have no characters to highlight. An invalid expression reports an error
+without moving the cursor or replacing the previous valid search; `n` / `N` can
+still repeat that search. File-tree and help `/` searches remain text searches.
 
 ## Reading a diff comfortably
 
@@ -162,6 +180,7 @@ considers files that pass the active filters.
 | `<leader>0` | Reset the divider to 50/50 and the file tree to 20% |
 | `<leader>z` | Zen mode: hide the file tree and the log pane; again restores them (also `:zen`) |
 | `<leader>w` | Toggle ignore-whitespace and reload the diff (also `:ignorews`, `:set ignorews` / `:set noignorews`) |
+| `<leader>n` | Toggle relative line numbers (also `:set relativenumber!`) |
 | `Enter` | Select file (when file list is focused) |
 
 ## Comment navigator
@@ -215,7 +234,13 @@ from the checkout, never copied.
 | `c` / `Enter` | Create comment for selected range |
 | `S` | Stage only the selected changed lines (working-tree and unstaged views); side-by-side rows stage both their deletion and addition |
 | `U` | Unstage only the selected lines (staged view) |
+| `s` | Start an editable suggestion prefilled with the selected code lines |
 | `Esc` / `v` / `V` | Cancel selection |
+
+Suggestions replace whole lines on the new side of a single diff hunk. Selections
+across gaps (including deleted-only rows) or expanded context are rejected.
+Unchanged context between added code blocks is included in the suggestion.
+GitLab suggestions can include at most 100 lines above the final selected line.
 
 ## Comment mode
 
@@ -224,10 +249,16 @@ from the checkout, never copied.
 | `Tab` / `Shift-Tab` | Cycle comment type forward / backward (per `comment_types` order) |
 | `Enter` / `Ctrl-Enter` / `Ctrl-s` | Save comment |
 | `Shift-Enter` / `Ctrl-j` | Insert newline |
-| `←` / `→` | Move cursor |
+| `←` / `→` | Move cursor left / right |
+| `↑` / `↓` | Move cursor up / down one displayed row (default editor) |
 | `Ctrl-w` / `Alt-Backspace` / `Cmd-Backspace` | Delete word |
 | `Ctrl-u` | Clear line |
 | `Esc` / `Ctrl-c` | Cancel |
+
+In the default editor, Up/Down move through wrapped rows and explicit newlines.
+The cursor keeps its column where possible and restores it after crossing a
+shorter row. Horizontal movement or editing sets the column for subsequent
+vertical movement. Up/Down stop at the first or last row.
 
 With `comment_vim = true` the box uses [`edtui`](https://github.com/preiter93/edtui)
 modal editing (Normal/Insert/Visual: `hjkl`, `w`/`b`/`e`, `dd`/`D`/`ciw`/`x`,
@@ -256,8 +287,10 @@ remote-tracking ones. `:compare ma`, `↓`, `↓`, `Enter` picks the second matc
 | `:edit` | Open focused file in `$EDITOR` |
 | `:clip` (`:export`) | Copy review to clipboard |
 | `:copy-url` | Copy the open PR URL to clipboard (PR mode) |
-| `:summary` | Show all pending local-draft comments; `j`/`k` select and `Enter` jumps |
+| `:summary` | Show all pending local-draft comments; `j`/`k` select, `dd` deletes, and `Enter` jumps |
 | `:diff` | Toggle diff view (unified / side-by-side) |
+| `:theme` | Open the runtime theme picker (live preview; `/` filters, `Enter` applies and saves, `Esc` reverts) |
+| `:theme <name>` | Apply and save `<name>` directly, without opening the picker |
 | `:focus` (`:f`) | Toggle single-file view |
 | `:stage` | Stage reviewed files (unstaged diffs only) |
 | `:vim` (`:set vim!`) / `:novim` (`:set novim`) / `:set vim` | Toggle / disable / enable vim modal editing in the comment box (overrides `comment_vim`) |
@@ -347,6 +380,17 @@ or previous comment; the view scrolls automatically to keep the selection visibl
 to the continuous diff and jumps to the selected comment, leaving single-file view if necessary,
 while `Esc` returns without jumping. Reviewed files and hunks are revealed for the jump without
 losing their reviewed state.
+Press `dd` to delete the selected local draft, including comments whose original file or line
+is absent from the current diff. Other comments are kept. Return with `Esc` and use `:w` to
+save the deletion, following the existing diff-view deletion workflow.
+
+The theme picker lists every bundled theme plus any local `*.toml` themes in the theme directory.
+`j`/`k` move the selection and immediately repaint the UI with that theme (live preview) without
+saving anything. `/` opens a filter prompt — type to narrow the list by substring, `Enter` applies
+the filter and returns to navigation, `Esc` discards the filter edit without changing the list.
+`Enter` on the picker itself keeps the currently previewed theme for the rest of the session. Like
+other `:` toggles, the choice is not written to `config.toml`; set `theme = "<name>"` there to keep
+it. `Esc` on the picker reverts the preview to whatever theme was active before it opened.
 
 Not every forge supports every event:
 
@@ -453,7 +497,7 @@ with `<leader>+` / `<leader>-`, `:set logheight N`, or `log_height = N`.
 match the commit message (all of them, case-insensitively), `author:NAME` matches the
 author, `path:PATH` keeps commits that touch that path, `branch:NAME` walks only the
 branches (local and remote-tracking) whose name contains NAME (repeatable), and `ref:NAME`
-walks exactly that ref (repeatable; what the branch picker's `Ctrl-l` produces):
+walks exactly that ref (repeatable; what the branch picker's `Ctrl-o` produces):
 
 ```
 /fix retry author:kim path:src/net branch:release
@@ -482,7 +526,7 @@ rebase, cherry-pick, or revert in progress.
 | `↑` / `↓`, `Ctrl-p` / `Ctrl-n` | Move the cursor |
 | `Tab` | Pick / unpick the highlighted branch (`◆1`, `◆2`); a third pick replaces the oldest |
 | `Ctrl-d` | Compare: two picks load `first...second` (what the second has that the first does not, or the reverse when that is empty) and narrow the log to the pair; one pick or none compares the current branch with it (or the cursor row) |
-| `Ctrl-l` | Show the picked branches (or the cursor row) in the log pane, as a `ref:` filter |
+| `Ctrl-o` | Show the picked branches (or the cursor row) in the log pane, as a `ref:` filter |
 | `Ctrl-f` | Fetch all remotes and refresh the list (ahead/behind counts update) |
 | `Enter` | Check out the highlighted branch (a remote branch creates its local tracking branch) |
 | `Ctrl-s` | Stash the working tree, check out, then pop the stash |
@@ -554,14 +598,21 @@ first, with children always above their parents so the graph stays coherent.
 | `v` / `R` / `D` / `f` / `x` / `t` / `y` | Revert / reword / drop / fixup / reset to / tag / copy hash of the cursor commit (as in the log pane) |
 | `/` | Local tab: filter the log by message / `author:` / `path:` (see the log pane section); Pull Requests tab: filter the loaded PR rows |
 | `r` | In Pull Requests tab, toggle all open PRs / PRs requesting your review |
+| `a` | In Sessions tab, show or hide saved reviews holding no progress |
+| `dd` | In Sessions tab, delete the saved review under the cursor (asks to confirm) |
 | `Esc` | Return to the diff |
 | `:q` | Quit |
 
 The Sessions tab lists saved reviews for the current checkout, so you can pick one
 instead of retyping the commit range it was opened with. Rows show the review target,
 comment count, reviewed files, and age. Reviews with no comments and no reviewed files
-are omitted. Selecting a saved PR review re-fetches it from the forge, the same as
-opening it from the Pull Requests tab.
+are omitted; press `a` to show them. Selecting a saved PR review re-fetches it from the
+forge, the same as opening it from the Pull Requests tab.
+
+Press `dd` to delete the saved review under the cursor. tuicr asks to confirm first, and
+refuses to delete a review that is open in another tuicr, since that process would write
+it straight back. Combine `a` with `dd` to clear out empty sessions left behind by a
+crash, or by `tuicr review delete`/`clear` emptying a review another tuicr had open.
 
 ## Merge conflict view
 

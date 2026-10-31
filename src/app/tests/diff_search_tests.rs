@@ -40,6 +40,7 @@ fn line(origin: LineOrigin, content: &str, old: Option<u32>, new: Option<u32>) -
         content: content.to_string(),
         old_lineno: old,
         new_lineno: new,
+        raw_content: None,
         highlighted_spans: None,
     }
 }
@@ -127,6 +128,47 @@ fn should_collect_matches_and_move_to_first_match_at_or_after_cursor() {
     assert!(app.search_highlight_visible);
     assert_eq!(app.diff_state.cursor_line, app.search_matches[0]);
     assert_eq!(app.search_match_position(), Some((1, 2)));
+}
+
+#[test]
+fn should_search_regexes_and_cycle_in_both_diff_layouts() {
+    for mode in [DiffViewMode::Unified, DiffViewMode::SideBySide] {
+        let mut app = app_with(vec![file("a.rs", &["alpha 12", "plain", "BETA 34"])]);
+        app.diff_view_mode = mode;
+        app.rebuild_annotations();
+        assert!(search(&mut app, r"^(alpha|beta) \d+$"));
+        assert_eq!(app.search_matches.len(), 2);
+        let first = app.diff_state.cursor_line;
+        assert!(app.search_next_in_diff());
+        assert_ne!(app.diff_state.cursor_line, first);
+        assert!(app.search_next_in_diff());
+        assert_eq!(app.diff_state.cursor_line, first);
+        assert!(app.search_prev_in_diff());
+        assert_ne!(app.diff_state.cursor_line, first);
+    }
+}
+
+#[test]
+fn should_reject_invalid_regex_without_replacing_the_previous_search() {
+    let mut app = searchable_app();
+    assert!(search(&mut app, "needle"));
+    let cursor = app.diff_state.cursor_line;
+    assert!(!search(&mut app, "["));
+    assert_eq!(app.diff_state.cursor_line, cursor);
+    assert_eq!(app.last_search_pattern.as_deref(), Some("needle"));
+    assert!(!app.search_highlight_visible);
+    assert!(message(&app).unwrap().starts_with("Invalid regex:"));
+    assert!(app.search_next_in_diff());
+    assert_eq!(app.search_matches.len(), 2);
+}
+
+#[test]
+fn should_search_escaped_metacharacters_and_preserve_uppercase_regex_escapes() {
+    let mut app = app_with(vec![file("a.rs", &["a.b", "axb", "   "])]);
+    assert!(search(&mut app, r"^a\.b$"));
+    assert_eq!(app.search_matches.len(), 1);
+    assert!(search(&mut app, r"^\S+$"));
+    assert_eq!(app.search_matches.len(), 2);
 }
 
 #[test]
@@ -247,7 +289,7 @@ fn should_suppress_highlighting_while_typing_a_comment() {
 
     app.input_mode = InputMode::Comment;
     assert_eq!(app.active_search_needle(), None);
-    assert_eq!(app.search_paint_at(app.diff_state.cursor_line), None);
+    assert!(app.search_paint_at(app.diff_state.cursor_line).is_none());
 
     app.input_mode = InputMode::Normal;
     assert!(app.active_search_needle().is_some());

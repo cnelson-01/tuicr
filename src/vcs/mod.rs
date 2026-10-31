@@ -20,6 +20,7 @@ mod jj;
 pub mod pr_noop;
 pub mod pristine;
 pub(crate) mod traits;
+pub(crate) mod whitespace;
 
 pub use conflict::{
     ConflictBlock, ConflictFile, ConflictResolution, ConflictSegment, apply_resolutions,
@@ -33,7 +34,7 @@ pub use pr_noop::PrNoopVcs;
 pub use traits::{
     BlameLine, ChangeKind, CommitInfo, CommitQuery, DiffWhitespaceMode, HunkScope,
     MergeConflictInfo, ResetMode, ResolvedRevisionRange, RevisionDiffTarget, StashEntry,
-    VcsBackend, VcsChangeStatus, VcsInfo,
+    VcsBackend, VcsChangeStatus, VcsInfo, WhitespaceAutoPolicy,
 };
 
 use std::collections::HashMap;
@@ -94,6 +95,7 @@ pub(crate) fn slice_context_lines(content: &str, start_line: u32, end_line: u32)
             content: tabify(lines[idx]),
             old_lineno: Some(line_num),
             new_lineno: Some(line_num),
+            raw_content: lines[idx].contains('\t').then(|| lines[idx].to_string()),
             highlighted_spans: None,
         });
     }
@@ -336,12 +338,12 @@ pub fn detect_vcs(
     whitespace_mode: DiffWhitespaceMode,
 ) -> Result<Box<dyn VcsBackend>> {
     // Try jj first since jj repos are Git-backed
-    if let Ok(backend) = JjBackend::discover(whitespace_mode) {
+    if let Ok(backend) = JjBackend::discover(whitespace_mode.clone()) {
         return Ok(Box::new(backend));
     }
 
     // Try git
-    if let Ok(backend) = GitBackend::discover(git_backend_preference, whitespace_mode) {
+    if let Ok(backend) = GitBackend::discover(git_backend_preference, whitespace_mode.clone()) {
         return Ok(Box::new(backend));
     }
 
@@ -441,6 +443,7 @@ mod tests {
                     content: deleted_line.to_string(),
                     old_lineno: Some(target_line),
                     new_lineno: None,
+                    raw_content: None,
                     highlighted_spans: None,
                 },
                 DiffLine {
@@ -448,6 +451,7 @@ mod tests {
                     content: added_line.to_string(),
                     old_lineno: None,
                     new_lineno: Some(target_line),
+                    raw_content: None,
                     highlighted_spans: None,
                 },
             ],

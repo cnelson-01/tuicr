@@ -7,18 +7,17 @@ impl App {
         let prev_cursor = self.diff_state.cursor_line;
         let target = self.diff_state.cursor_line + lines;
         // Single-file view: first overflow press arms `primed_walk_next`
-        // and parks the cursor on max. On kitty terminals the walk
-        // consumes only when the Down key was released between the two
-        // presses (`down_released_since_arm`) -- a held-j sequence emits
-        // Press, Repeat, Repeat, ..., Release and never satisfies the
-        // gate. Non-kitty terminals don't emit Release, so the gate
-        // bypasses on `!supports_keyboard_enhancement` to keep the
-        // two-press walk usable without modern keyboard reporting.
+        // and parks the cursor on max. The walk consumes only when the
+        // Down key was released between the two presses
+        // (`down_released_since_arm`) -- a held-j sequence emits Press,
+        // Repeat, Repeat, ..., Release and never satisfies the gate.
+        // Terminals without kitty keyboard reporting never emit Release
+        // and send every auto-repeat as a Press, so a held j can't be told
+        // from a second press. There the walk is off and the cursor
+        // clamps to the file's last line below; `}` still switches files.
         self.primed_walk_prev = false;
-        if self.is_single_file_view && target > max_line {
-            let release_gate_ok =
-                !self.supports_keyboard_enhancement || self.down_released_since_arm;
-            if self.primed_walk_next && release_gate_ok {
+        if self.is_single_file_view && self.supports_keyboard_enhancement && target > max_line {
+            if self.primed_walk_next && self.down_released_since_arm {
                 let next_idx = self.diff_state.current_file_idx + 1;
                 if next_idx < self.diff_files.len() {
                     let overflow = target - max_line;
@@ -58,16 +57,16 @@ impl App {
     pub fn cursor_up(&mut self, lines: usize) {
         // Symmetric to cursor_down: first underflow arms `primed_walk_prev`,
         // second underflow consumes only after a Up/k release event has set
-        // `up_released_since_arm`. See cursor_down for the gate rationale.
+        // `up_released_since_arm`. Without kitty keyboard reporting the walk
+        // is off and the cursor clamps at the top of the frame below. See
+        // cursor_down for the gate rationale.
         self.primed_walk_next = false;
-        if self.is_single_file_view {
+        if self.is_single_file_view && self.supports_keyboard_enhancement {
             let file_top = self.calculate_file_scroll_offset(self.diff_state.current_file_idx);
             if self.diff_state.cursor_line < file_top + lines
                 && self.diff_state.current_file_idx > 0
             {
-                let release_gate_ok =
-                    !self.supports_keyboard_enhancement || self.up_released_since_arm;
-                if self.primed_walk_prev && release_gate_ok {
+                if self.primed_walk_prev && self.up_released_since_arm {
                     let underflow = (file_top + lines) - self.diff_state.cursor_line;
                     let prev_idx = self.diff_state.current_file_idx - 1;
                     self.primed_walk_prev = false;
@@ -440,6 +439,25 @@ impl App {
             .min(max_scroll);
     }
 
+    /// Apply the `--line` start position once the diff is on screen.
+    ///
+    /// Waits while a selector or other modal is open, and until a render
+    /// has measured the viewport, so `go_to_source_line` can center the
+    /// target. Returns true when it moved the cursor.
+    pub fn apply_pending_start_line(&mut self) -> bool {
+        if self.input_mode != InputMode::Normal
+            || self.line_annotations.is_empty()
+            || self.diff_state.viewport_height == 0
+        {
+            return false;
+        }
+        let Some(line) = self.pending_start_line.take() else {
+            return false;
+        };
+        self.go_to_source_line(line, LineSide::New);
+        true
+    }
+
     pub fn go_to_source_line(&mut self, target_lineno: u32, side: LineSide) {
         let current_file = self.diff_state.current_file_idx;
         let mut result = self.find_source_line_in_diff(target_lineno, side);
@@ -580,6 +598,15 @@ impl App {
     /// In SBS, picks Old or New per `side`, falling back to the other pane
     /// if the requested one is empty. Unified diff rows ignore `side`.
     pub fn content_for_side(&self, ann_idx: usize, side: LineSide) -> Option<&str> {
+        self.diff_line_for_side(ann_idx, side)
+            .map(|line| line.content.as_str())
+    }
+
+    pub(in crate::app) fn diff_line_for_side(
+        &self,
+        ann_idx: usize,
+        side: LineSide,
+    ) -> Option<&DiffLine> {
         let ann = self.line_annotations.get(ann_idx)?;
         match ann {
             AnnotatedLine::DiffLine {
@@ -595,7 +622,7 @@ impl App {
                     .get(*hunk_idx)?
                     .lines
                     .get(*line_idx)?;
-                Some(line.content.as_str())
+                Some(line)
             }
             AnnotatedLine::SideBySideLine {
                 file_idx,
@@ -605,20 +632,16 @@ impl App {
                 ..
             } => {
                 let hunk = self.diff_files.get(*file_idx)?.hunks.get(*hunk_idx)?;
-                let add = add_line_idx
-                    .and_then(|i| hunk.lines.get(i))
-                    .map(|l| l.content.as_str());
-                let del = del_line_idx
-                    .and_then(|i| hunk.lines.get(i))
-                    .map(|l| l.content.as_str());
+                let add = add_line_idx.and_then(|i| hunk.lines.get(i));
+                let del = del_line_idx.and_then(|i| hunk.lines.get(i));
                 match side {
                     LineSide::New => add.or(del),
                     LineSide::Old => del.or(add),
                 }
             }
-            AnnotatedLine::ExpandedContext { gap_id, line_idx } => self
-                .get_expanded_line(gap_id, *line_idx)
-                .map(|l| l.content.as_str()),
+            AnnotatedLine::ExpandedContext { gap_id, line_idx } => {
+                self.get_expanded_line(gap_id, *line_idx)
+            }
             _ => None,
         }
     }
@@ -712,6 +735,23 @@ impl App {
         }
     }
 
+    /// Char range `[start, end)` of `content` on each wrapped row of a pane
+    /// `content_width` cells wide.
+    pub(crate) fn content_row_char_ranges(
+        &self,
+        content: &str,
+        content_width: usize,
+    ) -> Vec<(usize, usize)> {
+        let rows_start_at_content =
+            self.diff_view_mode == DiffViewMode::SideBySide || self.wrap_style == WrapStyle::Gutter;
+        if self.diff_state.wrap_lines && rows_start_at_content {
+            return crate::ui::text_utils::wrapped_row_char_ranges(content, content_width);
+        }
+        // Flow-wrapped unified rows also span the gutter, so they keep this
+        // fixed-width approximation.
+        crate::ui::text_utils::fixed_width_row_char_ranges(content, content_width)
+    }
+
     pub fn side_at_x(
         &self,
         inner: ratatui::layout::Rect,
@@ -762,14 +802,22 @@ impl App {
         }
         let which_row = rel - walker;
         let total_chars = content.chars().count();
-        // Without wrap the code may be panned: the first visible column is
-        // `scroll_x` characters in.
-        let pan = if self.diff_state.wrap_lines {
-            0
+        // Without wrap a line is one row, and it may be panned: the first
+        // visible cell is `scroll_x` cells in.
+        let char_offset = if self.diff_state.wrap_lines {
+            let row = self
+                .content_row_char_ranges(content, geom.content_width)
+                .get(which_row)
+                .copied()
+                .unwrap_or((total_chars, total_chars));
+            crate::ui::text_utils::char_at_col(content, row, col_in_row)
         } else {
-            self.diff_state.scroll_x
+            crate::ui::text_utils::char_at_col(
+                content,
+                (0, total_chars),
+                col_in_row + self.diff_state.scroll_x,
+            )
         };
-        let char_offset = (which_row * geom.content_width + col_in_row + pan).min(total_chars);
         Some(SelPoint {
             annotation_idx: idx,
             char_offset,
@@ -894,47 +942,13 @@ impl App {
     /// reviewed-collapse behavior in multi-file view (skipped entirely)
     /// versus single-file view (body rendered under a banner).
     pub(in crate::app) fn hunk_positions(&self) -> Vec<usize> {
-        let single = self.is_single_file_view;
-        let current_idx = self.diff_state.current_file_idx;
-        let mut positions = Vec::new();
-        let mut cumulative = self.review_comments_render_height();
-        for (file_idx, file) in self.diff_files.iter().enumerate() {
-            if single && file_idx != current_idx {
-                continue;
-            }
-            if !self.file_passes_filter(file) {
-                continue;
-            }
-            let path = file.display_path();
-            let is_reviewed = self.session.is_file_reviewed(path);
-
-            if !single {
-                cumulative += 1; // File header
-            }
-            if self.should_collapse_file(file_idx) {
-                // multi-file collapsed: no body, no trailing spacing
-                continue;
-            }
-            if single && is_reviewed {
-                cumulative += 1; // banner
-            }
-            if let Some(review) = self.session.files.get(path) {
-                cumulative += review.file_comments.len();
-            }
-            if file.is_binary || file.hunks.is_empty() {
-                cumulative += 1;
-            } else {
-                for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
-                    positions.push(cumulative);
-                    cumulative += 1;
-                    if !self.should_collapse_hunk(file_idx, hunk_idx) {
-                        cumulative += hunk.lines.len();
-                    }
-                }
-            }
-            cumulative += 1; // trailing spacing or "next file" hint
-        }
-        positions
+        self.line_annotations
+            .iter()
+            .enumerate()
+            .filter_map(|(row, line)| {
+                matches!(line, AnnotatedLine::HunkHeader { .. }).then_some(row)
+            })
+            .collect()
     }
 
     pub fn next_hunk(&mut self) {

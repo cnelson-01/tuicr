@@ -94,14 +94,23 @@ impl FileBackend {
             )));
         };
 
+        let head_commit = match mode {
+            FileMode::Single => single_file_session_identity(&files[0].0),
+            FileMode::Directory => "file".to_string(),
+            FileMode::Pristine => unreachable!("pristine mode uses new_pristine"),
+        };
         let info = VcsInfo {
             root_path,
-            head_commit: "file".to_string(),
+            head_commit,
             branch_name: None,
             vcs_type: VcsType::File,
         };
 
         Ok(Self { info, files, mode })
+    }
+
+    pub(crate) fn mode(&self) -> FileMode {
+        self.mode
     }
 
     /// Create a [`FileBackend`] in pristine mode from a pre-enumerated
@@ -157,7 +166,7 @@ impl FileBackend {
 
     fn build_diff_file_for_path(
         &self,
-        highlighter: &SyntaxHighlighter,
+        _highlighter: &SyntaxHighlighter,
         abs_path: &Path,
         file_size: u64,
     ) -> Option<DiffFile> {
@@ -200,28 +209,12 @@ impl FileBackend {
             FileMode::Single | FileMode::Directory => LineOrigin::Addition,
         };
 
-        // Build line contents and origins for syntax highlighting
         let line_contents: Vec<String> = lines.iter().map(|l| super::tabify(l)).collect();
-        let line_origins: Vec<LineOrigin> = vec![render_origin; line_contents.len()];
-
-        // Apply syntax highlighting
-        let highlight_sequences =
-            SyntaxHighlighter::split_diff_lines_for_highlighting(&line_contents, &line_origins);
-        let new_highlighted_lines =
-            highlighter.highlight_file_lines(abs_path, &highlight_sequences.new_lines);
 
         // Build DiffLines
         let mut diff_lines = Vec::with_capacity(lines.len());
         for (i, content) in line_contents.iter().enumerate() {
             let line_num = (i + 1) as u32;
-
-            let highlighted_spans = highlighter.highlighted_line_for_diff_with_background(
-                None,
-                new_highlighted_lines.as_deref(),
-                None,
-                highlight_sequences.new_line_indices[i],
-                render_origin,
-            );
 
             // Pristine context lines need both old_lineno and new_lineno
             // populated so the side-by-side and unified renderers walk the
@@ -236,7 +229,8 @@ impl FileBackend {
                 content: content.clone(),
                 old_lineno,
                 new_lineno: Some(line_num),
-                highlighted_spans,
+                raw_content: lines[i].contains('\t').then(|| lines[i].to_string()),
+                highlighted_spans: None,
             });
         }
 
@@ -345,6 +339,11 @@ impl VcsBackend for FileBackend {
     }
 }
 
+fn single_file_session_identity(path: &Path) -> String {
+    let hash = crate::hash::fnv1a_64(path.as_os_str().as_encoded_bytes());
+    format!("{hash:016x}")
+}
+
 fn collect_text_files(root: &Path) -> Vec<(PathBuf, u64)> {
     let mut builder = WalkBuilder::new(root);
     builder
@@ -407,6 +406,96 @@ mod tests {
             Path::new("hello.txt")
         );
         assert_eq!(diffs[0].hunks[0].lines.len(), 2);
+    }
+
+    #[test]
+    fn single_file_session_identity_distinguishes_siblings_and_ignores_contents() {
+        let dir = tempfile::tempdir().unwrap();
+        let path_a = dir.path().join("a.md");
+        let path_b = dir.path().join("b.md");
+        fs::write(&path_a, "first").unwrap();
+        fs::write(&path_b, "second").unwrap();
+
+        let identity_a = FileBackend::new(path_a.to_str().unwrap())
+            .unwrap()
+            .info()
+            .head_commit
+            .clone();
+        let identity_b = FileBackend::new(path_b.to_str().unwrap())
+            .unwrap()
+            .info()
+            .head_commit
+            .clone();
+
+        assert_ne!(identity_a, identity_b);
+        fs::write(&path_a, "changed contents").unwrap();
+        let changed_identity_a = FileBackend::new(path_a.to_str().unwrap())
+            .unwrap()
+            .info()
+            .head_commit
+            .clone();
+        assert_eq!(identity_a, changed_identity_a);
+    }
+
+    #[test]
+    fn single_file_session_identity_uses_canonical_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("review.md");
+        fs::write(&path, "content").unwrap();
+        let alias = dir.path().join(".").join("review.md");
+
+        let direct = FileBackend::new(path.to_str().unwrap())
+            .unwrap()
+            .info()
+            .head_commit
+            .clone();
+        let aliased = FileBackend::new(alias.to_str().unwrap())
+            .unwrap()
+            .info()
+            .head_commit
+            .clone();
+
+        assert_eq!(direct, aliased);
+    }
+
+    #[test]
+    fn single_file_session_identity_preserves_canonical_path_case() {
+        let upper = single_file_session_identity(Path::new("C:\\review\\A.md"));
+        let lower = single_file_session_identity(Path::new("C:\\review\\a.md"));
+
+        assert_ne!(upper, lower);
+    }
+
+    #[test]
+    fn moving_a_single_file_changes_its_session_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = dir.path().join("original.md");
+        let moved = dir.path().join("moved.md");
+        fs::write(&original, "content").unwrap();
+        let original_identity = FileBackend::new(original.to_str().unwrap())
+            .unwrap()
+            .info()
+            .head_commit
+            .clone();
+
+        fs::rename(&original, &moved).unwrap();
+        let moved_identity = FileBackend::new(moved.to_str().unwrap())
+            .unwrap()
+            .info()
+            .head_commit
+            .clone();
+
+        assert_ne!(original_identity, moved_identity);
+    }
+
+    #[test]
+    fn directory_mode_keeps_legacy_session_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.md"), "content").unwrap();
+
+        let backend = FileBackend::new(dir.path().to_str().unwrap()).unwrap();
+
+        assert_eq!(backend.info().head_commit, "file");
     }
 
     #[test]

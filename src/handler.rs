@@ -1,4 +1,4 @@
-use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Position;
 
 use crate::app::{
@@ -7,14 +7,13 @@ use crate::app::{
 };
 use crate::forge::remote_comments::PrCommentsVisibility;
 use crate::forge::submit::SubmitEvent;
-use crate::input::Action;
+use crate::input::{Action, map_global_key};
 use crate::model::{ClearScope, LineSide};
 use crate::output::{copy_text_to_clipboard, export_to_clipboard, generate_export_content};
 use crate::text_edit::{
     delete_char_before, delete_word_before, next_char_boundary, prev_char_boundary,
 };
 
-const WHEEL_LINES: usize = 3;
 /// Columns scrolled per horizontal mouse wheel tick. Matches the default
 /// step for keyboard arrow scrolling so the two input methods feel
 /// interchangeable.
@@ -160,6 +159,7 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     ),
     CommandSpec::new(&["submit draft"], CommandKind::Submit(SubmitEvent::Draft)),
     CommandSpec::new(&["summary"], CommandKind::Summary),
+    CommandSpec::new(&["theme"], CommandKind::ThemePicker),
     CommandSpec::new(
         &["comments unresolved"],
         CommandKind::Comments(PrCommentsVisibility::Unresolved),
@@ -256,6 +256,7 @@ enum CommandKind {
     SubmitPicker,
     Submit(SubmitEvent),
     Comments(PrCommentsVisibility),
+    ThemePicker,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -268,6 +269,19 @@ enum CommandAfterDispatch {
 enum CompletionDirection {
     Forward,
     Reverse,
+}
+
+/// Handle a key that means the same thing in every input mode (see
+/// `map_global_key`). Returns `true` when the key was consumed, so the caller
+/// skips the per-mode maps.
+pub fn handle_global_key(app: &mut App, key: KeyEvent) -> bool {
+    match map_global_key(key) {
+        Action::Redraw => {
+            app.request_full_redraw();
+            true
+        }
+        _ => false,
+    }
 }
 
 pub fn handle_mouse_event(app: &mut App, event: MouseEvent) {
@@ -298,9 +312,9 @@ pub fn handle_mouse_event(app: &mut App, event: MouseEvent) {
         MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
             let scroll_up = matches!(event.kind, MouseEventKind::ScrollUp);
             let action = if scroll_up {
-                Action::MouseScrollUp(WHEEL_LINES)
+                Action::MouseScrollUp(app.mouse_scroll_lines)
             } else {
-                Action::MouseScrollDown(WHEEL_LINES)
+                Action::MouseScrollDown(app.mouse_scroll_lines)
             };
             let over_file_list = app.file_list_area.is_some_and(|r| r.contains(pos));
             let over_diff = app.diff_area.is_some_and(|r| r.contains(pos));
@@ -312,12 +326,15 @@ pub fn handle_mouse_event(app: &mut App, event: MouseEvent) {
                 InputMode::FindResults => handle_find_results_action(app, action),
                 InputMode::MergeConflict => {
                     if scroll_up {
-                        app.merge_scroll_up(WHEEL_LINES);
+                        app.merge_scroll_up(app.mouse_scroll_lines);
                     } else {
-                        app.merge_scroll_down(WHEEL_LINES);
+                        app.merge_scroll_down(app.mouse_scroll_lines);
                     }
                 }
                 InputMode::Normal if over_log => handle_log_pane_action(app, action),
+                InputMode::ThemePicker => {
+                    app.move_theme_picker_selection(if scroll_up { -1 } else { 1 });
+                }
                 InputMode::CommitSelect | InputMode::Normal if over_commit_list => {
                     wheel_commit_list(app, scroll_up);
                 }
@@ -451,7 +468,7 @@ fn wheel_commit_list(app: &mut App, scroll_up: bool) {
     } else {
         scroll_up
     };
-    for _ in 0..WHEEL_LINES {
+    for _ in 0..app.mouse_scroll_lines {
         if scroll_up {
             app.commit_select_up();
         } else {
@@ -568,10 +585,13 @@ fn handle_export(app: &mut App) {
 /// review stays out of the clipboard, so a single comment can go straight into
 /// a chat message or an agent prompt.
 fn handle_copy_comment_at_cursor(app: &mut App) {
-    let Some(content) = app.comment_content_at_cursor() else {
+    let Some(content) = app
+        .comment_content_at_cursor()
+        .or_else(|| app.remote_comment_content_at_cursor())
+    else {
         if app.cursor_on_remote_thread() {
             let forge = app.forge_display_name();
-            app.set_message(format!("Y copies local comments; this one is on {forge}"));
+            app.set_message(format!("No copyable comment in this {forge} thread"));
         } else {
             app.set_message("No comment at cursor");
         }
@@ -852,6 +872,14 @@ pub fn handle_command_action(app: &mut App, action: Action) {
                 app.exit_command_mode();
                 app.find_in_files(&query);
                 CommandAfterDispatch::KeepMode
+            } else if let Some(name) = cmd.strip_prefix("theme ") {
+                let name = name.trim();
+                if name.is_empty() {
+                    app.set_message(format!("Unknown command: {cmd}"));
+                } else {
+                    app.apply_theme(name);
+                }
+                CommandAfterDispatch::ExitCommandMode
             } else {
                 app.set_message(format!("Unknown command: {cmd}"));
                 CommandAfterDispatch::ExitCommandMode
@@ -1103,6 +1131,11 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
             // the common post-dispatch cleanup cannot clobber Summary.
             app.exit_command_mode();
             app.enter_summary_mode();
+            CommandAfterDispatch::KeepMode
+        }
+        CommandKind::ThemePicker => {
+            app.exit_command_mode();
+            app.enter_theme_picker_mode();
             CommandAfterDispatch::KeepMode
         }
         CommandKind::Version => {
@@ -1674,6 +1707,22 @@ pub fn handle_search_action(app: &mut App, action: Action) {
 
 /// Handle actions in Comment mode (text input for comments)
 pub fn handle_comment_action(app: &mut App, action: Action) {
+    if matches!(
+        action,
+        Action::InsertChar(_)
+            | Action::Paste(_)
+            | Action::DeleteChar
+            | Action::DeleteWord
+            | Action::ClearLine
+            | Action::TextCursorLeft
+            | Action::TextCursorRight
+            | Action::TextCursorLineStart
+            | Action::TextCursorLineEnd
+            | Action::TextCursorWordLeft
+            | Action::TextCursorWordRight
+    ) {
+        app.comment_preferred_column = None;
+    }
     match action {
         Action::InsertChar(c) => {
             app.comment_buffer.insert(app.comment_cursor, c);
@@ -1692,6 +1741,15 @@ pub fn handle_comment_action(app: &mut App, action: Action) {
         Action::SubmitInput => app.save_comment(),
         Action::CycleCommentType => app.cycle_comment_type(),
         Action::CycleCommentTypeReverse => app.cycle_comment_type_reverse(),
+        Action::TextCursorUp | Action::TextCursorDown => {
+            app.comment_cursor = crate::ui::comment_panel::move_comment_cursor(
+                &app.comment_buffer,
+                app.comment_cursor,
+                app.diff_state.viewport_width.saturating_sub(1),
+                matches!(action, Action::TextCursorDown),
+                &mut app.comment_preferred_column,
+            );
+        }
         Action::TextCursorLeft => {
             app.comment_cursor = prev_char_boundary(&app.comment_buffer, app.comment_cursor);
         }
@@ -1779,8 +1837,14 @@ pub fn handle_confirm_action(app: &mut App, action: Action) {
         _ => {}
     }
 
+    // Only the quit prompts end the session. A Sessions-tab delete answers
+    // in place and returns to the selector.
+    let quits = app.pending_confirm != Some(app::ConfirmAction::DeleteSession);
     match action {
         Action::ConfirmYes => {
+            if let Some(app::ConfirmAction::DeleteSession) = app.pending_confirm {
+                app.sessions_tab_delete_selected();
+            }
             if let Some(app::ConfirmAction::CopyAndQuit) = app.pending_confirm {
                 let slug = app.session_slug();
                 if app.output_to_stdout {
@@ -1810,11 +1874,11 @@ pub fn handle_confirm_action(app: &mut App, action: Action) {
                 }
             }
             app.exit_confirm_mode();
-            app.should_quit = true;
+            app.should_quit = quits;
         }
         Action::ConfirmNo => {
             app.exit_confirm_mode();
-            app.should_quit = true;
+            app.should_quit = quits;
         }
         Action::Quit => app.should_quit = true,
         _ => {}
@@ -1880,6 +1944,15 @@ fn handle_sessions_target_action(app: &mut App, action: Action) {
         Action::ConfirmCommitSelect => {
             if let Err(e) = app.sessions_tab_select() {
                 app.set_error(format!("Failed to open session: {e}"));
+            }
+        }
+        // `a` arrives as the Local tab's abort; here it shows empty reviews.
+        Action::SessionsTabToggleShowEmpty | Action::AbortOperation => {
+            app.sessions_tab_toggle_show_empty()
+        }
+        Action::SessionsTabDelete => {
+            if app.sessions_tab.cursor_session().is_some() {
+                app.enter_confirm_mode(app::ConfirmAction::DeleteSession);
             }
         }
         // Space is a no-op: sessions are picked, not multi-selected.
@@ -2323,9 +2396,13 @@ pub fn handle_visual_action(app: &mut App, action: Action) {
             app.cursor_up(n);
             app.extend_visual_to_cursor();
         }
-        Action::AddRangeComment => {
+        Action::AddRangeComment | Action::AddRangeSuggestion => {
             if app.visual_selection_line_range().is_some() {
-                app.enter_comment_from_visual();
+                if action == Action::AddRangeSuggestion {
+                    app.enter_suggestion_from_visual();
+                } else {
+                    app.enter_comment_from_visual();
+                }
             } else {
                 app.set_warning("Invalid selection - move cursor to a diff line");
                 app.exit_visual_mode();
@@ -2417,6 +2494,39 @@ fn handle_file_tree_prompt_action(app: &mut App, action: Action) {
         Action::ClearLine => app.file_tree_prompt_clear_line(),
         Action::SubmitInput => app.commit_file_tree_prompt(),
         Action::ExitMode => app.cancel_file_tree_prompt(),
+        _ => {}
+    }
+}
+
+/// Handle actions in `InputMode::ThemePicker`. Mirrors
+/// `handle_file_list_action`'s prompt-editing gate: while the `/` filter
+/// draft is open, input goes to `handle_theme_picker_filter_action` instead
+/// of list navigation.
+pub fn handle_theme_picker_action(app: &mut App, action: Action) {
+    if app.theme_picker_filtering() {
+        handle_theme_picker_filter_action(app, action);
+        return;
+    }
+    match action {
+        Action::CursorDown(n) => app.move_theme_picker_selection(n as isize),
+        Action::CursorUp(n) => app.move_theme_picker_selection(-(n as isize)),
+        Action::ThemePickerFilter => app.begin_theme_picker_filter(),
+        Action::SubmitInput => app.confirm_theme_picker(),
+        Action::ExitMode => app.cancel_theme_picker(),
+        Action::Quit => app.should_quit = true,
+        _ => {}
+    }
+}
+
+/// Handle input while the theme picker's `/` filter draft is open. Mirrors
+/// `handle_file_tree_prompt_action`.
+fn handle_theme_picker_filter_action(app: &mut App, action: Action) {
+    match action {
+        Action::InsertChar(c) => app.theme_picker_filter_insert_char(c),
+        Action::DeleteChar => app.theme_picker_filter_delete_char(),
+        Action::ClearLine => app.theme_picker_filter_clear_line(),
+        Action::SubmitInput => app.commit_theme_picker_filter(),
+        Action::ExitMode => app.cancel_theme_picker_filter(),
         _ => {}
     }
 }

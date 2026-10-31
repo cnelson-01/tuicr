@@ -79,9 +79,11 @@ impl App {
                 side: *side,
                 comment_idx: *comment_idx,
             }),
-            AnnotatedLine::RemoteThreadLine { thread_idx } => Some(CommentNavigatorKey::Remote {
-                thread_idx: *thread_idx,
-            }),
+            AnnotatedLine::RemoteThreadLine { thread_idx, .. } => {
+                Some(CommentNavigatorKey::Remote {
+                    thread_idx: *thread_idx,
+                })
+            }
             AnnotatedLine::RemoteReviewSummaryLine { summary_idx } => {
                 Some(CommentNavigatorKey::RemoteReview {
                     summary_idx: *summary_idx,
@@ -549,18 +551,12 @@ impl App {
                 .files
                 .get(&path)
                 .and_then(|review| review.line_comments.get(&line))
-                .and_then(|comments| {
-                    let mut side_idx = 0;
-                    for c in comments {
-                        if c.side.unwrap_or(LineSide::New) == side {
-                            if side_idx == index {
-                                return Some(c);
-                            }
-                            side_idx += 1;
-                        }
-                    }
-                    None
-                })
+                // The annotation carries an index into the line's comments,
+                // the same one every other lookup uses. Counting per side
+                // again here answers about a different comment as soon as a
+                // line holds comments on both sides.
+                .and_then(|comments| comments.get(index))
+                .filter(|c| c.side.unwrap_or(LineSide::New) == side)
                 .is_some_and(|c| c.is_locked()),
         }
     }
@@ -669,61 +665,120 @@ impl App {
         }
     }
 
+    /// Content of a remote review comment at the cursor.
+    ///
+    /// A remote thread is rendered after its anchor line, so accept both its
+    /// rendered rows and the diff row it is attached to. Rendered rows retain
+    /// their reply identity; an anchor line copies the thread's root comment.
+    /// Review-level summaries are already their own annotated rows.
+    pub fn remote_comment_content_at_cursor(&self) -> Option<String> {
+        use crate::forge::remote_comments::RemoteCommentSide;
+
+        let annotation = self.line_annotations.get(self.diff_state.cursor_line)?;
+        let thread_idx = match annotation {
+            AnnotatedLine::IssueComment { comment_idx } => {
+                return self
+                    .pr_info
+                    .as_ref()
+                    .and_then(|info| info.issue_comments.get(*comment_idx))
+                    .map(|comment| comment.body.clone());
+            }
+            AnnotatedLine::RemoteReviewSummaryLine { summary_idx } => {
+                return self
+                    .forge_review_summaries
+                    .get(*summary_idx)
+                    .map(|summary| summary.body.clone());
+            }
+            AnnotatedLine::RemoteThreadLine {
+                thread_idx,
+                comment_idx,
+            } => {
+                return self
+                    .forge_review_threads
+                    .get(*thread_idx)
+                    .and_then(|thread| thread.comments.get(*comment_idx))
+                    .map(|comment| comment.body.clone());
+            }
+            AnnotatedLine::DiffLine {
+                file_idx,
+                old_lineno,
+                new_lineno,
+                ..
+            }
+            | AnnotatedLine::SideBySideLine {
+                file_idx,
+                old_lineno,
+                new_lineno,
+                ..
+            } => {
+                let path = self
+                    .diff_files
+                    .get(*file_idx)?
+                    .display_path()
+                    .to_string_lossy();
+                self.forge_review_threads.iter().position(|thread| {
+                    thread.path == path
+                        && self
+                            .session
+                            .remote_comments_visibility
+                            .render_decision(thread)
+                            .is_some()
+                        && match thread.side {
+                            RemoteCommentSide::Left => thread.line == *old_lineno,
+                            RemoteCommentSide::Right => thread.line == *new_lineno,
+                        }
+                })
+            }
+            _ => None,
+        }?;
+
+        self.forge_review_threads
+            .get(thread_idx)
+            .and_then(|thread| thread.root())
+            .map(|comment| comment.body.clone())
+    }
+
     /// Delete the comment at the current cursor position, if any
     /// Returns true if a comment was deleted
     pub fn delete_comment_at_cursor(&mut self) -> bool {
-        let location = self.find_comment_at_cursor();
+        let Some(location) = self.find_comment_at_cursor() else {
+            return false;
+        };
+        self.delete_comment(&location)
+    }
 
-        match location {
-            Some(CommentLocation::Review { index })
-                if index < self.session.review_comments.len() =>
-            {
-                self.session.review_comments.remove(index);
-                self.dirty = true;
-                self.set_message("Review comment deleted");
-                self.rebuild_annotations();
-                return true;
-            }
-            Some(CommentLocation::File { path, index }) => {
-                if let Some(review) = self.session.get_file_mut(&path) {
-                    review.file_comments.remove(index);
-                    self.dirty = true;
-                    self.set_message("Comment deleted");
-                    self.rebuild_annotations();
-                    return true;
-                }
-            }
-            Some(CommentLocation::Line {
-                path,
-                line,
-                side,
-                index,
-            }) => {
-                if let Some(review) = self.session.get_file_mut(&path)
-                    && let Some(comments) = review.line_comments.get_mut(&line)
-                {
-                    // `comment_idx` from the annotation is the absolute index
-                    // into the stored Vec (see `push_comments`), so delete
-                    // directly — no side-filtered re-count.
-                    if index < comments.len() {
-                        let comment_side = comments[index].side.unwrap_or(LineSide::New);
-                        if comment_side == side {
-                            comments.remove(index);
-                            if comments.is_empty() {
-                                review.line_comments.remove(&line);
-                            }
-                            self.dirty = true;
-                            self.set_message(format!("Comment on line {line} deleted"));
-                            self.rebuild_annotations();
-                            return true;
-                        }
-                    }
-                }
-            }
-            Some(CommentLocation::Review { .. }) | None => {}
+    /// Delete the selected draft by identity, even when its diff location is gone.
+    pub fn delete_selected_summary_comment(&mut self) -> bool {
+        let Some(comment_id) = self
+            .summary_state
+            .comment_ids
+            .get(self.summary_state.selected_comment)
+        else {
+            return false;
+        };
+        let Some(location) = self.session.find_comment_by_id(comment_id) else {
+            return false;
+        };
+        if !self.delete_comment(&location) {
+            return false;
         }
+        self.summary_state.selection_needs_scroll = true;
+        true
+    }
 
-        false
+    fn delete_comment(&mut self, location: &CommentLocation) -> bool {
+        if !self.session.remove_comment(location) {
+            return false;
+        }
+        let message = match location {
+            CommentLocation::Review { .. } => "Review comment deleted".to_string(),
+            CommentLocation::File { .. } => "Comment deleted".to_string(),
+            CommentLocation::Line { line, .. } => format!("Comment on line {line} deleted"),
+        };
+        self.dirty = true;
+        self.set_message(message);
+        self.rebuild_annotations();
+        true
     }
 
     pub fn clear_comments(&mut self, scope: ClearScope) {
@@ -954,6 +1009,7 @@ impl App {
         }
         self.comment_buffer.clear();
         self.comment_cursor = 0;
+        self.comment_preferred_column = None;
         self.comment_vim_editor = None;
         self.comment_vim_command = None;
         self.comment_vim_pending = CommentVimPending::None;

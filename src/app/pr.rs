@@ -49,6 +49,9 @@ impl App {
         // refreshed by future `gh pr view` calls in PR 6.
         self.current_pr_head = Some(details.head_sha.clone());
         self.input_mode = InputMode::Normal;
+        // A prompt raised on the selector (e.g. a Sessions-tab delete) while
+        // the PR was loading belongs to a screen that is now gone.
+        self.pending_confirm = None;
         self.focused_panel = FocusedPanel::Diff;
         self.clear_expanded_gaps();
         self.commit_list.clear();
@@ -595,6 +598,10 @@ impl App {
                 &opened.commits,
                 &opened.review_metadata,
             );
+            // Keep the active base in sync even when the head has not changed.
+            if let DiffSource::PullRequest(pr) = &mut self.diff_source {
+                pr.base_sha = opened.details.base_sha.clone();
+            }
             self.diff_files = opened.diff_files;
             self.pr_info = Some(opened.pr_info);
             self.clear_expanded_gaps();
@@ -652,7 +659,7 @@ impl App {
     #[allow(dead_code)]
     pub fn reload_pull_request_with_backend(
         &mut self,
-        backend: Box<dyn ForgeBackend>,
+        backend: Box<dyn ForgeBackend + Sync>,
         local_checkout: Option<std::path::PathBuf>,
     ) -> Result<bool> {
         use crate::forge::pr_open::open_pull_request;
@@ -692,6 +699,10 @@ impl App {
                 &opened.commits,
                 &opened.review_metadata,
             );
+            // Keep the active base in sync even when the head has not changed.
+            if let DiffSource::PullRequest(pr) = &mut self.diff_source {
+                pr.base_sha = opened.details.base_sha.clone();
+            }
             self.diff_files = opened.diff_files;
             self.pr_info = Some(opened.pr_info);
             self.clear_expanded_gaps();
@@ -1018,7 +1029,7 @@ impl App {
 
         let local_checkout = self.local_checkout_for(&request.repository);
         let highlighter = self.theme.syntax_highlighter();
-        let opened = prepare_open_pr(
+        let mut opened = prepare_open_pr(
             details.clone(),
             patches,
             commits,
@@ -1027,6 +1038,7 @@ impl App {
             local_checkout.as_deref(),
             highlighter,
         )?;
+        self.seed_configured_visibility(&mut opened.session);
         let opened = Self::opened_pr_with_persisted_session(opened)?;
         let backend = create_forge_backend(
             &request.repository,
@@ -1167,7 +1179,34 @@ impl App {
                     let _ = self.save_current_session_merging_external();
                 }
                 self.rebuild_annotations();
+                if threads_loaded {
+                    self.notice_outdated_drafts();
+                }
             }
+        }
+    }
+
+    /// Point at the viewer's drafts left on a superseded patch set. The
+    /// default view hides them like any outdated thread, since their lines
+    /// belong to the older patch set, and once a draft submit has pruned the
+    /// local copies nothing else would say they exist.
+    fn notice_outdated_drafts(&mut self) {
+        use crate::forge::remote_comments::PrCommentsVisibility;
+
+        if self.session.remote_comments_visibility != PrCommentsVisibility::Unresolved {
+            return;
+        }
+        let count = self
+            .forge_review_threads
+            .iter()
+            .filter(|thread| thread.is_outdated)
+            .flat_map(|thread| &thread.comments)
+            .filter(|comment| comment.is_draft)
+            .count();
+        match count {
+            0 => {}
+            1 => self.set_message("1 of your drafts is on an older patch set"),
+            n => self.set_message(format!("{n} of your drafts are on an older patch set")),
         }
     }
 
@@ -1183,6 +1222,18 @@ impl App {
         self.session.remote_comments_visibility = visibility;
         self.rebuild_annotations();
         true
+    }
+
+    /// Seed a fresh PR session with the configured `pr_comments_visibility`
+    /// default. Callers seed before the persisted-session restore, which
+    /// replaces the fresh session wholesale, so a saved visibility wins.
+    pub(in crate::app) fn seed_configured_visibility(
+        &self,
+        session: &mut crate::model::ReviewSession,
+    ) {
+        if let Some(visibility) = self.initial_comments_visibility {
+            session.remote_comments_visibility = visibility;
+        }
     }
 
     /// Abort an in-flight PR open. Drops the receiver so the eventual
@@ -1242,7 +1293,7 @@ impl App {
     pub fn open_pr_with_backend(
         &mut self,
         summary: &crate::forge::traits::PullRequestSummary,
-        backend: Box<dyn ForgeBackend>,
+        backend: Box<dyn ForgeBackend + Sync>,
         local_checkout: Option<std::path::PathBuf>,
     ) -> Result<()> {
         use crate::forge::pr_open::open_pull_request;
@@ -1254,12 +1305,13 @@ impl App {
             summary.number.to_string(),
         );
         let highlighter = self.theme.syntax_highlighter();
-        let opened = open_pull_request(
+        let mut opened = open_pull_request(
             backend.as_ref(),
             target,
             local_checkout.as_deref(),
             highlighter,
         )?;
+        self.seed_configured_visibility(&mut opened.session);
         let opened = Self::opened_pr_with_persisted_session(opened)?;
         // Sync thread + summary fetch — tests assert on
         // `app.forge_review_threads`/`forge_review_summaries` immediately

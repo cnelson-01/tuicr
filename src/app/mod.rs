@@ -12,7 +12,7 @@ use crate::error::{Result, TuicrError};
 use crate::forge::context::{ContextProvider, ForgeContextProvider, VcsContextProvider};
 use crate::forge::selector::PullRequestsTab;
 use crate::forge::traits::{ForgeBackend, ForgeRepository};
-use crate::model::review::FileReview;
+use crate::model::review::{CommentLocation, FileReview};
 use crate::model::{
     ClearScope, Comment, CommentType, DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin,
     LineRange, LineSide, ReviewSession, SessionDiffSource,
@@ -74,7 +74,7 @@ fn create_forge_backend(
     local_checkout: Option<PathBuf>,
     show_pr_checks: bool,
     show_pr_comments: bool,
-) -> Box<dyn ForgeBackend> {
+) -> Box<dyn ForgeBackend + Sync> {
     use crate::forge::traits::ForgeKind;
     match repo.kind {
         ForgeKind::GitHub => {
@@ -420,7 +420,11 @@ pub enum AnnotatedLine {
     /// A read-only line of a rendered remote review thread. Cursor cannot
     /// edit or reply to these in v1; the annotation is informational so
     /// hit-testing and scroll math stay correct.
-    RemoteThreadLine { thread_idx: usize },
+    RemoteThreadLine {
+        thread_idx: usize,
+        /// The root comment or reply whose rendered box row this is.
+        comment_idx: usize,
+    },
     /// Binary or empty file indicator
     BinaryOrEmpty { file_idx: usize },
     /// Spacing between files
@@ -701,6 +705,10 @@ pub enum InputMode {
     Console,
     /// Interactive rebase editor (`i` in the log, `:rebase -i`).
     RebaseEditor,
+    /// Runtime theme picker opened by `:theme`. Navigating the list applies
+    /// a live preview immediately; `/` opens a filter draft the same way the
+    /// file tree's `i`/`e`/`/` prompts work.
+    ThemePicker,
 }
 
 pub use blame::{BLAME_WIDTH, BlameState, overlay_label};
@@ -910,6 +918,41 @@ pub enum ConfirmAction {
     /// Run the git command in `App::pending_git` (force-delete a branch,
     /// delete a tag, push after previewing the outgoing commits)?
     GitCommand,
+    /// Delete the session under the cursor on the Sessions tab. Unlike
+    /// `CopyAndQuit` this returns to the selector instead of quitting.
+    DeleteSession,
+}
+
+impl ConfirmAction {
+    /// Mode to return to once the prompt is answered either way. Callers
+    /// that came from somewhere else (the stash picker, the selector's
+    /// history ops) restore their own mode after this.
+    pub fn return_mode(self) -> InputMode {
+        match self {
+            ConfirmAction::DeleteSession => InputMode::CommitSelect,
+            ConfirmAction::CopyAndQuit
+            | ConfirmAction::ContinueMergeOperation
+            | ConfirmAction::DiscardChanges
+            | ConfirmAction::DropStash
+            | ConfirmAction::HistoryRewrite
+            | ConfirmAction::GitCommand => InputMode::Normal,
+        }
+    }
+
+    /// Prompt shown in the dialog. Prompts that name what they act on (a
+    /// discard, a history rewrite, a git command) are built by the renderer
+    /// from the pending state; these are their fallbacks.
+    pub fn prompt(self) -> &'static str {
+        match self {
+            ConfirmAction::CopyAndQuit => "Copy review to clipboard?",
+            ConfirmAction::DeleteSession => "Delete this saved review?",
+            ConfirmAction::ContinueMergeOperation => "All conflicts resolved \u{2014} commit now?",
+            ConfirmAction::DiscardChanges => "Discard these changes?",
+            ConfirmAction::DropStash => "Drop this stash? This cannot be undone.",
+            ConfirmAction::HistoryRewrite => "Rewrite history?",
+            ConfirmAction::GitCommand => "Run this git command?",
+        }
+    }
 }
 
 /// Push a `MappedComment` onto the appropriate bucket. Free function so the
@@ -1239,6 +1282,15 @@ pub enum DiffViewMode {
     SideBySide,
 }
 
+/// Where wrapped unified diff rows continue: `Flow` wraps the whole row from
+/// the left edge, `Gutter` keeps wrapped content after the line-number gutter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WrapStyle {
+    #[default]
+    Flow,
+    Gutter,
+}
+
 /// Display order for the inline commit selector. The stored `review_commits`
 /// list is always newest-first; this only flips presentation (render + input
 /// mapping), never the underlying data model.
@@ -1372,6 +1424,7 @@ pub struct App {
     pub focused_panel: FocusedPanel,
     pub diff_view_mode: DiffViewMode,
     pub relative_line_numbers: bool,
+    pub wrap_style: WrapStyle,
     /// Which side the cursor targets in side-by-side view (old/left vs
     /// new/right). Drives the `▶` caret placement and the side a new line
     /// comment attaches to. Ignored in unified view. Defaults to `New`.
@@ -1384,12 +1437,14 @@ pub struct App {
     pub summary_state: SummaryState,
     /// File-tree include/exclude filters and `/` search.
     pub file_filter: FileTreeFilter,
+    /// Runtime `:theme` picker state.
+    pub theme_picker: ThemePickerState,
     pub command_buffer: String,
     pub(crate) command_completion: Option<CommandCompletionState>,
     pub(crate) command_return_mode: InputMode,
     pub search_buffer: String,
     pub last_search_pattern: Option<String>,
-    pub(crate) search_needle_lower: Option<String>,
+    pub(crate) diff_search_pattern: Option<crate::ui::text_utils::SearchPattern>,
     pub(crate) search_matches: Vec<usize>,
     pub(crate) search_matches_stale: bool,
     pub(crate) search_highlight_visible: bool,
@@ -1398,6 +1453,8 @@ pub struct App {
     pub(crate) overlay_return_mode: InputMode,
     pub comment_buffer: String,
     pub comment_cursor: usize,
+    /// Screen column retained across consecutive vertical moves in the default editor.
+    pub(crate) comment_preferred_column: Option<usize>,
     /// Config `comment_vim`: vim modal editing in the comment box.
     pub comment_vim_enabled: bool,
     /// Config `q_quits`: restore bare `q` as a quit key in review modes.
@@ -1547,6 +1604,10 @@ pub struct App {
     pub show_pr_comments: bool,
 
     pub should_quit: bool,
+    /// Set by `Ctrl-l` or a terminal resize. The main loop takes it before the
+    /// next draw and clears the screen, so ratatui repaints every cell instead
+    /// of only the ones that changed since the last frame.
+    full_redraw_pending: bool,
     pub dirty: bool,
     pub quit_warned: bool,
     pub message: Option<Message>,
@@ -1586,8 +1647,8 @@ pub struct App {
     /// flags are true so held-key auto-repeat (Press, Repeat, Repeat...)
     /// never satisfies the gate. Only meaningful on terminals that
     /// support kitty `REPORT_EVENT_TYPES`; on others Release events are
-    /// never emitted and the gate is bypassed via
-    /// `supports_keyboard_enhancement`.
+    /// never emitted, so the walk is off and j/k stop at the file's edges
+    /// (see `supports_keyboard_enhancement` in `cursor_down`).
     pub down_released_since_arm: bool,
     /// Symmetric inverse of [`down_released_since_arm`] for the prev-file
     /// walk gate.
@@ -1595,6 +1656,9 @@ pub struct App {
     pub cursor_line_highlight: bool,
     pub leader_key: char,
     pub scroll_offset: usize,
+    /// Lines scrolled per vertical mouse wheel tick (config
+    /// `mouse_scroll_lines`, default 3).
+    pub mouse_scroll_lines: usize,
     pub file_list_area: Option<ratatui::layout::Rect>,
     /// Area shared by the file tree and the diff from the last render, for
     /// turning a border drag into a tree-width percentage.
@@ -1622,6 +1686,10 @@ pub struct App {
     pub file_line_count_cache: HashMap<usize, u32>,
     /// Cached annotations describing what each rendered line represents
     pub line_annotations: Vec<AnnotatedLine>,
+    /// Hunks `color_visible_hunks` already visited, as `(file_idx, hunk_idx)`
+    /// so that they aren't re-colored.
+    /// Cleared by `rebuild_annotations`, which runs whenever the diff is replaced.
+    pub colored_hunks: HashSet<(usize, usize)>,
     /// Output to stdout instead of clipboard when exporting
     pub output_to_stdout: bool,
     /// Pending output to print to stdout after TUI exits
@@ -1640,6 +1708,9 @@ pub struct App {
     pub update_info: Option<UpdateInfo>,
     /// Accumulated digit count for {N}G jump-to-line
     pub pending_count: Option<usize>,
+    /// Source line from `--line`, applied once after the first render
+    /// (when the viewport height is known) so the target can be centered.
+    pub pending_start_line: Option<u32>,
 
     // Inline commit selector state (shown at top of diff view for multi-commit reviews)
     /// CommitInfo for commits in the current review (display order: newest first)
@@ -1734,6 +1805,9 @@ pub struct App {
     pub commit_order: CommitOrder,
     /// Which commits are selected when a multi-commit review first opens.
     pub commit_selection_start: CommitSelectionStart,
+    /// Configured `pr_comments_visibility` default for fresh PR sessions;
+    /// a persisted session restores its own value.
+    pub initial_comments_visibility: Option<crate::forge::remote_comments::PrCommentsVisibility>,
     /// Cached individual/subrange diffs keyed by (start_idx, end_idx) into review_commits
     pub commit_diff_cache: HashMap<(usize, usize), Vec<DiffFile>>,
     /// The combined "all selected" diff, cached for quick restoration
@@ -1967,6 +2041,70 @@ impl Default for FileTreeFilter {
     }
 }
 
+/// Runtime `:theme` picker state (`InputMode::ThemePicker`).
+///
+/// `candidates` is the full catalog (built-ins + local `*.toml` themes),
+/// built once when the picker opens. `filter` narrows the visible rows by
+/// substring; `draft` is the in-progress `/` prompt buffer, the same
+/// shape as `FileTreeDraft` -- `Some` steals keyboard input from
+/// navigation until it is committed (`Enter`) or discarded (`Esc`).
+#[derive(Default)]
+pub struct ThemePickerState {
+    pub candidates: Vec<String>,
+    pub filter: Option<String>,
+    pub draft: Option<String>,
+    /// Selection + scroll offset into the filtered view. A `ratatui::List`
+    /// rendered with this state auto-scrolls to keep the selection visible,
+    /// the same pattern as `FileListState`/`CommentNavigatorState`.
+    pub list_state: ratatui::widgets::ListState,
+    /// Snapshot of the theme active before the picker opened, restored on
+    /// `Esc`. `Theme` isn't cheap to identify by name (appearance/dark/light
+    /// resolution isn't invertible), so the picker keeps the actual value
+    /// rather than a name to re-resolve.
+    pub original: Option<Theme>,
+    /// Message active before the picker opened, restored with the theme on
+    /// `Esc` so preview warnings do not leak past a cancelled selection.
+    pub original_message: Option<Message>,
+}
+
+impl ThemePickerState {
+    /// Indices into `candidates` that survive the applied `filter`
+    /// (case-insensitive substring match; empty/absent filter shows all).
+    pub fn filtered_indices(&self) -> Vec<usize> {
+        match &self.filter {
+            None => (0..self.candidates.len()).collect(),
+            Some(needle) if needle.is_empty() => (0..self.candidates.len()).collect(),
+            Some(needle) => {
+                let needle_lower = needle.to_ascii_lowercase();
+                self.candidates
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, name)| name.to_ascii_lowercase().contains(&needle_lower))
+                    .map(|(idx, _)| idx)
+                    .collect()
+            }
+        }
+    }
+
+    /// Index into the filtered view currently highlighted.
+    pub fn selected(&self) -> usize {
+        self.list_state.selected().unwrap_or(0)
+    }
+
+    pub fn select(&mut self, index: usize) {
+        self.list_state.select(Some(index));
+    }
+
+    /// The candidate name currently highlighted, if any rows are visible.
+    pub fn selected_name(&self) -> Option<&str> {
+        let filtered = self.filtered_indices();
+        filtered
+            .get(self.selected())
+            .and_then(|idx| self.candidates.get(*idx))
+            .map(|s| s.as_str())
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct HelpState {
     pub scroll_offset: usize,
@@ -2022,6 +2160,8 @@ pub struct SummaryState {
     pub total_lines: usize, // Set during render
     /// Exclusive rendered-line ranges for each pending comment.
     pub comment_ranges: Vec<(usize, usize)>,
+    /// Stable deletion identities, including comments without a jump target.
+    pub comment_ids: Vec<String>,
     /// Stable jump targets in the same order as `comment_ranges`.
     /// A target is absent when the comment is hidden by the current diff,
     /// commit selection, or file-tree filters.
@@ -2029,27 +2169,10 @@ pub struct SummaryState {
     pub(crate) selection_needs_scroll: bool,
 }
 
-/// Represents a comment location for deletion
-enum CommentLocation {
-    Review {
-        index: usize,
-    },
-    File {
-        path: std::path::PathBuf,
-        index: usize,
-    },
-    Line {
-        path: std::path::PathBuf,
-        line: u32,
-        side: LineSide,
-        index: usize,
-    },
-}
-
 /// What `detect_vcs` needs to open a backend. Bundled because these two
 /// always travel together: they are chosen once at startup and then replayed
 /// verbatim by the diff-watch worker when it opens its own backend.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct VcsOpenOptions {
     git_backend_preference: GitBackendPreference,
     diff_whitespace_mode: DiffWhitespaceMode,
@@ -2078,6 +2201,8 @@ pub struct AppStartupOptions<'a> {
     pub show_pr_checks: bool,
     /// Whether pull-request conversation comments are fetched and rendered.
     pub show_pr_comments: bool,
+    /// Configured `pr_comments_visibility` default for fresh PR sessions.
+    pub pr_comments_visibility: Option<crate::forge::remote_comments::PrCommentsVisibility>,
     pub git_backend_preference: GitBackendPreference,
     pub diff_whitespace_mode: DiffWhitespaceMode,
     /// Which commits are selected when a multi-commit review first opens.
@@ -2097,7 +2222,7 @@ impl AppStartupOptions<'_> {
     fn vcs_open_options(&self) -> VcsOpenOptions {
         VcsOpenOptions {
             git_backend_preference: self.git_backend_preference,
-            diff_whitespace_mode: self.diff_whitespace_mode,
+            diff_whitespace_mode: self.diff_whitespace_mode.clone(),
         }
     }
 }
@@ -2105,6 +2230,7 @@ impl AppStartupOptions<'_> {
 mod annotations;
 mod blame;
 mod branches;
+mod coloring;
 mod comment_vim;
 mod comments;
 mod commit_filter;
@@ -2133,6 +2259,7 @@ mod search;
 mod session;
 pub mod sessions_tab;
 mod submit;
+mod theme_picker;
 mod tree;
 mod visual;
 

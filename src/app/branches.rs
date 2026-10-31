@@ -195,7 +195,7 @@ impl App {
         self.compare_pair(&base, &other);
     }
 
-    /// Ctrl-l: show the picked branches (or the cursor row) in the log pane.
+    /// Ctrl-o: show the picked branches (or the cursor row) in the log pane.
     pub fn branch_picker_log(&mut self) {
         let Some(picker) = self.branch_picker.as_ref() else {
             return;
@@ -403,7 +403,7 @@ impl App {
     pub(in crate::app) fn after_head_moved(&mut self) {
         match detect_vcs(
             self.vcs_open_options.git_backend_preference,
-            self.vcs_open_options.diff_whitespace_mode,
+            self.vcs_open_options.diff_whitespace_mode.clone(),
         ) {
             Ok(vcs) => {
                 self.vcs_info = vcs.info().clone();

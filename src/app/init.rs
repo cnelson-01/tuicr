@@ -4,6 +4,7 @@ use super::*;
 struct PrDisplayOptions {
     show_checks: bool,
     show_comments: bool,
+    comments_visibility: Option<crate::forge::remote_comments::PrCommentsVisibility>,
 }
 
 impl App {
@@ -27,17 +28,26 @@ impl App {
                 PrDisplayOptions {
                     show_checks: options.show_pr_checks,
                     show_comments: options.show_pr_comments,
+                    comments_visibility: options.pr_comments_visibility,
                 },
             );
         }
 
         // --file mode: open a single file for annotation without VCS
         if let Some(file_path) = options.file_path {
-            let vcs = Box::new(FileBackend::new(file_path)?);
+            let file_backend = FileBackend::new(file_path)?;
+            let session_source = match file_backend.mode() {
+                crate::vcs::file::FileMode::Single => SessionDiffSource::File,
+                crate::vcs::file::FileMode::Directory => SessionDiffSource::WorkingTree,
+                crate::vcs::file::FileMode::Pristine => {
+                    unreachable!("--file does not construct pristine mode")
+                }
+            };
+            let vcs = Box::new(file_backend);
             let vcs_info = vcs.info().clone();
             let highlighter = theme.syntax_highlighter();
             let diff_files = vcs.get_working_tree_diff(highlighter)?;
-            let session = Self::load_or_create_session(&vcs_info, SessionDiffSource::WorkingTree);
+            let session = Self::load_or_create_session(&vcs_info, session_source);
 
             let mut app = Self::build(
                 vcs,
@@ -133,7 +143,10 @@ impl App {
         }
 
         let vcs = crate::profile::time("startup.detect_vcs", || {
-            detect_vcs(options.git_backend_preference, options.diff_whitespace_mode)
+            detect_vcs(
+                options.git_backend_preference,
+                options.diff_whitespace_mode.clone(),
+            )
         })?;
         let vcs_info = vcs.info().clone();
         let highlighter =
@@ -154,6 +167,42 @@ impl App {
                 },
             )?;
             let commit_ids = revision_range.commit_ids.to_vec();
+
+            if commit_ids.is_empty() && !options.working_tree {
+                // Commit-range sessions need a selected commit for their identity.
+                // Preserve the ordinary empty-diff result instead of letting the
+                // session constructor unwrap an absent final commit.
+                return Err(TuicrError::NoChanges);
+            }
+
+            if options.working_tree && commit_ids.is_empty() {
+                // An empty range has no commit identity for a combined session;
+                // preserve `-w` behavior and review only staged/unstaged changes.
+                let diff_files = Self::get_working_tree_diff_with_ignore(
+                    vcs.as_ref(),
+                    &vcs_info.root_path,
+                    highlighter,
+                    options.path_filter,
+                )?;
+                let session =
+                    Self::load_or_create_session(&vcs_info, SessionDiffSource::StagedAndUnstaged);
+                let app = Self::build(
+                    vcs,
+                    vcs_info,
+                    theme,
+                    comment_type_configs,
+                    output_to_stdout,
+                    diff_files,
+                    session,
+                    DiffSource::StagedAndUnstaged,
+                    InputMode::Normal,
+                    Vec::new(),
+                    options.path_filter,
+                    options.repo_url_override.clone(),
+                )?
+                .with_vcs_open_options(options.vcs_open_options());
+                return Ok(app);
+            }
 
             if options.working_tree {
                 // Combined: commit range + staged/unstaged changes
@@ -496,6 +545,9 @@ impl App {
             focused_panel: FocusedPanel::Diff,
             diff_view_mode: DiffViewMode::Unified,
             relative_line_numbers: false,
+            // Wrapped code continues under the code, not under the line
+            // number (`wrap_style = "flow"` opts out).
+            wrap_style: WrapStyle::Gutter,
             cursor_side: LineSide::New,
             file_list_state: FileListState::default(),
             comment_navigator_state: CommentNavigatorState::default(),
@@ -503,12 +555,13 @@ impl App {
             help_state: HelpState::default(),
             summary_state: SummaryState::default(),
             file_filter: FileTreeFilter::default(),
+            theme_picker: ThemePickerState::default(),
             command_buffer: String::new(),
             command_completion: None,
             command_return_mode: InputMode::Normal,
             search_buffer: String::new(),
             last_search_pattern: None,
-            search_needle_lower: None,
+            diff_search_pattern: None,
             search_matches: Vec::new(),
             search_matches_stale: false,
             search_highlight_visible: false,
@@ -517,6 +570,7 @@ impl App {
             overlay_return_mode: InputMode::Normal,
             comment_buffer: String::new(),
             comment_cursor: 0,
+            comment_preferred_column: None,
             comment_vim_enabled: false,
             q_quits: false,
             comment_tab_width: 4,
@@ -573,6 +627,7 @@ impl App {
             show_pr_checks: false,
             show_pr_comments: true,
             should_quit: false,
+            full_redraw_pending: false,
             dirty: false,
             quit_warned: false,
             message: None,
@@ -591,6 +646,7 @@ impl App {
             cursor_line_highlight: true,
             leader_key: crate::config::DEFAULT_LEADER_KEY,
             scroll_offset: 0,
+            mouse_scroll_lines: crate::config::DEFAULT_MOUSE_SCROLL_LINES,
             file_list_area: None,
             content_area: None,
             comment_navigator_area: None,
@@ -605,12 +661,14 @@ impl App {
             expanded_bottom: HashMap::new(),
             file_line_count_cache: HashMap::new(),
             line_annotations: Vec::new(),
+            colored_hunks: HashSet::new(),
             output_to_stdout,
             pending_stdout_output: None,
             comment_cursor_screen_pos: None,
             comment_input_annotation_offset: None,
             update_info: None,
             pending_count: None,
+            pending_start_line: None,
             review_commits: Vec::new(),
             pr_commits: Vec::new(),
             pr_last_reviewed_commit_index: None,
@@ -650,6 +708,7 @@ impl App {
             pending_history: None,
             commit_order: CommitOrder::default(),
             commit_selection_start: CommitSelectionStart::default(),
+            initial_comments_visibility: None,
             commit_diff_cache: HashMap::new(),
             range_diff_files: None,
             saved_inline_selection: None,
@@ -860,6 +919,7 @@ impl App {
             PrDisplayOptions {
                 show_checks: false,
                 show_comments: true,
+                comments_visibility: None,
             },
         )
     }
@@ -954,12 +1014,17 @@ impl App {
             display_options.show_comments,
         );
         let highlighter = theme.syntax_highlighter();
-        let opened = open_pull_request(
+        let mut opened = open_pull_request(
             backend.as_ref(),
             parsed,
             local_checkout_for_target.as_deref(),
             highlighter,
         )?;
+        // Seed before the persisted-session restore, which replaces the
+        // fresh session wholesale, so a saved visibility always wins.
+        if let Some(visibility) = display_options.comments_visibility {
+            opened.session.remote_comments_visibility = visibility;
+        }
         let opened = Self::opened_pr_with_persisted_session(opened)?;
 
         let pr_source = PullRequestDiffSource::from_details(&opened.details);

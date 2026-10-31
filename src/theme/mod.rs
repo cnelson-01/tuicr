@@ -16,6 +16,13 @@ use two_face::theme::EmbeddedThemeName;
 use crate::config::themes_dir;
 use crate::syntax::SyntaxHighlighter;
 
+/// Whether a theme warning reports that its syntax theme fell back to a
+/// bundled theme. Shared by startup and the runtime theme picker.
+pub fn is_syntax_theme_fallback_warning(warning: &str) -> bool {
+    (warning.contains("syntax theme") || warning.contains("syntax_theme"))
+        && warning.contains("bundled")
+}
+
 #[derive(Clone)]
 pub enum SyntaxThemeSource {
     Embedded(EmbeddedThemeName),
@@ -24,6 +31,8 @@ pub enum SyntaxThemeSource {
 
 /// Complete color theme for the application
 pub struct Theme {
+    /// Optional marker color; omitted themes keep each indicator's legacy style.
+    pub selection_marker: Option<Color>,
     /// Cached syntax highlighter (lazily initialized). `Arc`-wrapped so a
     /// diff-watch worker thread can hold a cloned handle without rebuilding
     /// the grammar set, which is most of the cost this cache exists to avoid.
@@ -94,6 +103,62 @@ pub struct Theme {
     pub mode_bg: Color,
 }
 
+/// Manual `Clone` because `OnceLock` doesn't implement it. The cloned
+/// `Theme` starts with an empty highlighter cache -- it rebuilds lazily on
+/// first use, which only matters for the runtime theme picker's Esc-revert
+/// path (rare, not a render-time cost).
+impl Clone for Theme {
+    fn clone(&self) -> Self {
+        Self {
+            highlighter: OnceLock::new(),
+            selection_marker: self.selection_marker,
+            panel_bg: self.panel_bg,
+            bg_highlight: self.bg_highlight,
+            fg_primary: self.fg_primary,
+            fg_secondary: self.fg_secondary,
+            fg_dim: self.fg_dim,
+            diff_add: self.diff_add,
+            diff_add_bg: self.diff_add_bg,
+            diff_del: self.diff_del,
+            diff_del_bg: self.diff_del_bg,
+            diff_context: self.diff_context,
+            diff_hunk_header: self.diff_hunk_header,
+            expanded_context_fg: self.expanded_context_fg,
+            syntax_add_bg: self.syntax_add_bg,
+            syntax_del_bg: self.syntax_del_bg,
+            syntax_theme: self.syntax_theme.clone(),
+            file_added: self.file_added,
+            file_modified: self.file_modified,
+            file_deleted: self.file_deleted,
+            file_renamed: self.file_renamed,
+            reviewed: self.reviewed,
+            pending: self.pending,
+            comment_note: self.comment_note,
+            comment_suggestion: self.comment_suggestion,
+            comment_issue: self.comment_issue,
+            comment_praise: self.comment_praise,
+            border_focused: self.border_focused,
+            border_unfocused: self.border_unfocused,
+            status_bar_bg: self.status_bar_bg,
+            cursor_color: self.cursor_color,
+            cursor_line_bg: self.cursor_line_bg,
+            search_match_bg: self.search_match_bg,
+            branch_name: self.branch_name,
+            help_indicator: self.help_indicator,
+            message_info_fg: self.message_info_fg,
+            message_info_bg: self.message_info_bg,
+            message_warning_fg: self.message_warning_fg,
+            message_warning_bg: self.message_warning_bg,
+            message_error_fg: self.message_error_fg,
+            message_error_bg: self.message_error_bg,
+            update_badge_fg: self.update_badge_fg,
+            update_badge_bg: self.update_badge_bg,
+            mode_fg: self.mode_fg,
+            mode_bg: self.mode_bg,
+        }
+    }
+}
+
 impl Default for Theme {
     fn default() -> Self {
         Self::dark()
@@ -124,6 +189,7 @@ impl Theme {
     pub fn dark() -> Self {
         Self {
             highlighter: OnceLock::new(),
+            selection_marker: None,
 
             // Base colors
             panel_bg: Color::Rgb(24, 24, 28),
@@ -194,6 +260,7 @@ impl Theme {
     pub fn light() -> Self {
         Self {
             highlighter: OnceLock::new(),
+            selection_marker: None,
 
             // Base colors - dark text on light background
             panel_bg: Color::Rgb(245, 243, 232),
@@ -279,6 +346,7 @@ impl Theme {
 
         Self {
             highlighter: OnceLock::new(),
+            selection_marker: None,
 
             panel_bg: base3,
             bg_highlight: base2,
@@ -352,6 +420,7 @@ impl Theme {
 
         Self {
             highlighter: OnceLock::new(),
+            selection_marker: None,
 
             panel_bg: base03,
             bg_highlight: base02,
@@ -507,6 +576,7 @@ impl Theme {
     pub fn ayu_light() -> Self {
         Self {
             highlighter: OnceLock::new(),
+            selection_marker: None,
 
             // Base colors
             panel_bg: Color::Rgb(250, 250, 250),
@@ -598,6 +668,7 @@ impl Theme {
 
         Self {
             highlighter: OnceLock::new(),
+            selection_marker: None,
 
             panel_bg: bg,
             bg_highlight: selection,
@@ -658,6 +729,7 @@ impl Theme {
     pub fn onedark() -> Self {
         Self {
             highlighter: OnceLock::new(),
+            selection_marker: None,
 
             // Base colors
             panel_bg: Color::Rgb(40, 44, 52),
@@ -728,6 +800,7 @@ impl Theme {
     pub fn github_light() -> Self {
         Self {
             highlighter: OnceLock::new(),
+            selection_marker: None,
 
             panel_bg: Color::Rgb(255, 255, 255),
             bg_highlight: Color::Rgb(221, 244, 255),
@@ -788,6 +861,7 @@ impl Theme {
     pub fn github_dark() -> Self {
         Self {
             highlighter: OnceLock::new(),
+            selection_marker: None,
 
             panel_bg: Color::Rgb(13, 17, 23),
             bg_highlight: Color::Rgb(33, 38, 45),
@@ -848,6 +922,7 @@ impl Theme {
     pub fn github_dark_colorblind() -> Self {
         Self {
             highlighter: OnceLock::new(),
+            selection_marker: None,
             panel_bg: Color::Rgb(0x0d, 0x11, 0x17),
             bg_highlight: Color::Rgb(0x1e, 0x42, 0x73),
             fg_primary: Color::Rgb(0xf0, 0xf6, 0xfc),
@@ -923,6 +998,7 @@ impl Theme {
 
         Self {
             highlighter: OnceLock::new(),
+            selection_marker: None,
 
             panel_bg: bg,
             bg_highlight,
@@ -1000,6 +1076,7 @@ impl Theme {
 
         Self {
             highlighter: OnceLock::new(),
+            selection_marker: None,
 
             panel_bg: bg,
             bg_highlight,
@@ -1365,6 +1442,7 @@ fn catppuccin_theme(flavor: CatppuccinFlavor, syntect_theme: EmbeddedThemeName) 
 
     Theme {
         highlighter: OnceLock::new(),
+        selection_marker: None,
 
         // Base colors
         panel_bg: flavor.base,
@@ -1441,6 +1519,7 @@ fn gruvbox_theme(flavor: GruvboxFlavor) -> Theme {
 
     Theme {
         highlighter: OnceLock::new(),
+        selection_marker: None,
 
         // Base colors
         panel_bg: flavor.bg0,
@@ -1514,6 +1593,7 @@ fn everforest_theme(flavor: EverforestFlavor) -> Theme {
 
     Theme {
         highlighter: OnceLock::new(),
+        selection_marker: None,
 
         panel_bg: flavor.bg0,
         bg_highlight: flavor.bg3,
@@ -1579,6 +1659,7 @@ fn nord_theme(flavor: NordFlavor) -> Theme {
 
     Theme {
         highlighter: OnceLock::new(),
+        selection_marker: None,
 
         panel_bg: flavor.bg0,
         bg_highlight: flavor.bg1,
@@ -1743,6 +1824,36 @@ impl std::str::FromStr for ThemeArg {
 
 pub(crate) fn built_in_theme_names_display() -> String {
     ThemeArg::valid_values_display()
+}
+
+/// Every bundled built-in theme name, in the fixed catalog order.
+pub(crate) fn built_in_theme_names() -> Vec<String> {
+    THEME_CHOICES
+        .iter()
+        .map(|(name, _)| name.to_string())
+        .collect()
+}
+
+/// Names of `*.toml` theme files in the user's local theme directory,
+/// sorted, without the `.toml` extension. Missing directory -> empty list.
+pub(crate) fn list_local_theme_names(theme_dir: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(theme_dir) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("toml") {
+                return None;
+            }
+            path.file_stem()
+                .and_then(|stem| stem.to_str())
+                .map(|s| s.to_string())
+        })
+        .collect();
+    names.sort();
+    names
 }
 
 impl AppearanceArg {
@@ -2071,10 +2182,19 @@ fn load_custom_syntect_theme(
     let resolved = if syntax_path.is_absolute() {
         syntax_path.to_path_buf()
     } else {
-        theme_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join(syntax_path)
+        let theme_dir = theme_path.parent().unwrap_or_else(|| Path::new("."));
+        let link_relative = theme_dir.join(syntax_path);
+
+        if link_relative.exists() || !theme_path.is_symlink() {
+            link_relative
+        } else {
+            theme_path
+                .canonicalize()
+                .ok()
+                .and_then(|target| target.parent().map(|parent| parent.join(syntax_path)))
+                .filter(|target_relative| target_relative.exists())
+                .unwrap_or(link_relative)
+        }
     };
 
     if resolved.extension().and_then(|ext| ext.to_str()) != Some("tmTheme") {
@@ -2096,6 +2216,7 @@ fn load_custom_syntect_theme(
 // tests stay aligned even though Rust cannot derive TOML field names from the
 // `Theme` struct itself.
 const LOCAL_THEME_KEYS: &[&str] = &[
+    "selection_marker",
     "panel_bg",
     "bg_highlight",
     "fg_primary",
@@ -2168,14 +2289,36 @@ fn load_local_theme_from_path(path: &Path) -> Result<(Theme, Vec<String>), Strin
             path.display()
         ));
     }
-    let syntax_theme = parse_optional_local_theme_string(table, "syntax_theme")?;
+    let syntax_theme = match parse_optional_local_theme_string(table, "syntax_theme") {
+        Ok(syntax_theme) => syntax_theme,
+        Err(err) => {
+            warnings.push(format!(
+                "Warning: Invalid syntax_theme in local theme '{}': {err}; using bundled syntax theme",
+                path.display()
+            ));
+            None
+        }
+    };
     let syntax_theme = match syntax_theme.as_deref() {
-        Some(value) => SyntaxThemeSource::Custom(Box::new(load_custom_syntect_theme(path, value)?)),
+        Some(value) => match load_custom_syntect_theme(path, value) {
+            Ok(theme) => SyntaxThemeSource::Custom(Box::new(theme)),
+            Err(err) => {
+                warnings.push(format!(
+                    "Warning: Failed to load syntax theme for local theme '{}': {err}; using bundled syntax theme",
+                    path.display()
+                ));
+                SyntaxThemeSource::Embedded(fallback_embedded_theme_for_panel_bg(panel_bg))
+            }
+        },
         None => SyntaxThemeSource::Embedded(fallback_embedded_theme_for_panel_bg(panel_bg)),
     };
 
     let theme = Theme {
         highlighter: OnceLock::new(),
+        selection_marker: table
+            .get("selection_marker")
+            .map(|_| require_local_theme_color(table, "selection_marker"))
+            .transpose()?,
         panel_bg,
         bg_highlight: require_local_theme_color(table, "bg_highlight")?,
         fg_primary: require_local_theme_color(table, "fg_primary")?,
@@ -2241,7 +2384,7 @@ fn normalize_local_theme_name(name: &str) -> Result<String, String> {
     Ok(trimmed.to_ascii_lowercase())
 }
 
-fn resolve_theme_name(
+pub(crate) fn resolve_theme_name(
     name: &str,
     theme_dir: &Path,
 ) -> Result<Option<(Theme, Vec<String>)>, String> {
@@ -2644,6 +2787,37 @@ mode_bg = "#82aaff"
     }
 
     #[test]
+    fn selection_marker_is_optional_in_local_themes() {
+        let dir = tempdir().unwrap();
+        for (extra, expected) in [
+            ("", None),
+            (
+                "selection_marker = \"#242d38\"",
+                Some(Color::Rgb(36, 45, 56)),
+            ),
+            ("selection_marker = \"light_blue\"", Some(Color::LightBlue)),
+        ] {
+            let path = write_local_theme(dir.path(), "marker", &sample_local_theme_body(extra));
+            let (theme, warnings) = load_local_theme_from_path(&path).unwrap();
+            assert_eq!(theme.selection_marker, expected);
+            assert!(warnings.is_empty());
+        }
+    }
+
+    #[test]
+    fn invalid_selection_marker_rejects_local_theme() {
+        let dir = tempdir().unwrap();
+        for value in ["true", "42", "\"#12\"", "\"#é2345\"", "\"unknown\""] {
+            let body = sample_local_theme_body(&format!("selection_marker = {value}"));
+            let path = write_local_theme(dir.path(), "marker", &body);
+            let error = load_local_theme_from_path(&path)
+                .err()
+                .expect("invalid marker");
+            assert!(error.contains("Theme key 'selection_marker'"));
+        }
+    }
+
+    #[test]
     fn should_resolve_local_theme_name_from_directory() {
         let dir = tempdir().expect("failed to create temp dir");
         let tm_theme_path = dir.path().join("example.tmTheme");
@@ -2660,6 +2834,141 @@ mode_bg = "#82aaff"
         assert_eq!(theme.panel_bg, Color::Rgb(1, 22, 39));
         assert!(theme.uses_custom_syntax_theme());
         assert!(warnings.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_resolve_local_syntax_theme_relative_to_symlink_target() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().expect("failed to create temp dir");
+        let source_dir = dir.path().join("source");
+        let themes_dir = dir.path().join("themes");
+        fs::create_dir(&source_dir).expect("failed to create source directory");
+        fs::create_dir(&themes_dir).expect("failed to create themes directory");
+
+        let source_theme = write_local_theme(
+            &source_dir,
+            "local-teal",
+            &sample_local_theme_body(r#"syntax_theme = "example.tmTheme""#),
+        );
+        fs::write(source_dir.join("example.tmTheme"), sample_tm_theme())
+            .expect("failed to write tmTheme");
+        let linked_theme = themes_dir.join("local-teal.toml");
+        symlink(&source_theme, &linked_theme).expect("failed to symlink local theme");
+
+        let (theme, warnings) = load_local_theme_from_path(&linked_theme)
+            .expect("symlinked theme should load its target-relative syntax theme");
+        assert_eq!(theme.panel_bg, Color::Rgb(1, 22, 39));
+        assert!(theme.uses_custom_syntax_theme());
+        assert!(warnings.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_prefer_syntax_theme_next_to_symlink_over_target() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().expect("failed to create temp dir");
+        let source_dir = dir.path().join("source");
+        let themes_dir = dir.path().join("themes");
+        fs::create_dir(&source_dir).expect("failed to create source directory");
+        fs::create_dir(&themes_dir).expect("failed to create themes directory");
+
+        let source_theme = write_local_theme(
+            &source_dir,
+            "local-teal",
+            &sample_local_theme_body(r#"syntax_theme = "example.tmTheme""#),
+        );
+        fs::write(source_dir.join("example.tmTheme"), sample_tm_theme())
+            .expect("failed to write target tmTheme");
+        fs::write(
+            themes_dir.join("example.tmTheme"),
+            sample_tm_theme().replace("Fixture Theme", "Link Theme"),
+        )
+        .expect("failed to write link-adjacent tmTheme");
+        let linked_theme = themes_dir.join("local-teal.toml");
+        symlink(&source_theme, &linked_theme).expect("failed to symlink local theme");
+
+        let (theme, warnings) = load_local_theme_from_path(&linked_theme)
+            .expect("link-adjacent syntax theme should load");
+        let SyntaxThemeSource::Custom(syntax_theme) = theme.syntax_theme else {
+            panic!("local syntax theme should be used");
+        };
+        assert_eq!(syntax_theme.name.as_deref(), Some("Link Theme"));
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn should_keep_local_theme_when_syntax_theme_is_missing() {
+        let dir = tempdir().expect("failed to create temp dir");
+        let path = write_local_theme(
+            dir.path(),
+            "local-teal",
+            &sample_local_theme_body(r#"syntax_theme = "missing.tmTheme""#),
+        );
+
+        let (theme, warnings) = load_local_theme_from_path(&path)
+            .expect("a missing syntax theme should not reject the local UI theme");
+        assert_eq!(theme.panel_bg, Color::Rgb(1, 22, 39));
+        assert_eq!(
+            theme.embedded_syntax_theme_name(),
+            Some(EmbeddedThemeName::Base16EightiesDark)
+        );
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("Failed to load syntax theme"));
+    }
+
+    #[test]
+    fn should_keep_local_theme_when_syntax_theme_setting_is_invalid() {
+        let dir = tempdir().expect("failed to create temp dir");
+
+        for syntax_setting in [r#"syntax_theme = 42"#, r#"syntax_theme = """#] {
+            let path = write_local_theme(
+                dir.path(),
+                "local-teal",
+                &sample_local_theme_body(syntax_setting),
+            );
+
+            let (theme, warnings) = load_local_theme_from_path(&path)
+                .expect("an invalid syntax_theme setting should not reject the local UI theme");
+            assert_eq!(theme.panel_bg, Color::Rgb(1, 22, 39));
+            assert_eq!(
+                theme.embedded_syntax_theme_name(),
+                Some(EmbeddedThemeName::Base16EightiesDark)
+            );
+            assert_eq!(warnings.len(), 1);
+            assert!(warnings[0].contains("syntax_theme"));
+            assert!(warnings[0].contains("using bundled syntax theme"));
+        }
+    }
+
+    #[test]
+    fn list_local_theme_names_returns_empty_for_missing_directory() {
+        let dir = tempdir().expect("failed to create temp dir");
+        let missing = dir.path().join("does-not-exist");
+        assert!(list_local_theme_names(&missing).is_empty());
+    }
+
+    #[test]
+    fn list_local_theme_names_lists_only_toml_files_sorted() {
+        let dir = tempdir().expect("failed to create temp dir");
+        write_local_theme(dir.path(), "zeta", &sample_local_theme_body(""));
+        write_local_theme(dir.path(), "alpha", &sample_local_theme_body(""));
+        fs::write(dir.path().join("notes.txt"), "not a theme").expect("write stray file");
+
+        assert_eq!(
+            list_local_theme_names(dir.path()),
+            vec!["alpha".to_string(), "zeta".to_string()]
+        );
+    }
+
+    #[test]
+    fn built_in_theme_names_matches_known_count_and_values() {
+        let names = built_in_theme_names();
+        assert_eq!(names.len(), 24);
+        assert!(names.contains(&"dark".to_string()));
+        assert!(names.contains(&"catppuccin-mocha".to_string()));
     }
 
     #[test]

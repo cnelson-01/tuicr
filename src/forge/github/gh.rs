@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Result, TuicrError};
 use crate::forge::local_git::read_blob;
+use crate::forge::local_merge_base;
 use crate::forge::remote_comments::{RemoteReviewSummary, RemoteReviewThread};
 use crate::forge::traits::{
     ForgeBackend, ForgeFileLinesRequest, ForgeRepository, GhCreateReviewResponse,
@@ -243,7 +244,7 @@ where
 
 impl<R> ForgeBackend for GitHubGhBackend<R>
 where
-    R: GhCommandRunner,
+    R: GhCommandRunner + Sync,
 {
     fn list_pull_requests(&self, query: PullRequestListQuery) -> Result<PagedPullRequests> {
         let page_size = query.page_size.max(1);
@@ -317,19 +318,29 @@ where
         // into duplicate `DiffFile`s. Plain `gh pr diff` (no `--patch`)
         // returns the single cumulative diff. Hard-won lesson; see the
         // duplicate-files-in-list bug.
-        let metadata = self.pull_request_file_metadata(pr)?;
-        let patch = self.run_gh(
-            vec![
-                "pr".to_string(),
-                "diff".to_string(),
-                pr.number.to_string(),
-                "--repo".to_string(),
-                gh_repo_arg(&pr.repository),
-                "--color".to_string(),
-                "never".to_string(),
-            ],
-            &pr.repository.host,
-        )?;
+        //
+        // The file list and the patch text are independent requests, so they
+        // run concurrently. A file-list error still wins over a patch error,
+        // as it did when the file list was fetched first.
+        let (metadata, patch) = crate::forge::join(
+            || self.pull_request_file_metadata(pr),
+            || {
+                self.run_gh(
+                    vec![
+                        "pr".to_string(),
+                        "diff".to_string(),
+                        pr.number.to_string(),
+                        "--repo".to_string(),
+                        gh_repo_arg(&pr.repository),
+                        "--color".to_string(),
+                        "never".to_string(),
+                    ],
+                    &pr.repository.host,
+                )
+            },
+        );
+        let metadata = metadata?;
+        let patch = patch?;
         pair_metadata_with_patch(metadata, patch.as_bytes())
     }
 
@@ -413,6 +424,37 @@ where
         args.push(endpoint);
         let patch = self.run_gh(args, &pr.repository.host)?;
         pair_metadata_with_patch(metadata, patch.as_bytes())
+    }
+
+    fn resolve_diff_base_sha(&self, pr: &PullRequestDetails) -> Option<String> {
+        // GraphQL's `baseRefOid` usually equals the merge base, but it tracks
+        // the base branch tip once the base moves under a long-lived PR. The
+        // PR diff stays three-dot, so the old side would then be read at the
+        // wrong revision.
+        if let Some(root) = self.local_checkout.as_deref()
+            && let Some(sha) = local_merge_base(root, &pr.base_sha, &pr.head_sha)
+        {
+            return Some(sha);
+        }
+
+        // `per_page=1` trims the `commits` array; `files` is returned either
+        // way, so this stays one modest request rather than a cheap one.
+        let endpoint = format!(
+            "repos/{}/{}/compare/{}...{}?per_page=1",
+            pr.repository.owner, pr.repository.name, pr.base_sha, pr.head_sha,
+        );
+        let mut args = vec!["api".to_string()];
+        if pr.repository.host != DEFAULT_GITHUB_HOST {
+            args.push("--hostname".to_string());
+            args.push(pr.repository.host.clone());
+        }
+        args.push(endpoint);
+        let output = self.run_gh(args, &pr.repository.host).ok()?;
+        let comparison: GhCompare = serde_json::from_str(&output).ok()?;
+        comparison
+            .merge_base_commit
+            .map(|commit| commit.sha)
+            .filter(|sha| !sha.is_empty())
     }
 
     fn list_review_threads(&self, pr: &PullRequestDetails) -> Result<Vec<RemoteReviewThread>> {
@@ -1024,7 +1066,7 @@ index 1111111..2222222 100644
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
+    use std::sync::Mutex;
 
     use super::*;
     use crate::forge::traits::ForgeBackend;
@@ -1089,21 +1131,21 @@ index 1111111..2222222 100644
 
     #[derive(Default)]
     struct FakeGhRunner {
-        calls: RefCell<Vec<Vec<String>>>,
+        calls: Mutex<Vec<Vec<String>>>,
         /// Captured stdin payloads, paired in order with `calls` entries that
         /// went through `run_with_stdin`. Empty for plain `run` invocations.
-        stdin_calls: RefCell<Vec<(Vec<String>, String)>>,
+        stdin_calls: Mutex<Vec<(Vec<String>, String)>>,
         /// When set, `run_with_stdin` returns this error instead of a stub
         /// success response. Lets tests exercise error mapping.
-        stdin_error: RefCell<Option<GhCommandError>>,
+        stdin_error: Mutex<Option<GhCommandError>>,
         /// When set, `run_with_stdin` returns this body as the success output.
         /// Defaults to `CREATE_REVIEW_RESPONSE_JSON` when None.
-        stdin_response: RefCell<Option<String>>,
+        stdin_response: Mutex<Option<String>>,
     }
 
     impl GhCommandRunner for FakeGhRunner {
         fn run(&self, args: &[String]) -> GhCommandResult<String> {
-            self.calls.borrow_mut().push(args.to_vec());
+            self.calls.lock().unwrap().push(args.to_vec());
             match args.first().map(String::as_str) {
                 // gh pr list/view/diff — second arg is the subcommand.
                 Some("pr") => match args.get(1).map(String::as_str) {
@@ -1153,7 +1195,10 @@ index 1111111..2222222 100644
                 {
                     Ok(PR_COMMITS_JSON.to_string())
                 }
-                // gh api repos/.../compare/<base>...<head> (range diff).
+                // gh api repos/.../compare/<base>...<head>. The range diff
+                // asks for `Accept: ...diff` and gets patch text; without
+                // that header the same endpoint is the merge-base lookup and
+                // returns JSON.
                 Some("api") if args.iter().any(|a| a.contains("/compare/")) => {
                     if args
                         .iter()
@@ -1172,16 +1217,18 @@ index 1111111..2222222 100644
         }
 
         fn run_with_stdin(&self, args: &[String], stdin: &str) -> GhCommandResult<String> {
-            self.calls.borrow_mut().push(args.to_vec());
+            self.calls.lock().unwrap().push(args.to_vec());
             self.stdin_calls
-                .borrow_mut()
+                .lock()
+                .unwrap()
                 .push((args.to_vec(), stdin.to_string()));
-            if let Some(err) = self.stdin_error.borrow().clone() {
+            if let Some(err) = self.stdin_error.lock().unwrap().clone() {
                 return Err(err);
             }
             Ok(self
                 .stdin_response
-                .borrow()
+                .lock()
+                .unwrap()
                 .clone()
                 .unwrap_or_else(|| CREATE_REVIEW_RESPONSE_JSON.to_string()))
         }
@@ -1212,7 +1259,17 @@ index 1111111..2222222 100644
 
     const PR_FILES_JSON: &str = r##"[{"filename":"src/lib.rs","status":"modified"}]"##;
 
-    const COMPARE_JSON: &str = r##"{"files":[{"filename":"src/lib.rs","status":"modified"}]}"##;
+    /// `compare` without the diff Accept header. Carries both readers of this
+    /// endpoint: the file metadata the range diff pairs with the patch, and
+    /// the merge base. `merge_base_commit.sha` deliberately differs from the
+    /// `baseaaa` tip the mock reports as `baseRefOid` — that drift is exactly
+    /// what `resolve_diff_base_sha` exists to correct.
+    const COMPARE_JSON: &str = r##"{
+        "status": "diverged",
+        "merge_base_commit": { "sha": "mergebase111" },
+        "commits": [],
+        "files": [{"filename":"src/lib.rs","status":"modified"}]
+    }"##;
 
     const COMPARE_DIFF: &str = r##"diff --git a/src/lib.rs b/src/lib.rs
 index 1111111..2222222 100644
@@ -1599,7 +1656,7 @@ Match host github-work
         assert_eq!(result.pull_requests[0].number, 148);
         assert_eq!(result.pull_requests[0].author.as_deref(), Some("alice"));
 
-        let calls = backend.runner.calls.borrow();
+        let calls = backend.runner.calls.lock().unwrap();
         assert_eq!(
             calls[0],
             vec![
@@ -1629,7 +1686,7 @@ Match host github-work
             ))
             .unwrap();
 
-        let calls = backend.runner.calls.borrow();
+        let calls = backend.runner.calls.lock().unwrap();
         assert_eq!(
             calls[0],
             vec![
@@ -1667,7 +1724,7 @@ Match host github-work
         assert_eq!(result.total_loaded, 2);
         assert_eq!(result.pull_requests[0].number, 125);
 
-        let calls = backend.runner.calls.borrow();
+        let calls = backend.runner.calls.lock().unwrap();
         assert_eq!(
             calls[0],
             vec![
@@ -1694,7 +1751,7 @@ Match host github-work
             .list_pull_requests(PullRequestListQuery::first_page(repository, 1))
             .unwrap();
 
-        let calls = backend.runner.calls.borrow();
+        let calls = backend.runner.calls.lock().unwrap();
         assert_eq!(calls[0][3], "github.example.com/agavra/tuicr");
     }
 
@@ -1721,7 +1778,7 @@ Match host github-work
             .unwrap();
 
         assert!(info.checks.is_empty());
-        let calls = backend.runner.calls.borrow();
+        let calls = backend.runner.calls.lock().unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(
             calls[0].last().map(String::as_str),
@@ -1747,7 +1804,7 @@ Match host github-work
             .unwrap();
 
         assert!(info.issue_comments.is_empty());
-        let calls = backend.runner.calls.borrow();
+        let calls = backend.runner.calls.lock().unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(
             calls[0].last().map(String::as_str),
@@ -1803,7 +1860,7 @@ Match host github-work
             .unwrap();
         let _ = backend.get_pull_request_diff(&details).unwrap();
 
-        let calls = backend.runner.calls.borrow();
+        let calls = backend.runner.calls.lock().unwrap();
         let diff_call = calls
             .iter()
             .find(|args| {
@@ -1815,6 +1872,115 @@ Match host github-work
             !diff_call.iter().any(|a| a == "--patch"),
             "`gh pr diff` must NOT pass --patch (mbox output duplicates files); got {diff_call:?}"
         );
+    }
+
+    /// Wraps `FakeGhRunner`, sleeping on every call and optionally failing
+    /// the file-list or `gh pr diff` request, to exercise the concurrent
+    /// fetch in `get_pull_request_diff`.
+    #[derive(Default)]
+    struct SlowGhRunner {
+        inner: FakeGhRunner,
+        delay_ms: u64,
+        fail_files: bool,
+        fail_diff: bool,
+        in_flight: std::sync::atomic::AtomicUsize,
+        peak_in_flight: std::sync::atomic::AtomicUsize,
+    }
+
+    impl GhCommandRunner for SlowGhRunner {
+        fn run(&self, args: &[String]) -> GhCommandResult<String> {
+            use std::sync::atomic::Ordering::SeqCst;
+            let now = self.in_flight.fetch_add(1, SeqCst) + 1;
+            self.peak_in_flight.fetch_max(now, SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(self.delay_ms));
+            self.in_flight.fetch_sub(1, SeqCst);
+            let is_files = args
+                .iter()
+                .any(|a| a.contains("/pulls/") && a.contains("/files"));
+            let is_diff = args.first().map(String::as_str) == Some("pr")
+                && args.get(1).map(String::as_str) == Some("diff");
+            if (self.fail_files && is_files) || (self.fail_diff && is_diff) {
+                return Err(GhCommandError::Failed {
+                    status: Some(1),
+                    stderr: if is_files {
+                        "files failed"
+                    } else {
+                        "diff failed"
+                    }
+                    .to_string(),
+                });
+            }
+            self.inner.run(args)
+        }
+    }
+
+    #[test]
+    fn should_fetch_pr_file_list_and_patch_concurrently() {
+        // given — every gh call takes 150ms.
+        let runner = SlowGhRunner {
+            delay_ms: 150,
+            ..Default::default()
+        };
+        let backend = GitHubGhBackend::with_runner(Some(repo()), runner);
+        let details = backend
+            .get_pull_request(parse_pull_request_target("125").unwrap())
+            .unwrap();
+        // when
+        let started = std::time::Instant::now();
+        let patches = backend.get_pull_request_diff(&details).unwrap();
+        let elapsed = started.elapsed();
+        // then — both requests overlapped, so the pair costs one round trip.
+        assert_eq!(patches.len(), 1);
+        assert_eq!(
+            backend
+                .runner
+                .peak_in_flight
+                .load(std::sync::atomic::Ordering::SeqCst),
+            2
+        );
+        assert!(
+            elapsed < std::time::Duration::from_millis(300),
+            "expected ~150ms, took {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn should_report_pr_diff_errors_in_the_sequential_order() {
+        let gh_error = |stderr: &str| {
+            map_gh_error(
+                GhCommandError::Failed {
+                    status: Some(1),
+                    stderr: stderr.to_string(),
+                },
+                DEFAULT_GITHUB_HOST,
+            )
+            .to_string()
+        };
+        // The file list used to be fetched first, so its error wins.
+        for (fail_files, fail_diff, expected) in [
+            (true, false, gh_error("files failed")),
+            (false, true, gh_error("diff failed")),
+            (true, true, gh_error("files failed")),
+        ] {
+            // given
+            let runner = SlowGhRunner {
+                fail_files,
+                fail_diff,
+                ..Default::default()
+            };
+            let backend = GitHubGhBackend::with_runner(Some(repo()), runner);
+            let details = backend
+                .get_pull_request(parse_pull_request_target("125").unwrap())
+                .unwrap();
+            // when
+            let error = backend.get_pull_request_diff(&details).unwrap_err();
+            // then
+            assert_eq!(
+                error.to_string(),
+                expected,
+                "fail_files={fail_files} fail_diff={fail_diff}"
+            );
+        }
     }
 
     #[test]
@@ -1833,7 +1999,7 @@ Match host github-work
         assert_eq!(threads[0].path, "src/lib.rs");
         // and — the API call was placed against `gh api graphql` with the
         // owner/name/number parameters.
-        let calls = backend.runner.calls.borrow();
+        let calls = backend.runner.calls.lock().unwrap();
         let graphql_call = calls
             .iter()
             .find(|args| args.first().map(String::as_str) == Some("api"))
@@ -1860,7 +2026,7 @@ Match host github-work
         assert_eq!(summaries[0].author.as_deref(), Some("alice"));
         assert_eq!(summaries[0].body, "Overall LGTM");
         // and — the call routes the `reviews(` query, not `reviewThreads(`.
-        let calls = backend.runner.calls.borrow();
+        let calls = backend.runner.calls.lock().unwrap();
         let summaries_call = calls
             .iter()
             .find(|args| {
@@ -1891,7 +2057,7 @@ Match host github-work
             Some("bbbbbbb2222222222222222222222222222bbbb")
         );
         // and — the query requests viewer login and review commit oids.
-        let calls = backend.runner.calls.borrow();
+        let calls = backend.runner.calls.lock().unwrap();
         let metadata_call = calls
             .iter()
             .find(|args| {
@@ -1923,7 +2089,7 @@ Match host github-work
         assert!(commits[0].timestamp.is_some());
         assert_eq!(commits[1].summary, "Second commit");
         // and — the call targeted the pulls/<n>/commits endpoint.
-        let calls = backend.runner.calls.borrow();
+        let calls = backend.runner.calls.lock().unwrap();
         let commits_call = calls
             .iter()
             .find(|args| {
@@ -1950,7 +2116,7 @@ Match host github-work
         assert_eq!(diff.len(), 1);
         assert!(diff[0].patch.contains("diff --git a/src/lib.rs"));
         // and — the call hit the compare endpoint with the Accept diff header.
-        let calls = backend.runner.calls.borrow();
+        let calls = backend.runner.calls.lock().unwrap();
         let compare_call = calls
             .iter()
             .find(|args| {
@@ -1962,6 +2128,137 @@ Match host github-work
             })
             .expect("expected a compare api call");
         assert!(compare_call.contains(&"Accept: application/vnd.github.diff".to_string()));
+    }
+
+    #[test]
+    fn should_resolve_diff_base_sha_to_compare_merge_base_not_base_ref_oid() {
+        // given — the mock reports baseRefOid 1234567890abcdef while compare
+        // reports a different merge base, i.e. the base branch has moved.
+        let runner = FakeGhRunner::default();
+        let backend = GitHubGhBackend::with_runner(Some(repo()), runner);
+        let details = backend
+            .get_pull_request(parse_pull_request_target("125").unwrap())
+            .unwrap();
+        assert_eq!(details.base_sha, "1234567890abcdef");
+        // when
+        let resolved = backend.resolve_diff_base_sha(&details);
+        // then — the three-dot merge base wins over the branch tip.
+        assert_eq!(resolved.as_deref(), Some("mergebase111"));
+        // and — it hit compare between the reported base and head, without
+        // the diff Accept header that would return patch text instead.
+        let calls = backend.runner.calls.lock().unwrap();
+        let compare_call = calls
+            .iter()
+            .find(|args| {
+                args.iter()
+                    .any(|a| a.contains("/compare/1234567890abcdef...abcdef1234567890"))
+            })
+            .expect("expected a compare api call");
+        assert!(!compare_call.contains(&"Accept: application/vnd.github.diff".to_string()));
+        assert!(compare_call.iter().any(|a| a.contains("per_page=1")));
+    }
+
+    #[test]
+    fn should_leave_diff_base_sha_unrefined_when_compare_call_fails() {
+        // given — a runner that fails every call.
+        struct FailingGhRunner;
+        impl GhCommandRunner for FailingGhRunner {
+            fn run(&self, _args: &[String]) -> GhCommandResult<String> {
+                Err(GhCommandError::Failed {
+                    status: Some(1),
+                    stderr: "network down".to_string(),
+                })
+            }
+        }
+        let details = GitHubGhBackend::with_runner(Some(repo()), FakeGhRunner::default())
+            .get_pull_request(parse_pull_request_target("125").unwrap())
+            .unwrap();
+        let backend = GitHubGhBackend::with_runner(Some(repo()), FailingGhRunner);
+        // when
+        let resolved = backend.resolve_diff_base_sha(&details);
+        // then — best-effort: callers keep the unrefined base_sha.
+        assert_eq!(resolved, None);
+    }
+
+    /// Run `git` in `root`, returning trimmed stdout. Panics on failure so
+    /// setup problems surface as test errors rather than silent `None`s.
+    fn git(root: &Path, args: &[&str]) -> String {
+        let out = run_command_output("git", Some(root), args.iter().map(|a| OsStr::new(*a)))
+            .unwrap_or_else(|e| panic!("git {args:?} failed: {e:?}"));
+        out.trim().to_string()
+    }
+
+    fn commit(root: &Path, name: &str) -> String {
+        fs::write(root.join(name), name).unwrap();
+        git(root, &["add", "."]);
+        git(root, &["commit", "-m", name, "--no-gpg-sign"]);
+        git(root, &["rev-parse", "HEAD"])
+    }
+
+    #[test]
+    fn should_resolve_diff_base_sha_locally_when_base_branch_moved_past_the_branch_point() {
+        // given — a repo where the base tip has advanced past the commit the
+        // PR branch forked from. This is exactly the drift that makes
+        // baseRefOid the wrong revision to read the diff's old side at.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        git(root, &["init", "--quiet"]);
+        git(root, &["config", "user.email", "test@example.com"]);
+        git(root, &["config", "user.name", "Test"]);
+        git(root, &["config", "commit.gpgsign", "false"]);
+
+        let fork_point = commit(root, "a");
+        let pr_head = commit(root, "b");
+        // Detach back to the fork point and advance the base independently.
+        git(root, &["checkout", "--quiet", &fork_point]);
+        let base_tip = commit(root, "c");
+        assert_ne!(base_tip, fork_point);
+
+        // when — the backend has a local checkout containing both commits.
+        let mut backend = GitHubGhBackend::with_runner(Some(repo()), FakeGhRunner::default());
+        backend.set_local_checkout(Some(root.to_path_buf()));
+        let mut details = backend
+            .get_pull_request(parse_pull_request_target("125").unwrap())
+            .unwrap();
+        details.base_sha = base_tip.clone();
+        details.head_sha = pr_head;
+        let resolved = backend.resolve_diff_base_sha(&details);
+
+        // then — the fork point, not the base tip the forge reported.
+        assert_eq!(resolved.as_deref(), Some(fork_point.as_str()));
+        // and — no compare API call was needed.
+        assert!(
+            !backend
+                .runner
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|args| args.iter().any(|a| a.contains("/compare/"))),
+            "local merge-base must not fall through to the compare API"
+        );
+    }
+
+    #[test]
+    fn should_fall_back_to_compare_api_when_local_checkout_lacks_the_commits() {
+        // given — a valid repo that doesn't contain the PR's commits.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        git(root, &["init", "--quiet"]);
+        git(root, &["config", "user.email", "test@example.com"]);
+        git(root, &["config", "user.name", "Test"]);
+        git(root, &["config", "commit.gpgsign", "false"]);
+        commit(root, "a");
+
+        let mut backend = GitHubGhBackend::with_runner(Some(repo()), FakeGhRunner::default());
+        backend.set_local_checkout(Some(root.to_path_buf()));
+        let details = backend
+            .get_pull_request(parse_pull_request_target("125").unwrap())
+            .unwrap();
+        // when — base/head SHAs are absent from the checkout.
+        let resolved = backend.resolve_diff_base_sha(&details);
+        // then — the forge answers instead of a wrong-or-missing local one.
+        assert_eq!(resolved.as_deref(), Some("mergebase111"));
     }
 
     #[test]
@@ -2027,7 +2324,7 @@ Match host github-work
         assert!(response.html_url.contains("pullrequestreview-123456"));
 
         // and — the call hit the expected endpoint with stdin
-        let stdin_calls = backend.runner.stdin_calls.borrow();
+        let stdin_calls = backend.runner.stdin_calls.lock().unwrap();
         assert_eq!(stdin_calls.len(), 1);
         let (args, stdin) = &stdin_calls[0];
         assert_eq!(args[0], "api");
@@ -2071,7 +2368,7 @@ Match host github-work
             )
             .unwrap();
         // then — the payload omits `event`
-        let stdin_calls = backend.runner.stdin_calls.borrow();
+        let stdin_calls = backend.runner.stdin_calls.lock().unwrap();
         let (_, stdin) = &stdin_calls[0];
         let payload: serde_json::Value = serde_json::from_str(stdin).unwrap();
         assert!(payload.get("event").is_none());
@@ -2100,7 +2397,7 @@ Match host github-work
             )
             .unwrap();
         // then
-        let stdin_calls = backend.runner.stdin_calls.borrow();
+        let stdin_calls = backend.runner.stdin_calls.lock().unwrap();
         let (args, _) = &stdin_calls[0];
         assert!(args.iter().any(|a| a == "--hostname"));
         assert!(args.iter().any(|a| a == "github.example.com"));
@@ -2110,7 +2407,7 @@ Match host github-work
     fn should_map_permission_failure_to_pull_request_write_message() {
         // given — a runner that fails with a 403-style stderr
         let runner = FakeGhRunner::default();
-        *runner.stdin_error.borrow_mut() = Some(GhCommandError::Failed {
+        *runner.stdin_error.lock().unwrap() = Some(GhCommandError::Failed {
             status: Some(1),
             stderr: "HTTP 403: Resource not accessible by integration".to_string(),
         });
@@ -2142,7 +2439,7 @@ Match host github-work
     fn should_map_auth_failure_during_create_review() {
         // given — a runner that fails with auth-failure stderr
         let runner = FakeGhRunner::default();
-        *runner.stdin_error.borrow_mut() = Some(GhCommandError::Failed {
+        *runner.stdin_error.lock().unwrap() = Some(GhCommandError::Failed {
             status: Some(4),
             stderr: "Run `gh auth login` to authenticate".to_string(),
         });
@@ -2170,7 +2467,7 @@ Match host github-work
     fn should_map_missing_gh_during_create_review() {
         // given — gh is not installed
         let runner = FakeGhRunner::default();
-        *runner.stdin_error.borrow_mut() = Some(GhCommandError::MissingGh);
+        *runner.stdin_error.lock().unwrap() = Some(GhCommandError::MissingGh);
         let backend = GitHubGhBackend::with_runner(Some(repo()), runner);
         let details = backend
             .get_pull_request(parse_pull_request_target("125").unwrap())
@@ -2195,7 +2492,7 @@ Match host github-work
     fn should_error_when_create_review_response_is_missing_id() {
         // given — malformed response from gh
         let runner = FakeGhRunner::default();
-        *runner.stdin_response.borrow_mut() =
+        *runner.stdin_response.lock().unwrap() =
             Some(r#"{"html_url": "x", "state": "COMMENTED"}"#.to_string());
         let backend = GitHubGhBackend::with_runner(Some(repo()), runner);
         let details = backend
@@ -2221,7 +2518,7 @@ Match host github-work
     fn should_recognize_must_have_pull_request_write_as_permission_failure() {
         // given
         let runner = FakeGhRunner::default();
-        *runner.stdin_error.borrow_mut() = Some(GhCommandError::Failed {
+        *runner.stdin_error.lock().unwrap() = Some(GhCommandError::Failed {
             status: Some(1),
             stderr: "must have pull request write permission".to_string(),
         });
@@ -2250,7 +2547,7 @@ Match host github-work
         // 422 from GitHub when a pending review already exists for this user
         // on this PR. We surface a clear actionable message.
         let runner = FakeGhRunner::default();
-        *runner.stdin_error.borrow_mut() = Some(GhCommandError::Failed {
+        *runner.stdin_error.lock().unwrap() = Some(GhCommandError::Failed {
             status: Some(22),
             stderr: "gh: Unprocessable Entity (HTTP 422)\n\
                 {\"message\":\"Unprocessable Entity\",\"errors\":\
@@ -2285,7 +2582,7 @@ Match host github-work
         // 422 from GitHub when commit_id isn't part of the PR (e.g., the PR
         // was force-pushed since the session loaded).
         let runner = FakeGhRunner::default();
-        *runner.stdin_error.borrow_mut() = Some(GhCommandError::Failed {
+        *runner.stdin_error.lock().unwrap() = Some(GhCommandError::Failed {
             status: Some(22),
             stderr: "gh: Unprocessable Entity (HTTP 422)\n\
                 {\"message\":\"Unprocessable Entity\",\"errors\":\

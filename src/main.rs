@@ -6,11 +6,12 @@ use std::time::{Duration, Instant};
 use crossterm::{
     event::{self, Event, KeyEventKind},
     execute, queue,
-    terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate, supports_keyboard_enhancement},
+    terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate},
 };
 
 use tuicr::app::{self, App, AppStartupOptions, FocusedPanel, InputMode};
 use tuicr::cli::parse_cli_args;
+use tuicr::config::IgnoreWhitespaceConfig;
 use tuicr::editor::{EditorCommand, EditorError, EditorLaunch, EditorSurface, EditorTarget};
 use tuicr::handler::{
     handle_branch_picker_action, handle_command_action, handle_comment_action,
@@ -19,16 +20,18 @@ use tuicr::handler::{
     handle_find_results_action, handle_help_action, handle_merge_conflict_action,
     handle_mouse_event, handle_palette_action, handle_rebase_editor_action, handle_search_action,
     handle_stash_picker_action, handle_submit_action_picker_action, handle_submit_confirm_action,
-    handle_submit_resolver_action, handle_summary_action, handle_visual_action,
+    handle_submit_resolver_action, handle_summary_action, handle_theme_picker_action,
+    handle_visual_action,
 };
 use tuicr::input::catalog::Prefix;
 use tuicr::input::{
     Action, map_file_tree_mode_with_q_quits, map_file_tree_prompt_mode,
     map_key_to_action_with_q_quits, map_log_pane_mode, map_target_filter_mode,
+    map_theme_picker_filter_mode,
 };
 use tuicr::terminal_state::{TerminalFeatures, TerminalSession};
-use tuicr::theme::resolve_theme_with_config;
-use tuicr::vcs::{DiffWhitespaceMode, GitBackendPreference};
+use tuicr::theme::{is_syntax_theme_fallback_warning, resolve_theme_with_config};
+use tuicr::vcs::{DiffWhitespaceMode, GitBackendPreference, WhitespaceAutoPolicy};
 use tuicr::{config, handler, profile, ui, update};
 
 /// Timeout for the "press Ctrl+C again to exit" feature
@@ -40,6 +43,14 @@ const MIN_WIDTH_FOR_FILE_LIST: u16 = 100;
 /// trackpad gesture collapses into one frame, low enough that held-key
 /// auto-repeat still shows progress instead of sitting on a stale frame.
 const EVENT_DRAIN_LIMIT: usize = 32;
+
+fn preferred_startup_warning(warnings: &[String]) -> Option<&str> {
+    warnings
+        .iter()
+        .find(|warning| is_syntax_theme_fallback_warning(warning))
+        .or_else(|| warnings.first())
+        .map(String::as_str)
+}
 
 /// How long the loop may wait for the next event after already consuming
 /// `drained` of them: the first blocks so an idle TUI costs nothing, later ones
@@ -115,7 +126,7 @@ fn main() -> anyhow::Result<()> {
         cli_args.output_to_stdout,
         io::stdin().is_terminal(),
     ) {
-        matches!(supports_keyboard_enhancement(), Ok(true))
+        tuicr::terminal_state::supports_keyboard_enhancement()
     } else {
         false
     };
@@ -196,21 +207,23 @@ fn main() -> anyhow::Result<()> {
             .as_ref()
             .and_then(|cfg| cfg.backend.as_deref()),
     );
-    let diff_whitespace_mode = if config_outcome
-        .config
-        .as_ref()
-        .and_then(|cfg| cfg.ignore_whitespace)
-        .unwrap_or(false)
-    {
-        DiffWhitespaceMode::IgnoreAll
-    } else {
-        DiffWhitespaceMode::Normal
+    let diff_whitespace_mode = match config_outcome.config.as_ref() {
+        Some(cfg) => match cfg.ignore_whitespace {
+            Some(IgnoreWhitespaceConfig::Auto) => DiffWhitespaceMode::Auto(
+                WhitespaceAutoPolicy::with_overrides(cfg.ignore_whitespace_overrides.clone()),
+            ),
+            Some(IgnoreWhitespaceConfig::Bool(true)) => DiffWhitespaceMode::IgnoreAll,
+            Some(IgnoreWhitespaceConfig::Bool(false)) | None => DiffWhitespaceMode::Normal,
+        },
+        None => DiffWhitespaceMode::Normal,
     };
 
     let repo_url_override = match cli_args.remote.as_deref() {
         Some(name) => {
-            let vcs =
-                tuicr::vcs::GitBackend::discover(git_backend_preference, diff_whitespace_mode)?;
+            let vcs = tuicr::vcs::GitBackend::discover(
+                git_backend_preference,
+                diff_whitespace_mode.clone(),
+            )?;
             Some(tuicr::forge::resolve_remote_repository(&vcs, name)?)
         }
         None => cli_args
@@ -234,6 +247,15 @@ fn main() -> anyhow::Result<()> {
     {
         Some("oldest") => app::CommitSelectionStart::Oldest,
         _ => app::CommitSelectionStart::All,
+    };
+    let pr_comments_visibility = match config_outcome
+        .config
+        .as_ref()
+        .and_then(|cfg| cfg.pr_comments_visibility.as_deref())
+    {
+        Some("all") => Some(tuicr::forge::remote_comments::PrCommentsVisibility::All),
+        Some("hide") => Some(tuicr::forge::remote_comments::PrCommentsVisibility::Hide),
+        _ => None,
     };
 
     let mut app = match profile::time("startup.app_init", || {
@@ -260,6 +282,7 @@ fn main() -> anyhow::Result<()> {
                     .as_ref()
                     .and_then(|cfg| cfg.show_pr_comments)
                     .unwrap_or(true),
+                pr_comments_visibility,
                 git_backend_preference,
                 diff_whitespace_mode,
                 commit_selection,
@@ -321,6 +344,7 @@ fn main() -> anyhow::Result<()> {
     // re-selections during the session (target selector, PR reload) honor it.
     app.commit_order = commit_order;
     app.commit_selection_start = commit_selection;
+    app.pending_start_line = cli_args.start_line;
 
     if let Err(e) = app.ensure_ephemeral_session_file() {
         startup_warnings.push(format!("Failed to initialize review session file: {e}"));
@@ -354,6 +378,7 @@ fn main() -> anyhow::Result<()> {
     if let Some(ref cfg) = config_outcome.config {
         app.show_pr_checks = cfg.show_pr_checks.unwrap_or(false);
         app.show_pr_comments = cfg.show_pr_comments.unwrap_or(true);
+        app.initial_comments_visibility = pr_comments_visibility;
         app.set_compact_folders(cfg.compact_folders.unwrap_or(false));
         if cfg.show_file_list == Some(false) {
             app.show_file_list = false;
@@ -399,6 +424,11 @@ fn main() -> anyhow::Result<()> {
             app.file_list_pct =
                 (pct.min(100) as u16).clamp(app::MIN_FILE_LIST_PCT, app::MAX_FILE_LIST_PCT);
         }
+        match cfg.wrap_style.as_deref() {
+            Some("flow") => app.wrap_style = app::WrapStyle::Flow,
+            Some("gutter") => app.wrap_style = app::WrapStyle::Gutter,
+            _ => {}
+        }
         app.relative_line_numbers = cfg.relative_line_numbers.unwrap_or(false);
         // Open in single-file view when the user opts in. Pristine
         // `--all-files` already turned it on inside `App::new`, so we
@@ -416,6 +446,9 @@ fn main() -> anyhow::Result<()> {
         if let Some(scroll_offset) = cfg.scroll_offset {
             app.scroll_offset = scroll_offset;
         }
+        if let Some(lines) = cfg.mouse_scroll_lines {
+            app.mouse_scroll_lines = lines;
+        }
         if let Some(interval_ms) = cfg.review_watch_interval_ms {
             app.set_review_watch_interval_ms(interval_ms as u64);
         }
@@ -432,8 +465,8 @@ fn main() -> anyhow::Result<()> {
         app.focused_panel = FocusedPanel::Diff;
     }
 
-    if let Some(message) = startup_warnings.first() {
-        app.set_warning(message.clone());
+    if let Some(message) = preferred_startup_warning(&startup_warnings) {
+        app.set_warning(message);
     }
 
     // Prefix keys (`z`, `Z`, `d`, `<leader>`) waiting for their second key
@@ -499,9 +532,22 @@ fn main() -> anyhow::Result<()> {
             // tears as escape sequences arrive in chunks. Terminals that do
             // not support DEC 2026 ignore it.
             queue!(terminal.backend_mut(), BeginSynchronizedUpdate)?;
+            // `Ctrl-l` or a resize asked for every cell to be rewritten. The
+            // clear lands inside the synchronized update, so it never flashes.
+            if app.take_full_redraw() {
+                terminal.repaint_from_scratch()?;
+            }
             terminal.draw(|frame| {
                 ui::render(frame, &mut app);
             })?;
+            // `--line` needs the viewport measured by the render above. When
+            // it moves the cursor, repaint inside the same synchronized
+            // update so the unpositioned frame is never presented.
+            if app.apply_pending_start_line() {
+                terminal.draw(|frame| {
+                    ui::render(frame, &mut app);
+                })?;
+            }
             execute!(terminal.backend_mut(), EndSynchronizedUpdate)?;
             needs_redraw = false;
         }
@@ -534,7 +580,7 @@ fn main() -> anyhow::Result<()> {
             // events) never satisfies the gate. Terminals without kitty
             // REPORT_EVENT_TYPES support never emit Release, in which case
             // `supports_keyboard_enhancement` is false and `cursor_down` /
-            // `cursor_up` skip the gate entirely.
+            // `cursor_up` never walk: j/k stop at the file's edges.
             if let Event::Key(key) = &event
                 && key.kind == KeyEventKind::Release
             {
@@ -584,6 +630,13 @@ fn main() -> anyhow::Result<()> {
                     if pending_ctrl_c.is_some() {
                         pending_ctrl_c = None;
                         app.message = None;
+                    }
+
+                    // Keys that work the same in every mode (`Ctrl-l` redraw).
+                    // Checked before the pending-prefix and vim-editor routing
+                    // so they never reach a text buffer.
+                    if handler::handle_global_key(&mut app, key) {
+                        continue;
                     }
 
                     // Handle pending z command for zz/zt/zb viewport positioning
@@ -650,7 +703,27 @@ fn main() -> anyhow::Result<()> {
                     // Handle pending d command for dd delete comment
                     if app.pending_prefix == Some(Prefix::D) {
                         app.pending_prefix = None;
-                        if key.code == crossterm::event::KeyCode::Char('d') {
+                        if key.code == crossterm::event::KeyCode::Char('d')
+                            && key.modifiers == crossterm::event::KeyModifiers::NONE
+                        {
+                            // In the target selector `dd` deletes the saved
+                            // review under the cursor, not a comment.
+                            if app.input_mode == InputMode::CommitSelect {
+                                handler::handle_commit_select_action(
+                                    &mut app,
+                                    Action::SessionsTabDelete,
+                                );
+                                continue;
+                            }
+                            if app.input_mode == InputMode::Summary {
+                                if !app.delete_selected_summary_comment() {
+                                    app.set_warning(
+                                        "Selected comment is no longer editable or available",
+                                    );
+                                }
+                                // Refresh IDs and clamp selection before another queued dd.
+                                break;
+                            }
                             if app.cursor_on_locked_comment() {
                                 let forge = app.forge_display_name();
                                 app.set_message(format!(
@@ -787,6 +860,10 @@ fn main() -> anyhow::Result<()> {
                                 app.open_palette();
                                 continue;
                             }
+                            crossterm::event::KeyCode::Char('n') => {
+                                app.relative_line_numbers = !app.relative_line_numbers;
+                                continue;
+                            }
                             _ => {}
                         }
                         // Otherwise fall through to normal handling
@@ -819,6 +896,12 @@ fn main() -> anyhow::Result<()> {
                         // The log pane claims the selector keys (space,
                         // enter, p/b/s); the rest stay normal-mode bindings.
                         map_log_pane_mode(key, app.leader_key, app.q_quits)
+                    } else if app.input_mode == InputMode::ThemePicker
+                        && app.theme_picker_filtering()
+                    {
+                        // The theme picker's `/` filter draft captures all
+                        // input until Enter/Esc, same shape as the two above.
+                        map_theme_picker_filter_mode(key)
                     } else if app.input_mode == InputMode::Normal
                         && app.focused_panel == FocusedPanel::FileList
                     {
@@ -916,12 +999,18 @@ fn main() -> anyhow::Result<()> {
                         }
                     }
 
+                    let previous_mode = app.input_mode;
                     dispatch_action(&mut app, action);
+                    if previous_mode != InputMode::Summary && app.input_mode == InputMode::Summary {
+                        // Summary identities are populated by rendering before queued input.
+                        break;
+                    }
                     if let Some(target) = app.take_pending_editor_target() {
                         match run_editor_from_tui(
                             &mut terminal,
                             &target,
                             app.editor_override.as_deref(),
+                            app.output_to_stdout,
                         ) {
                             // The editor is still open, so there is nothing to
                             // pick up yet; the user reloads once they are done.
@@ -973,6 +1062,10 @@ fn main() -> anyhow::Result<()> {
                     // Growing the window (e.g. full-screening the terminal)
                     // should reveal more history, not dead space.
                     app.fill_commit_viewport(rows as usize);
+                    // ratatui clears on its own only when the size changed. A
+                    // font change, or a resize that lands back on the same
+                    // size, can leave stale cells it would never rewrite.
+                    app.request_full_redraw();
                 }
                 Event::Paste(text) => {
                     // Bracketed-paste payload — route to whichever handler is
@@ -1049,6 +1142,7 @@ fn dispatch_action(app: &mut App, action: Action) {
         InputMode::Palette => handle_palette_action(app, action),
         InputMode::Console => handle_console_action(app, action),
         InputMode::RebaseEditor => handle_rebase_editor_action(app, action),
+        InputMode::ThemePicker => handle_theme_picker_action(app, action),
         InputMode::Normal => match app.focused_panel {
             FocusedPanel::FileList => handle_file_list_action(app, action),
             FocusedPanel::Comments => handle_comment_navigator_action(app, action),
@@ -1148,6 +1242,7 @@ fn run_editor_from_tui<W: Write>(
     terminal: &mut TerminalSession<W>,
     target: &EditorTarget,
     editor_override: Option<&str>,
+    output_to_stdout: bool,
 ) -> anyhow::Result<Result<EditorOutcome, EditorError>> {
     let command = EditorCommand::from_env(editor_override, target);
     // Windowed editors never draw on our terminal, so suspending would only
@@ -1156,7 +1251,16 @@ fn run_editor_from_tui<W: Write>(
         return Ok(tuicr::editor::launch_editor(&command).map(EditorOutcome::Detached));
     }
     let suspension = terminal.suspend()?;
-    let editor_result = tuicr::editor::run_editor(&command);
+    // When tuicr was launched with `--stdout`, its own stdout is a file or
+    // pipe. A terminal editor spawned via `.status()` would inherit that
+    // non-TTY stdout and refuse to render (e.g. `vim: Output is not to a
+    // terminal`). Re-attach the editor's stdio to `/dev/tty` — the same
+    // device tuicr already renders the TUI on in this mode.
+    let editor_result = if output_to_stdout {
+        tuicr::editor::run_editor_on_tty(&command)
+    } else {
+        tuicr::editor::run_editor(&command)
+    };
     suspension.resume()?;
     Ok(editor_result.map(|()| EditorOutcome::Finished))
 }
@@ -1164,6 +1268,19 @@ fn run_editor_from_tui<W: Write>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn startup_warning_prefers_syntax_theme_fallback() {
+        let warnings = vec![
+            "Warning: Unknown local theme key 'extra'".to_string(),
+            "Warning: Failed to load syntax theme; using bundled syntax theme".to_string(),
+        ];
+
+        assert_eq!(
+            preferred_startup_warning(&warnings),
+            Some(warnings[1].as_str())
+        );
+    }
 
     #[test]
     fn drain_blocks_once_then_takes_only_queued_events() {

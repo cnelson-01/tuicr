@@ -265,6 +265,7 @@ mod tests {
             content: content.to_string(),
             old_lineno: None,
             new_lineno: None,
+            raw_content: None,
             highlighted_spans: None,
         }
     }

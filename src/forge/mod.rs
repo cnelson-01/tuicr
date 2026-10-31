@@ -30,32 +30,72 @@ use crate::forge::bitbucket::bkt::parse_bitbucket_remote_url;
 use crate::forge::gerrit::api::parse_gerrit_remote_url;
 use crate::forge::gitea::tea::parse_gitea_remote_url;
 use crate::forge::github::gh::parse_github_remote_url;
-use crate::forge::gitlab::glab::parse_gitlab_remote_url;
+use crate::forge::gitlab::glab::{parse_gitlab_remote_url, parse_gitlab_remote_url_by_hostname};
 use crate::forge::traits::ForgeRepository;
 use crate::vcs::VcsBackend;
+
+/// Run two independent forge requests at the same time and return both
+/// results in argument order.
+///
+/// `first` runs on the calling thread and `second` on a scoped thread, so a
+/// call costs the slower of the two round trips instead of their sum. Both
+/// always run to completion; callers decide which error wins, which keeps
+/// error reporting as deterministic as the sequential code it replaces. A
+/// panic in `second` is re-raised on the calling thread once `first` returns.
+pub(crate) fn join<A, B, RA, RB>(first: A, second: B) -> (RA, RB)
+where
+    A: FnOnce() -> RA,
+    B: FnOnce() -> RB + Send,
+    RB: Send,
+{
+    std::thread::scope(|scope| {
+        let second = scope.spawn(second);
+        let first = first();
+        let second = second
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+        (first, second)
+    })
+}
+
+/// Return `Some(sha)` for `git merge-base <base> <head>` when both commits
+/// are present in the checkout at `repo_root`.
+///
+/// Forge PR diffs are three-dot, so this — not the base branch tip a forge
+/// reports — is the revision the patch's old side lives at. Returns `None`
+/// when either object is missing or git fails, so callers can fall back to
+/// the forge (or leave `base_sha` unrefined). See the `base_sha` gotcha in AGENTS.md.
+pub(crate) fn local_merge_base(repo_root: &Path, base_sha: &str, head_sha: &str) -> Option<String> {
+    use std::ffi::OsStr;
+
+    for sha in [base_sha, head_sha] {
+        crate::process::run_command_output(
+            "git",
+            Some(repo_root),
+            ["cat-file", "-e", sha].iter().map(|s| OsStr::new(*s)),
+        )
+        .ok()?;
+    }
+    let output = crate::process::run_command_output(
+        "git",
+        Some(repo_root),
+        ["merge-base", base_sha, head_sha]
+            .iter()
+            .map(|s| OsStr::new(*s)),
+    )
+    .ok()?;
+    let sha = output.trim();
+    (!sha.is_empty()).then(|| sha.to_string())
+}
 
 /// Try to detect a GitHub forge repository for the local checkout at `repo_root`.
 ///
 /// Looks at the `origin` remote first, then falls back to any remote whose URL
 /// parses as a GitHub host. Returns `None` when no GitHub remote is configured.
 pub fn detect_github_repository(repo_root: &Path) -> Option<ForgeRepository> {
-    let repo = Repository::discover(repo_root).ok()?;
-    if let Ok(remote) = repo.find_remote("origin")
-        && let Some(url) = remote.url()
-        && let Some(parsed) = parse_github_remote_url(url)
-    {
-        return Some(parsed);
-    }
-    let remotes = repo.remotes().ok()?;
-    for name in remotes.iter().flatten() {
-        if let Ok(remote) = repo.find_remote(name)
-            && let Some(url) = remote.url()
-            && let Some(parsed) = parse_github_remote_url(url)
-        {
-            return Some(parsed);
-        }
-    }
-    None
+    remote_urls(repo_root)
+        .iter()
+        .find_map(|url| parse_github_remote_url(url))
 }
 
 /// Try to detect a GitLab forge repository for the local checkout at `repo_root`.
@@ -63,29 +103,35 @@ pub fn detect_github_repository(repo_root: &Path) -> Option<ForgeRepository> {
 /// Looks at the `origin` remote first, then falls back to any remote whose URL
 /// parses as a GitLab host. Returns `None` when no GitLab remote is configured.
 pub fn detect_gitlab_repository(repo_root: &Path) -> Option<ForgeRepository> {
-    let repo = Repository::discover(repo_root).ok()?;
-    if let Ok(remote) = repo.find_remote("origin")
-        && let Some(url) = remote.url()
-        && let Some(parsed) = parse_gitlab_remote_url(url)
-    {
-        return Some(parsed);
-    }
-    let remotes = repo.remotes().ok()?;
-    for name in remotes.iter().flatten() {
-        if let Ok(remote) = repo.find_remote(name)
-            && let Some(url) = remote.url()
-            && let Some(parsed) = parse_gitlab_remote_url(url)
-        {
-            return Some(parsed);
-        }
-    }
-    None
+    remote_urls(repo_root)
+        .iter()
+        .find_map(|url| parse_gitlab_remote_url(url))
 }
 
 /// `repo_root`'s remote URLs, `origin` first, then every other remote.
 fn remote_urls(repo_root: &Path) -> Vec<String> {
     let Ok(repo) = Repository::discover(repo_root) else {
-        return Vec::new();
+        // Local VCS discovery already falls back to Git for repository formats
+        // libgit2 cannot open (notably reftable and SHA-256). Remote metadata
+        // needs the same fallback; no object access or network is necessary.
+        let Ok(names) = crate::process::run_command_output("git", Some(repo_root), ["remote"])
+        else {
+            return Vec::new();
+        };
+        let mut names: Vec<_> = names.lines().collect();
+        names.sort_by_key(|name| *name != "origin");
+        return names
+            .into_iter()
+            .filter_map(|name| {
+                crate::process::run_command_output(
+                    "git",
+                    Some(repo_root),
+                    ["remote", "get-url", "--", name],
+                )
+                .ok()
+                .map(|url| url.trim_end_matches(['\r', '\n']).to_string())
+            })
+            .collect();
     };
     let mut all_urls: Vec<String> = Vec::new();
 
@@ -119,7 +165,8 @@ pub fn detect_azure_repository(repo_root: &Path) -> Option<ForgeRepository> {
 ///
 /// Order matters. Bitbucket and GitLab both gate on the hostname, so trying
 /// them first won't claim GitHub Enterprise remotes. Azure next — its parser
-/// filters to `dev.azure.com` / `*.visualstudio.com` hosts. Gitea then, which
+/// accepts cloud hosts and the self-hosted hostname explicitly configured via
+/// `AZURE_DEVOPS_SERVER_URL`. Gitea then, which
 /// recognizes its own public hosts by name and self-hosted ones through the
 /// logins configured in `tea`. Gerrit follows: it is always self-hosted, so it
 /// gates on the canonical SSH port `29418`, a configured `GERRIT_URL`, or a
@@ -150,11 +197,15 @@ pub fn parse_any_remote_url(url: &str) -> Option<ForgeRepository> {
 /// two; letting it claim unknown hosts would turn
 /// `code.example.com/git/owner/repo` into `git/owner`. Bitbucket is left out
 /// because a workspace is always one segment, so the fallback already agrees
-/// with it. Gerrit is included: its project path can be any depth, so the
+/// with it. GitLab enters as its hostname-only variant, which forgoes the
+/// `glab` config lookup that would otherwise recognize self-hosted instances on
+/// custom domains. Gerrit is included: its project path can be any depth, so the
 /// last-two-segments rule would mis-split `gerrit.example.com/platform/frameworks/base`,
 /// and its parser only reads the URL plus one env var.
 pub fn parse_any_remote_url_by_hostname(url: &str) -> Option<ForgeRepository> {
-    parse_azure_remote_url(url).or_else(|| parse_gerrit_remote_url(url))
+    parse_gitlab_remote_url_by_hostname(url)
+        .or_else(|| parse_azure_remote_url(url))
+        .or_else(|| parse_gerrit_remote_url(url))
 }
 
 /// Detect the forge repository for the local checkout at `repo_root`.
@@ -190,6 +241,18 @@ pub fn local_checkout_for_repo(root: &Path, target_repo: &ForgeRepository) -> Op
 mod tests {
     use super::*;
 
+    #[test]
+    fn join_returns_both_results_in_argument_order() {
+        let (first, second) = join(|| "first", || 2);
+        assert_eq!((first, second), ("first", 2));
+    }
+
+    #[test]
+    #[should_panic(expected = "second failed")]
+    fn join_re_raises_a_panic_from_the_spawned_side() {
+        join(|| (), || -> () { panic!("second failed") });
+    }
+
     fn init_repo_with_origin(url: &str) -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("tempdir");
         let repo = Repository::init(dir.path()).expect("init repo");
@@ -215,6 +278,10 @@ mod tests {
                 "myorg/myproject",
                 "myrepo"
             ))
+        );
+        assert_eq!(
+            parse_any_remote_url_by_hostname("git@gitlab.com:org/team/svc.git"),
+            Some(ForgeRepository::gitlab("gitlab.com", "org/team", "svc"))
         );
         // The GitHub catch-all is excluded, so anything it would have claimed
         // falls through to the caller's own rule. Were it in the chain, its
