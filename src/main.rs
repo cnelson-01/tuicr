@@ -764,6 +764,11 @@ fn main() -> anyhow::Result<()> {
                                 app.toggle_zen();
                                 continue;
                             }
+                            crossterm::event::KeyCode::Char('w') => {
+                                let ignore = !app.ignores_whitespace();
+                                app.set_ignore_whitespace(ignore);
+                                continue;
+                            }
                             _ => {}
                         }
                         // Otherwise fall through to normal handling

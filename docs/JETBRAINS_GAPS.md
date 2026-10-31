@@ -28,11 +28,11 @@ splitter and the tool-window edges, and hide every tool window to read a diff.
       `:set treewidth N` command, and mouse drag on its border
 - [x] No "hide all tool windows" (JetBrains Ctrl-Shift-F12). Add a zen
       toggle that keeps only the diff, and restores the layout when toggled again
-- [ ] Ignore-whitespace is config-only. Add a runtime toggle that reloads
+- [x] Ignore-whitespace is config-only. Add a runtime toggle that reloads
       the diff
 - [x] Horizontal paging moves only 4 columns at a time. Add half-screen
       pans and jumps to the line start and the end of the longest line
-- [ ] Font size: a TUI can't change the terminal font. Document the terminal
+- [x] Font size: a TUI can't change the terminal font. Document the terminal
       zoom keys, and use the density controls above (split, tree width, zen)
 
 ## 2. Self-documenting keys

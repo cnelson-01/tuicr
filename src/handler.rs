@@ -67,6 +67,18 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     CommandSpec::new(&["set nolog"], CommandKind::SetLogVisible(false)),
     CommandSpec::new(&["log", "set log!"], CommandKind::ToggleLog),
     CommandSpec::new(&["zen"], CommandKind::ToggleZen),
+    CommandSpec::new(
+        &["set ignorews"],
+        CommandKind::SetIgnoreWhitespace(Some(true)),
+    ),
+    CommandSpec::new(
+        &["set noignorews"],
+        CommandKind::SetIgnoreWhitespace(Some(false)),
+    ),
+    CommandSpec::new(
+        &["ignorews", "set ignorews!"],
+        CommandKind::SetIgnoreWhitespace(None),
+    ),
     CommandSpec::new(&["set split"], CommandKind::ResetSplit),
     CommandSpec::new(
         &["branches", "branch", "compare", "select"],
@@ -194,6 +206,8 @@ enum CommandKind {
     ToggleLog,
     ToggleZen,
     ResetSplit,
+    /// `Some` sets, `None` toggles.
+    SetIgnoreWhitespace(Option<bool>),
     BranchPicker,
     AbortOperation,
     Remote(RemoteOp),
@@ -1109,6 +1123,11 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
         }
         CommandKind::ToggleZen => {
             app.toggle_zen();
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::SetIgnoreWhitespace(value) => {
+            let ignore = value.unwrap_or(!app.ignores_whitespace());
+            app.set_ignore_whitespace(ignore);
             CommandAfterDispatch::ExitCommandMode
         }
         CommandKind::ResetSplit => {

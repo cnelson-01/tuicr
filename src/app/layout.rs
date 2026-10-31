@@ -3,8 +3,9 @@
 //! dragging a JetBrains splitter or hiding every tool window.
 
 use super::{
-    App, DEFAULT_FILE_LIST_PCT, DEFAULT_SBS_SPLIT_PCT, DiffViewMode, FocusedPanel,
-    MAX_FILE_LIST_PCT, MAX_SBS_SPLIT_PCT, MIN_FILE_LIST_PCT, MIN_SBS_SPLIT_PCT, Splitter, ZenSaved,
+    App, DEFAULT_FILE_LIST_PCT, DEFAULT_SBS_SPLIT_PCT, DiffSource, DiffViewMode,
+    DiffWhitespaceMode, FocusedPanel, MAX_FILE_LIST_PCT, MAX_SBS_SPLIT_PCT, MIN_FILE_LIST_PCT,
+    MIN_SBS_SPLIT_PCT, Splitter, ZenSaved,
 };
 
 /// Percentage points one splitter key press moves.
@@ -186,5 +187,42 @@ impl App {
             return;
         }
         self.diff_state.scroll_x = self.max_pan();
+    }
+
+    /// `:set ignorews` / `<leader>w` — compare lines ignoring whitespace
+    /// (JetBrains' "Ignore whitespaces" diff option). Reopens the backend
+    /// with the new mode and reloads the diff.
+    pub fn set_ignore_whitespace(&mut self, ignore: bool) {
+        if matches!(self.diff_source, DiffSource::PullRequest(_)) {
+            self.set_message("Ignore-whitespace applies to local diffs, not PR reviews");
+            return;
+        }
+        let mode = if ignore {
+            DiffWhitespaceMode::IgnoreAll
+        } else {
+            DiffWhitespaceMode::Normal
+        };
+        self.vcs_open_options.diff_whitespace_mode = mode;
+        match crate::vcs::detect_vcs(self.vcs_open_options.git_backend_preference, mode) {
+            Ok(vcs) => {
+                self.vcs_info = vcs.info().clone();
+                self.vcs = vcs;
+            }
+            Err(e) => {
+                self.set_warning(format!("Reopening the repository failed: {e}"));
+                return;
+            }
+        }
+        let state = if ignore { "ignored" } else { "compared" };
+        match self.reload_diff_files() {
+            Ok((count, _)) => {
+                self.set_message(format!("Whitespace {state} · {count} files"));
+            }
+            Err(e) => self.set_warning(format!("Reload failed: {e}")),
+        }
+    }
+
+    pub fn ignores_whitespace(&self) -> bool {
+        self.vcs_open_options.diff_whitespace_mode.ignores_all()
     }
 }

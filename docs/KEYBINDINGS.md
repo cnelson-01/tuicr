@@ -30,6 +30,26 @@ Full reference. Press `?` inside tuicr for an in-app version of this list.
 | `zz` | Center cursor on screen |
 | `zb` | Scroll cursor to bottom of screen |
 
+## Reading a diff comfortably
+
+Long lines don't wrap by default. Both side-by-side columns pan together
+(`h` / `l`, `zH` / `zL`, `zs` / `ze`, or a horizontal trackpad swipe). A `›` at
+a column's right edge means the line continues past it, and a `‹` in the
+gutter means text has scrolled off the left. File and hunk headers stay put.
+
+To give the code more room:
+
+- Drag the `│` divider, or use `<leader><` / `<leader>>`, to give the side
+  you're reading more width (`:set split 65`; `split = 65` in config)
+- Drag the file tree's right border, or use `<leader>[` / `<leader>]`
+  (`:set treewidth 12`)
+- `<leader>z` hides every panel but the diff; press it again to restore them
+- `<leader>w` ignores whitespace-only changes
+
+A terminal app can't change its own font size; use your terminal's zoom
+instead (`Cmd =` / `Cmd -` in Ghostty, iTerm2, and Terminal.app; `Ctrl =` /
+`Ctrl -` on most Linux terminals). tuicr reflows on every resize.
+
 ## Help
 
 Press `?` to open help.
@@ -126,6 +146,7 @@ considers files that pass the active filters.
 | `<leader>[` / `<leader>]` | Narrow / widen the file tree (also `:set treewidth N`, or drag its border) |
 | `<leader>0` | Reset the divider to 50/50 and the file tree to 20% |
 | `<leader>z` | Zen mode: hide the file tree and the log pane; again restores them (also `:zen`) |
+| `<leader>w` | Toggle ignore-whitespace and reload the diff (also `:ignorews`, `:set ignorews` / `:set noignorews`) |
 | `Enter` | Select file (when file list is focused) |
 
 ## Comment navigator
@@ -240,6 +261,7 @@ remote-tracking ones. `:compare ma`, `↓`, `↓`, `Enter` picks the second matc
 | `:set split N` | Old side's share of the side-by-side width (15–85%); bare `:set split` resets to 50 |
 | `:set treewidth N` | File tree width (8–60%) |
 | `:zen` | Toggle zen mode (diff only) |
+| `:ignorews` / `:set ignorews!` | Toggle ignoring whitespace in the diff; `:set ignorews` / `:set noignorews` set it |
 | `:set relativenumber` / `:set norelativenumber` | Enable / disable relative rendered-row numbers |
 | `:set relativenumber!` | Toggle relative rendered-row numbers |
 | `:set commits` | Show inline commit selector |
