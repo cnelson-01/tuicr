@@ -370,13 +370,15 @@ fn main() -> anyhow::Result<()> {
         // Start with files already marked reviewed hidden. `init_` rather than
         // `set_` so startup leaves no status message behind; `H` /
         // `:set reviewed!` toggle from here.
-        if cfg.show_log == Some(true) {
-            app.log_pane_wanted = true;
+        if let Some(show) = cfg.show_log {
+            app.log_pane_wanted = show;
         }
         if let Some(rows) = cfg.log_height {
-            app.log_pane_height = u16::try_from(rows)
-                .unwrap_or(u16::MAX)
-                .max(app::MIN_LOG_PANE_HEIGHT);
+            app.log_pane_height = Some(
+                u16::try_from(rows)
+                    .unwrap_or(u16::MAX)
+                    .max(app::MIN_LOG_PANE_HEIGHT),
+            );
         }
         if cfg.show_reviewed == Some(false) {
             app.init_show_reviewed(false);

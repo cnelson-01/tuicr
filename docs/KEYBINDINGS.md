@@ -414,11 +414,14 @@ unstaged view) the pane goes blank until `:e` or the next change.
 
 ## Log pane
 
-`<leader>g` (or `:log`) docks the commit graph above the diff and keeps it there while
-you review, JetBrains-style. It replaces the inline commit selector while open. Resting
-the cursor on a commit for a moment loads that commit's diff below; rows whose diff is
-on screen carry the `▌` bar. Set `show_log = true` in `config.toml` to open it on
-startup, and `log_height = N` (or `:set logheight N`) for its height.
+The log pane docks the commit graph above the diff and keeps it there while you review,
+JetBrains-style. It opens on its own once a review is on screen (not for PR reviews,
+plain-file reviews or `--all-files`), with the diff keeping focus; `<leader>g` (or `:log`)
+focuses it, hides it, or brings it back. It replaces the inline commit selector while
+open. Resting the cursor on a commit for a moment loads that commit's diff below; rows
+whose diff is on screen carry the `▌` bar. Set `show_log = false` in `config.toml` to
+start with it closed. It takes a third of the window (at most 12 rows) until you size it
+with `<leader>+` / `<leader>-`, `:set logheight N`, or `log_height = N`.
 
 | Key | Action |
 |-----|--------|

@@ -4,7 +4,7 @@ use ratatui::{
     widgets::Block,
 };
 
-use crate::app::{App, ConfirmAction, DiscardTarget, InputMode, MIN_LOG_PANE_HEIGHT};
+use crate::app::{App, ConfirmAction, DiscardTarget, InputMode};
 use crate::ui::comment_navigator::render_comment_navigator;
 use crate::ui::diff_view::render_diff_view;
 use crate::ui::file_list::render_file_list;
@@ -212,11 +212,7 @@ fn render_main_content(frame: &mut Frame, app: &mut App, area: Rect) {
         // The persistent log pane replaces the inline selector while it is
         // open; its height is user-set but always leaves the diff some room.
         app.commit_list_inner_area = None;
-        let max_height = area.height.saturating_sub(6).max(MIN_LOG_PANE_HEIGHT);
-        let height = app
-            .log_pane_height
-            .clamp(MIN_LOG_PANE_HEIGHT, max_height)
-            .min(area.height);
+        let height = app.log_pane_rows(area.height);
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(height), Constraint::Min(0)])

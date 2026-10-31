@@ -56,7 +56,8 @@ pub const STAGED_SELECTION_ID: &str = "__tuicr_staged__";
 pub const UNSTAGED_SELECTION_ID: &str = "__tuicr_unstaged__";
 pub const MERGE_SELECTION_ID: &str = "__tuicr_merge__";
 pub const GAP_EXPAND_BATCH: usize = 20;
-/// Default height (rows, borders included) of the persistent log pane.
+/// Tallest the persistent log pane gets (rows, borders included) before a
+/// height is set; shorter windows give it a third of their rows.
 pub const DEFAULT_LOG_PANE_HEIGHT: u16 = 12;
 /// Smallest useful log pane: borders plus one row.
 pub const MIN_LOG_PANE_HEIGHT: u16 = 3;
@@ -1661,9 +1662,11 @@ pub struct App {
     /// Persistent log pane state; `None` while the pane is hidden.
     pub log_pane: Option<LogPane>,
     /// Log pane height in rows, borders included (`log_height`,
-    /// `:set logheight N`, `<leader>+` / `<leader>-`).
-    pub log_pane_height: u16,
-    /// `show_log = true`: open the pane as soon as a review is on screen.
+    /// `:set logheight N`, `<leader>+` / `<leader>-`). `None` until set:
+    /// the pane then sizes itself to the window ([`App::log_pane_rows`]).
+    pub log_pane_height: Option<u16>,
+    /// Open the pane as soon as a review is on screen. On by default;
+    /// `show_log = false` and closing the pane clear it.
     pub log_pane_wanted: bool,
     /// Old-side share of the side-by-side content width, in percent
     /// (`:set split N`, `<leader><` / `<leader>>`, divider drag).

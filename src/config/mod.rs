@@ -123,10 +123,11 @@ pub struct AppConfig {
     /// `<leader>s` or `:set commits!`.
     pub show_commits: Option<bool>,
     /// Whether the persistent log pane (commit graph above the diff) opens
-    /// as soon as a review is on screen. Defaults to false; toggle at
+    /// as soon as a review is on screen. Defaults to true; toggle at
     /// runtime with `<leader>g` or `:log`.
     pub show_log: Option<bool>,
-    /// Log pane height in rows, borders included. Defaults to 12; adjust at
+    /// Log pane height in rows, borders included. Defaults to a third of
+    /// the window, at most 12; adjust at
     /// runtime with `<leader>+` / `<leader>-` or `:set logheight N`.
     pub log_height: Option<usize>,
     /// Old side's share of the side-by-side width, in percent.

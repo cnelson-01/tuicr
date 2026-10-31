@@ -258,11 +258,36 @@ fn disable_restores_the_inline_selector_and_diff_focus() {
 fn height_is_floored_at_the_minimum() {
     let mut app = build_review_app(&["a"]);
     app.set_log_pane_height(1);
-    assert_eq!(app.log_pane_height, MIN_LOG_PANE_HEIGHT);
+    assert_eq!(app.log_pane_height, Some(MIN_LOG_PANE_HEIGHT));
     app.adjust_log_pane_height(-10);
-    assert_eq!(app.log_pane_height, MIN_LOG_PANE_HEIGHT);
+    assert_eq!(app.log_pane_height, Some(MIN_LOG_PANE_HEIGHT));
     app.adjust_log_pane_height(5);
-    assert_eq!(app.log_pane_height, MIN_LOG_PANE_HEIGHT + 5);
+    assert_eq!(app.log_pane_height, Some(MIN_LOG_PANE_HEIGHT + 5));
+}
+
+#[test]
+fn default_height_is_a_third_of_the_window_up_to_twelve_rows() {
+    let mut app = build_review_app(&["a"]);
+    assert_eq!(app.log_pane_height, None);
+    assert_eq!(app.log_pane_rows(22), 7);
+    assert_eq!(app.log_pane_rows(60), DEFAULT_LOG_PANE_HEIGHT);
+    // the diff keeps six rows even in a tiny window
+    assert_eq!(app.log_pane_rows(8), MIN_LOG_PANE_HEIGHT);
+
+    // a set height wins, still leaving the diff its six
+    app.set_log_pane_height(20);
+    assert_eq!(app.log_pane_rows(60), 20);
+    assert_eq!(app.log_pane_rows(22), 16);
+}
+
+#[test]
+fn resizing_starts_from_the_height_on_screen() {
+    let mut app = build_review_app(&["a"]);
+    app.enable_log_pane();
+    // the window-sized default rendered 7 rows (5 inside the borders)
+    app.log_pane.as_mut().unwrap().inner_area = Some(ratatui::layout::Rect::new(0, 1, 80, 5));
+    app.adjust_log_pane_height(1);
+    assert_eq!(app.log_pane_height, Some(8));
 }
 
 #[test]
@@ -282,6 +307,25 @@ fn autoshow_opens_in_normal_mode_without_stealing_focus() {
     assert_eq!(app.focused_panel, FocusedPanel::Diff);
     // and only once
     assert!(!app.poll_log_pane_autoshow());
+}
+
+#[test]
+fn autoshow_is_on_by_default_except_without_local_history() {
+    let mut app = build_review_app(&["a"]);
+    assert!(app.log_pane_wanted);
+
+    // `--all-files` has no diff to sit above
+    app.is_pristine_mode = true;
+    assert!(!app.poll_log_pane_autoshow());
+    app.is_pristine_mode = false;
+
+    // PR and plain-file reviews have no local history
+    app.vcs_info.vcs_type = VcsType::File;
+    assert!(!app.poll_log_pane_autoshow());
+    assert!(app.log_pane.is_none());
+
+    app.vcs_info.vcs_type = VcsType::Git;
+    assert!(app.poll_log_pane_autoshow());
 }
 
 #[test]

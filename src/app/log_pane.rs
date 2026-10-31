@@ -15,11 +15,12 @@ use std::time::Instant;
 use ratatui::layout::Rect;
 
 use super::{
-    App, FocusedPanel, InputMode, LOG_PREVIEW_DELAY, LogListState, LogPane, MERGE_SELECTION_ID,
-    MIN_LOG_PANE_HEIGHT, initial_commit_limit,
+    App, DEFAULT_LOG_PANE_HEIGHT, FocusedPanel, InputMode, LOG_PREVIEW_DELAY, LogListState,
+    LogPane, MERGE_SELECTION_ID, MIN_LOG_PANE_HEIGHT, initial_commit_limit,
 };
 use crate::error::Result;
 use crate::vcs::CommitInfo;
+use crate::vcs::traits::VcsType;
 
 impl App {
     /// Whether the log pane is on screen.
@@ -171,21 +172,52 @@ impl App {
     /// Set the pane height in rows (borders included), floored at the
     /// smallest useful size. The renderer caps it so the diff keeps room.
     pub fn set_log_pane_height(&mut self, rows: u16) {
-        self.log_pane_height = rows.max(MIN_LOG_PANE_HEIGHT);
-        self.set_message(format!("Log pane height: {}", self.log_pane_height));
+        let rows = rows.max(MIN_LOG_PANE_HEIGHT);
+        self.log_pane_height = Some(rows);
+        self.set_message(format!("Log pane height: {rows}"));
     }
 
+    /// `<leader>+` / `<leader>-`: grow or shrink from the height on screen,
+    /// so the first press after the window-sized default moves one row.
     pub fn adjust_log_pane_height(&mut self, delta: i16) {
-        let next = (i32::from(self.log_pane_height) + i32::from(delta))
-            .max(i32::from(MIN_LOG_PANE_HEIGHT));
+        let current = self
+            .log_pane
+            .as_ref()
+            .and_then(|pane| pane.inner_area)
+            .map(|inner| inner.height + 2)
+            .or(self.log_pane_height)
+            .unwrap_or(DEFAULT_LOG_PANE_HEIGHT);
+        let next = (i32::from(current) + i32::from(delta)).max(i32::from(MIN_LOG_PANE_HEIGHT));
         self.set_log_pane_height(next as u16);
     }
 
-    /// `show_log = true`: open the pane once a review is on screen. The
-    /// startup selector runs first, and the pane belongs to Normal mode, so
-    /// this is polled from the main loop rather than done at startup.
+    /// Rows the pane takes out of a main area `area_height` tall. Until a
+    /// height is set it takes a third of the area, at most the default, so
+    /// a short terminal keeps most of its rows for the diff; either way the
+    /// diff keeps at least six.
+    pub fn log_pane_rows(&self, area_height: u16) -> u16 {
+        let wanted = self
+            .log_pane_height
+            .unwrap_or_else(|| (area_height / 3).min(DEFAULT_LOG_PANE_HEIGHT));
+        let max = area_height.saturating_sub(6).max(MIN_LOG_PANE_HEIGHT);
+        wanted.clamp(MIN_LOG_PANE_HEIGHT, max).min(area_height)
+    }
+
+    /// Whether the review has local history for the pane to show: not a
+    /// PR or plain-file review, and not `--all-files`, which has no diff.
+    pub fn log_pane_supported(&self) -> bool {
+        self.vcs_info.vcs_type != VcsType::File && !self.is_pristine_mode
+    }
+
+    /// Open the pane once a review is on screen, as JetBrains keeps its Git
+    /// tool window open (`show_log = false` opts out). The startup selector
+    /// runs first, and the pane belongs to Normal mode, so this is polled
+    /// from the main loop rather than done at startup.
     pub fn poll_log_pane_autoshow(&mut self) -> bool {
-        if !self.log_pane_wanted || self.log_pane.is_some() || self.input_mode != InputMode::Normal
+        if !self.log_pane_wanted
+            || self.log_pane.is_some()
+            || self.input_mode != InputMode::Normal
+            || !self.log_pane_supported()
         {
             return false;
         }

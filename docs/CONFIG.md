@@ -94,8 +94,8 @@ session_header = true
 | `show_pr_checks`           | `false`      | Whether PR CI checks are fetched and shown. Set to `true` to include GitHub check rollups.                                                           |
 | `show_pr_comments`         | `true`       | Whether PR conversation comments are fetched and shown. Set to `false` to skip PR comments.                                                         |
 | `show_commits`             | `true`       | Whether the inline commit selector pane is visible on startup for multi-commit reviews. Toggle with `<leader>s` or `:set commits!`.                        |
-| `show_log`                 | `false`      | Whether the persistent log pane (commit graph above the diff) opens once a review is on screen. Toggle with `<leader>g` or `:log`.                          |
-| `log_height`               | `12`         | Log pane height in rows, borders included. Adjust with `<leader>+` / `<leader>-` or `:set logheight N`.                                                     |
+| `show_log`                 | `true`       | Whether the persistent log pane (commit graph above the diff) opens once a review is on screen. Toggle with `<leader>g` or `:log`.                          |
+| `log_height`               | window / 3   | Log pane height in rows, borders included. Unset, it takes a third of the window, at most 12 rows. Adjust with `<leader>+` / `<leader>-` or `:set logheight N`. |
 | `show_reviewed`            | `true`       | Whether files already marked reviewed appear in the file tree and the diff. Set `false` to start a session showing only what is left. Toggle with `:set reviewed!`. |
 | `mouse`                    | `true`       | Wheel scrolling, clicks, and drag-to-select.                                                                                                               |
 | `leader`                   | `;`          | Single-character prefix for panel focus, sidebar toggles, and review-comment shortcuts. Invalid multi-character values are ignored with a startup warning. |

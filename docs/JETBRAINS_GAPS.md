@@ -63,6 +63,8 @@ screen, and the status-bar hints for most panes are partial or truncated.
       parents, refs, full message). The message pseudo-file appears only for a
       committed single-commit review
 - [x] No ahead/behind (incoming/outgoing) counts for the current branch
+- [x] The log pane starts closed (`show_log = false`), unlike the Git tool
+      window. Open it by default once a review is on screen, diff focused
 
 ### Branches (JetBrains branch popup)
 
