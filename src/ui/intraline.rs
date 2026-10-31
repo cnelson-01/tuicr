@@ -99,9 +99,12 @@ fn tokenize(s: &str) -> Vec<Range<usize>> {
     tokens
 }
 
+/// Changed byte ranges of the old line and of the new line.
+pub type ChangedRanges = (Vec<Range<usize>>, Vec<Range<usize>>);
+
 /// Byte ranges of `old` and `new` that differ, at token granularity, or
 /// `None` when the lines are identical or too different to be worth it.
-pub fn changed_ranges(old: &str, new: &str) -> Option<(Vec<Range<usize>>, Vec<Range<usize>>)> {
+pub fn changed_ranges(old: &str, new: &str) -> Option<ChangedRanges> {
     if old == new {
         return None;
     }
@@ -326,7 +329,8 @@ mod tests {
             Span::styled("abc".to_string(), Style::default()),
             Span::styled("def".to_string(), Style::default().fg(Color::Red)),
         ];
-        let out = emphasize(spans, &[(2..4)], Color::Blue);
+        let range = 2..4;
+        let out = emphasize(spans, std::slice::from_ref(&range), Color::Blue);
         let texts: Vec<&str> = out.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(texts, vec!["ab", "c", "d", "ef"]);
         assert_eq!(out[1].style.bg, Some(Color::Blue));
