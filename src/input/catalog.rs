@@ -243,6 +243,7 @@ pub const ENTRIES: &[Entry] = &[
     e(Global, "Remote", ":pull!", "Pull with rebase", Cmd("pull!")),
     e(Global, "Remote", ":push", "Push: review the outgoing commits first", Cmd("push")),
     e(Global, "Remote", ":push!", "Force-push with lease (after rewriting history)", Cmd("push!")),
+    e(Global, "Remote", ":push --tags", "Push every tag", Cmd("push --tags")),
     e(Global, "Help", ":console", "Git console: the commands tuicr ran", Cmd("console")),
     // ── Search ───────────────────────────────────────────────────────────
     e(Global, "Find", "<leader>F", "Find in files", Keys("<leader>F")),

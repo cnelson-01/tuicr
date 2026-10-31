@@ -20,6 +20,8 @@ pub enum RemoteOp {
     Push,
     /// `git push --force-with-lease`.
     ForcePush,
+    /// `git push --tags` to the default remote.
+    PushTags,
 }
 
 impl RemoteOp {
@@ -29,6 +31,7 @@ impl RemoteOp {
             Self::Pull | Self::PullRebase => "Pulling",
             Self::Push => "Pushing",
             Self::ForcePush => "Force-pushing",
+            Self::PushTags => "Pushing tags",
         }
     }
 
@@ -39,6 +42,7 @@ impl RemoteOp {
             Self::PullRebase => "pull --rebase",
             Self::Push => "push",
             Self::ForcePush => "push --force-with-lease",
+            Self::PushTags => "push --tags",
         }
     }
 }
@@ -90,6 +94,9 @@ impl App {
                             let branch = vcs.info().branch_name.clone().unwrap_or_default();
                             format!("Force-pushed {branch} (with lease)")
                         }),
+                    RemoteOp::PushTags => vcs
+                        .run_git(&["push", "--tags", "--recurse-submodules=no"], true)
+                        .map(|_| "Pushed tags".to_string()),
                 });
             let _ = tx.send(RemoteOpAnswer { op, result });
         });

@@ -304,10 +304,13 @@ Full options, theme resolution precedence, `comment_types` semantics, and `.tuic
 
 ## Keybindings
 
-A first-session cheatsheet. Press `?` inside tuicr for the full reference.
+A first-session cheatsheet. Press `Ctrl-p` inside tuicr to search every action
+and its keys, or `?` for the full reference.
 
 | Key | Action |
 |---|---|
+| `Ctrl-p` | Command palette: find any action by name, see its keys, run it |
+| `;` (leader) | Pause after it to see every leader key |
 | `j` / `k` | Down / up |
 | `Ctrl-d` / `Ctrl-u` | Half-page down / up |
 | `g` / `G` | Top / bottom |
@@ -327,6 +330,9 @@ A first-session cheatsheet. Press `?` inside tuicr for the full reference.
 | `:edit` | Open focused file in `$EDITOR` |
 | `:submit` | Push review to GitHub, GitLab, Gitea, Bitbucket, Azure DevOps, or Gerrit |
 | `Tab` in `:` prompt | Complete or cycle commands |
+| `;<` / `;>`, `;[` / `;]` | Move the side-by-side divider, resize the file tree (or drag them) |
+| `;z` | Zen mode: diff only |
+| `;g` / `;b` | Log pane (commit graph) / branch picker |
 | `?` | Toggle full help |
 
 Full reference in [docs/KEYBINDINGS.md](docs/KEYBINDINGS.md).

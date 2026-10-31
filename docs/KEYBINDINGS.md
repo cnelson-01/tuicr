@@ -308,6 +308,7 @@ remote-tracking ones. `:compare ma`, `↓`, `↓`, `Enter` picks the second matc
 | `:branch -m [old] <new>` | Rename a branch (the current one when `old` is left out) |
 | `:upstream <remote/branch>` | Make the current branch track a remote branch |
 | `:tag -d <name>` | Delete a local tag (asks first) |
+| `:push --tags` / `:push-tags` | Push every tag to the default remote |
 | `:console` | Git console: every git command tuicr ran, with exit status, time, and output. `m` toggles reads, `c` clears |
 | `:commit` / `:commit <message>` | Commit the index; without a message the comment box opens as the message editor |
 | `:commit!` / `:amend` / `:commit! <message>` | Amend HEAD (the box is pre-filled with its message) |

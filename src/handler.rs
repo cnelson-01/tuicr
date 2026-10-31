@@ -103,6 +103,10 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         &["push!", "push --force-with-lease"],
         CommandKind::PushPreview(true),
     ),
+    CommandSpec::new(
+        &["push --tags", "push-tags"],
+        CommandKind::Remote(RemoteOp::PushTags),
+    ),
     CommandSpec::new(&["continue"], CommandKind::ContinueOperation),
     CommandSpec::new(&["skip"], CommandKind::SkipOperation),
     CommandSpec::new(&["console", "gitlog"], CommandKind::Console),

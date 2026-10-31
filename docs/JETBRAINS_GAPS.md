@@ -77,8 +77,8 @@ screen, and the status-bar hints for most panes are partial or truncated.
 
 - [x] No interactive rebase editor (JetBrains "Interactively Rebase from
       Here"): reorder, pick, reword, squash, fixup, drop, then run
-- [x] Tags can be created but not deleted or pushed (`:tag -d`; pushing tags
-      is still `git push --tags` outside tuicr)
+- [x] Tags can be created but not deleted or pushed (`:tag -d`,
+      `:push --tags`)
 
 ### Remote
 

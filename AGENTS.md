@@ -14,7 +14,8 @@ tuicr is a Rust terminal UI application and library for code reviews. Here's the
 ```
 src/
 ├── lib.rs               # Public crate surface: ReviewStore, session/comment types, core modules
-├── main.rs              # Entry point, event loop, action dispatch
+├── main.rs              # Entry point, event loop (palette-injected keys first), action dispatch
+├── git_console.rs       # Process-wide log of git commands run (`:console`), recorded where git is spawned
 ├── config/
 │   └── mod.rs           # User config loading (XDG on Unix, %APPDATA% on Windows)
 ├── app.rs               # Application state (App struct, InputMode, etc.)
@@ -28,7 +29,12 @@ src/
 │   ├── history.rs       # Log-cursor commit actions: revert, reword, drop, fixup, reset/undo, tag, copy hash
 │   ├── local_changes.rs # Stage/unstage file+hunk, discard (confirmed), commit/amend via the composer, stash picker
 │   ├── find.rs          # Find in files (`:find`): rg / git grep runner, results state, jump-or-edit
-│   └── blame.rs         # Blame gutter (`:blame`, lazy per-file cache keyed by content hash) + `:history`
+│   ├── blame.rs         # Blame gutter (`:blame`, lazy per-file cache keyed by content hash), `:history`, `<leader>A`
+│   ├── layout.rs        # Side-by-side split %, file tree width %, splitter drag, zen mode, half-screen pans, ignore-whitespace
+│   ├── palette.rs       # Command palette (`Ctrl-p`): ranks the action catalog, runs entries by replaying their keys
+│   ├── git_ops.rs       # Merge / rebase onto / continue / skip, branch delete / rename / upstream, tag delete, push preview, header RepoStatus
+│   ├── rebase_editor.rs # Interactive rebase editor (`i` in the log): reorder, pick / reword / squash / fixup / drop
+│   └── console.rs       # `:console` view state over git_console
 ├── error.rs             # Error types (TuicrError enum)
 ├── editor.rs            # External $EDITOR command construction and launch helpers
 ├── review_store.rs      # Library API for session listing/loading and shared comment insertion
@@ -44,7 +50,7 @@ src/
 │
 ├── vcs/                 # VCS abstraction layer
 │   ├── mod.rs           # detect_vcs(): auto-detect VCS (jj first, then git, then hg)
-│   ├── traits.rs        # VcsBackend trait, VcsInfo, VcsType, CommitInfo, MergeConflictInfo
+│   ├── traits.rs        # VcsBackend trait (incl. run_git, rebase_interactive, stage_lines), VcsInfo, CommitInfo, RefKind, LinePick
 │   ├── conflict.rs      # Conflict-marker parser (<<<<<<< blocks) + apply_resolutions()
 │   ├── diff_parser.rs   # Strict, count-driven hunk parser over structured FilePatch values
 │   ├── git/             # Git backend selector (libgit2 by default, CLI for sparse/opt-in)
@@ -112,6 +118,7 @@ src/
 ├── input/
 │   ├── mod.rs
 │   ├── keybindings.rs   # Action enum, map_key_to_action() for each InputMode
+│   ├── catalog.rs       # Action catalog: every key / `:` command with scope + description; feeds palette, which-key, completions
 │   └── mode.rs          # InputMode enum definition (unused, defined in app.rs)
 │
 ├── persistence/
@@ -133,6 +140,10 @@ src/
     ├── comment_panel.rs # Comment input dialog, confirm dialog
     ├── commit_graph.rs  # JetBrains-style lane layout + track rendering for the selector
     ├── merge_conflict.rs # Fullscreen tri-pane (ours|result|theirs) merge conflict screen
+    ├── intraline.rs     # Word-level emphasis: pair deletions with additions, token LCS, split spans
+    ├── palette.rs       # Command palette modal + which-key popup (both from the action catalog)
+    ├── rebase_editor.rs # Interactive rebase editor modal
+    ├── console.rs       # Git console view (`:console`)
     └── styles.rs        # Color constants and style helper functions
 ```
 
@@ -373,6 +384,7 @@ When adding user-facing features, update the relevant documentation:
 | `README.md`            | Keybindings, commands (`:*`), CLI flags, features list, installation methods, agent integration setup, forge limitations |
 | `src/ui/help_popup.rs` | Keybindings or commands (update the `help_text` vector)                                                                  |
 | `src/ui/status_bar.rs` | Keybindings worth advertising in the per-pane hint line                                                                  |
+| `src/input/catalog.rs` | Any keybinding or `:` command: one `e(...)` row (scope, group, keys, description, how to run) so the palette, which-key popup, and `:` completions list it |
 | `docs/CLI.md`          | Any clap flag, subcommand, env var, stderr marker, or exit code: add a row to the matching table                          |
 | `docs/KEYBINDINGS.md`  | Any keybinding or `:` command: add a row to the pane's key table and the `:` command table, plus prose for new behavior  |
 | `AGENTS.md`            | Module structure, repo-managed agent integrations, key types, data flow, dependencies, forge invariants and gotchas      |
