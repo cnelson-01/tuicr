@@ -226,6 +226,20 @@ pub enum HunkScope {
     Staged,
 }
 
+/// Lines picked out of one hunk for a partial stage or unstage: deletions
+/// by old line number, additions by new line number.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LinePick {
+    pub old: std::collections::BTreeSet<u32>,
+    pub new: std::collections::BTreeSet<u32>,
+}
+
+impl LinePick {
+    pub fn is_empty(&self) -> bool {
+        self.old.is_empty() && self.new.is_empty()
+    }
+}
+
 /// Who last touched a line, for the blame gutter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlameLine {
@@ -764,6 +778,34 @@ pub trait VcsBackend: Send {
     fn push(&self) -> Result<String> {
         Err(crate::error::TuicrError::UnsupportedOperation(
             "Pushing is not supported for this VCS".into(),
+        ))
+    }
+
+    /// Stage only the picked lines of the hunk at `(old_start, new_start)`
+    /// in the `scope` diff (JetBrains' per-line checkboxes).
+    fn stage_lines(
+        &self,
+        _path: &Path,
+        _scope: HunkScope,
+        _old_start: u32,
+        _new_start: u32,
+        _pick: &LinePick,
+    ) -> Result<()> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Line staging is not supported for this VCS".into(),
+        ))
+    }
+
+    /// Unstage only the picked lines of a hunk in the staged diff.
+    fn unstage_lines(
+        &self,
+        _path: &Path,
+        _old_start: u32,
+        _new_start: u32,
+        _pick: &LinePick,
+    ) -> Result<()> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Line staging is not supported for this VCS".into(),
         ))
     }
 

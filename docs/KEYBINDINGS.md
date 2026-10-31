@@ -212,6 +212,8 @@ from the checkout, never copied.
 |-----|--------|
 | `j` / `k` | Extend selection down / up |
 | `c` / `Enter` | Create comment for selected range |
+| `S` | Stage only the selected changed lines (working-tree and unstaged views); side-by-side rows stage both their deletion and addition |
+| `U` | Unstage only the selected lines (staged view) |
 | `Esc` / `v` / `V` | Cancel selection |
 
 ## Comment mode

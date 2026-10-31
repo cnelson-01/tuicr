@@ -7,7 +7,8 @@ pub mod repository;
 pub mod staging;
 
 use crate::vcs::traits::{
-    BlameLine, BranchInfo, CommitQuery, HunkScope, RebaseAction, RebaseStep, ResetMode, StashEntry,
+    BlameLine, BranchInfo, CommitQuery, HunkScope, LinePick, RebaseAction, RebaseStep, ResetMode,
+    StashEntry,
 };
 use chrono::{DateTime, TimeZone, Utc};
 use std::collections::HashMap;
@@ -559,6 +560,55 @@ impl VcsBackend for GitBackend {
             extract_hunk_patch(root, path, scope, old_start, new_start).and_then(|patch| {
                 run_git_stdin(root, &["apply", "--cached", "--whitespace=nowarn"], &patch)
                     .map(|_| ())
+            });
+        self.refresh_after_cli_op(result)
+    }
+
+    fn stage_lines(
+        &self,
+        path: &Path,
+        scope: HunkScope,
+        old_start: u32,
+        new_start: u32,
+        pick: &LinePick,
+    ) -> Result<()> {
+        let root = &self.info().root_path;
+        let result = extract_hunk_patch(root, path, scope, old_start, new_start)
+            .and_then(|patch| filter_patch_lines(&patch, pick, false))
+            .and_then(|patch| {
+                run_git_stdin(
+                    root,
+                    &["apply", "--cached", "--recount", "--whitespace=nowarn"],
+                    &patch,
+                )
+                .map(|_| ())
+            });
+        self.refresh_after_cli_op(result)
+    }
+
+    fn unstage_lines(
+        &self,
+        path: &Path,
+        old_start: u32,
+        new_start: u32,
+        pick: &LinePick,
+    ) -> Result<()> {
+        let root = &self.info().root_path;
+        let result = extract_hunk_patch(root, path, HunkScope::Staged, old_start, new_start)
+            .and_then(|patch| filter_patch_lines(&patch, pick, true))
+            .and_then(|patch| {
+                run_git_stdin(
+                    root,
+                    &[
+                        "apply",
+                        "--cached",
+                        "-R",
+                        "--recount",
+                        "--whitespace=nowarn",
+                    ],
+                    &patch,
+                )
+                .map(|_| ())
             });
         self.refresh_after_cli_op(result)
     }
@@ -1318,6 +1368,94 @@ fn extract_hunk_patch(
         )));
     }
     Ok(header + &target)
+}
+
+/// Cut a one-hunk patch down to the picked lines. Applied forward (stage),
+/// an unpicked deletion stays as context and an unpicked addition is left
+/// out; applied in reverse (unstage, `-R`), the roles swap, since the
+/// index already holds the additions. Header counts are recomputed.
+fn filter_patch_lines(patch: &str, pick: &LinePick, reverse: bool) -> Result<String> {
+    let Some(hunk_at) = patch.find("\n@@").map(|i| i + 1) else {
+        return Err(TuicrError::VcsCommand("No hunk in the patch".into()));
+    };
+    let (header, hunk) = patch.split_at(hunk_at);
+    let mut lines = hunk.split_inclusive('\n');
+    let hunk_header = lines.next().unwrap_or_default();
+    let (old_start, new_start) = parse_hunk_header_starts(hunk_header)
+        .ok_or_else(|| TuicrError::VcsCommand("Malformed hunk header".into()))?;
+    let trailer = hunk_header
+        .splitn(4, ' ')
+        .nth(3)
+        .and_then(|rest| rest.split_once("@@"))
+        .map(|(_, after)| after.to_string())
+        .unwrap_or_else(|| "\n".to_string());
+
+    let (mut old_ln, mut new_ln) = (old_start, new_start);
+    let mut body = String::new();
+    let (mut old_count, mut new_count, mut changes) = (0u32, 0u32, 0usize);
+    let mut last_kept = true;
+    for line in lines {
+        let (tag, rest) = line.split_at(line.len().min(1));
+        match tag {
+            "-" => {
+                let picked = pick.old.contains(&old_ln);
+                old_ln += 1;
+                if picked {
+                    body.push_str(line);
+                    old_count += 1;
+                    changes += 1;
+                    last_kept = true;
+                } else if reverse {
+                    last_kept = false;
+                } else {
+                    body.push(' ');
+                    body.push_str(rest);
+                    old_count += 1;
+                    new_count += 1;
+                    last_kept = true;
+                }
+            }
+            "+" => {
+                let picked = pick.new.contains(&new_ln);
+                new_ln += 1;
+                if picked {
+                    body.push_str(line);
+                    new_count += 1;
+                    changes += 1;
+                    last_kept = true;
+                } else if reverse {
+                    body.push(' ');
+                    body.push_str(rest);
+                    old_count += 1;
+                    new_count += 1;
+                    last_kept = true;
+                } else {
+                    last_kept = false;
+                }
+            }
+            "\\" => {
+                if last_kept {
+                    body.push_str(line);
+                }
+            }
+            _ => {
+                old_ln += 1;
+                new_ln += 1;
+                body.push_str(line);
+                old_count += 1;
+                new_count += 1;
+                last_kept = true;
+            }
+        }
+    }
+    if changes == 0 {
+        return Err(TuicrError::VcsCommand(
+            "No changed lines in the selection".into(),
+        ));
+    }
+    Ok(format!(
+        "{header}@@ -{old_start},{old_count} +{new_start},{new_count} @@{trailer}{body}"
+    ))
 }
 
 /// `@@ -12,3 +14,5 @@ ...` → `(12, 14)`.
@@ -2430,6 +2568,67 @@ mod tests {
         assert_eq!(
             fs::read_to_string(a.join("f.txt")).unwrap(),
             "one\ntwo\nthree\n"
+        );
+    }
+
+    #[test]
+    fn stages_and_unstages_only_the_picked_lines() {
+        // given a file with three edited lines in one hunk
+        let temp_dir = tempdir().expect("failed to create temp dir");
+        let root = temp_dir.path();
+        setup_standard_repo(root);
+        fs::write(root.join("f.txt"), "a\nb\nc\nd\ne\n").expect("write");
+        run_git_command(root, &["add", "f.txt"]).expect("add");
+        run_git_command(root, &["commit", "-qm", "base"]).expect("commit");
+        fs::write(root.join("f.txt"), "a\nB\nc\nD\ne\nf\n").expect("write");
+        let backend = GitBackend::discover_from(
+            root,
+            GitBackendPreference::Libgit2,
+            DiffWhitespaceMode::Normal,
+        )
+        .expect("backend");
+        let staged = || run_git_command(root, &["show", ":f.txt"]).expect("index");
+
+        // when only the b → B change (old line 2, new line 2) is staged
+        let mut pick = LinePick::default();
+        pick.old.insert(2);
+        pick.new.insert(2);
+        backend
+            .stage_lines(Path::new("f.txt"), HunkScope::Unstaged, 1, 1, &pick)
+            .expect("stage lines");
+
+        // then the index has B but not D or the new f
+        assert_eq!(staged(), "a\nB\nc\nd\ne\n");
+
+        // when the appended f (new line 6 of index → worktree) is staged too
+        let mut pick = LinePick::default();
+        pick.new.insert(6);
+        backend
+            .stage_lines(Path::new("f.txt"), HunkScope::Unstaged, 1, 1, &pick)
+            .expect("stage the addition");
+        assert_eq!(staged(), "a\nB\nc\nd\ne\nf\n");
+
+        // and unstaging just the B line in the staged diff restores b
+        let mut pick = LinePick::default();
+        pick.old.insert(2);
+        pick.new.insert(2);
+        backend
+            .unstage_lines(Path::new("f.txt"), 1, 1, &pick)
+            .expect("unstage lines");
+        assert_eq!(staged(), "a\nb\nc\nd\ne\nf\n");
+        // the working tree is untouched throughout
+        assert_eq!(
+            fs::read_to_string(root.join("f.txt")).unwrap(),
+            "a\nB\nc\nD\ne\nf\n"
+        );
+
+        // a pick of only context lines is refused
+        let mut pick = LinePick::default();
+        pick.new.insert(1);
+        assert!(
+            backend
+                .stage_lines(Path::new("f.txt"), HunkScope::Unstaged, 1, 1, &pick)
+                .is_err()
         );
     }
 

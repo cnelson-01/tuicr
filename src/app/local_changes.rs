@@ -189,6 +189,124 @@ impl App {
         }
     }
 
+    /// The changed lines under the visual selection, grouped by hunk:
+    /// `(file_idx, hunk_idx) → lines`. Side-by-side rows contribute both
+    /// their deletion and their addition.
+    fn visual_line_picks(
+        &self,
+    ) -> std::collections::BTreeMap<(usize, usize), crate::vcs::traits::LinePick> {
+        use crate::model::LineOrigin;
+        let mut picks: std::collections::BTreeMap<(usize, usize), crate::vcs::traits::LinePick> =
+            Default::default();
+        let Some(sel) = self.get_visual_selection() else {
+            return picks;
+        };
+        let (start, end) = sel.ordered();
+        for idx in start.annotation_idx..=end.annotation_idx {
+            let (file_idx, hunk_idx, line_idxs) = match self.line_annotations.get(idx) {
+                Some(super::AnnotatedLine::DiffLine {
+                    file_idx,
+                    hunk_idx,
+                    line_idx,
+                    ..
+                }) => (*file_idx, *hunk_idx, vec![*line_idx]),
+                Some(super::AnnotatedLine::SideBySideLine {
+                    file_idx,
+                    hunk_idx,
+                    del_line_idx,
+                    add_line_idx,
+                    ..
+                }) => (
+                    *file_idx,
+                    *hunk_idx,
+                    del_line_idx.iter().chain(add_line_idx).copied().collect(),
+                ),
+                _ => continue,
+            };
+            let Some(hunk) = self
+                .diff_files
+                .get(file_idx)
+                .and_then(|f| f.hunks.get(hunk_idx))
+            else {
+                continue;
+            };
+            for line_idx in line_idxs {
+                let Some(line) = hunk.lines.get(line_idx) else {
+                    continue;
+                };
+                let pick = picks.entry((file_idx, hunk_idx)).or_default();
+                match (line.origin, line.old_lineno, line.new_lineno) {
+                    (LineOrigin::Deletion, Some(old), _) => {
+                        pick.old.insert(old);
+                    }
+                    (LineOrigin::Addition, _, Some(new)) => {
+                        pick.new.insert(new);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        picks.retain(|_, pick| !pick.is_empty());
+        picks
+    }
+
+    /// `S` / `U` in visual mode: stage (or, in the staged view, unstage)
+    /// just the selected lines. Hunks are applied bottom-up so the ones
+    /// above keep the coordinates they are looked up by.
+    pub fn stage_selected_lines(&mut self, unstage: bool) {
+        let verb = if unstage { "Unstaging" } else { "Staging" };
+        let Some(scope) = self.require_local_scope(&format!("{verb} lines")) else {
+            return;
+        };
+        if unstage != (scope == HunkScope::Staged) {
+            self.set_message(if unstage {
+                "Unstage lines from the staged view (`:commits`, then Staged changes)"
+            } else {
+                "These lines are staged already; U unstages them"
+            });
+            return;
+        }
+        let picks = self.visual_line_picks();
+        if picks.is_empty() {
+            self.set_warning("No changed lines in the selection");
+            return;
+        }
+        let mut done = 0usize;
+        for ((file_idx, hunk_idx), pick) in picks.iter().rev() {
+            let Some(file) = self.diff_files.get(*file_idx) else {
+                continue;
+            };
+            let Some(hunk) = file.hunks.get(*hunk_idx) else {
+                continue;
+            };
+            let path = file.display_path().clone();
+            let result = if unstage {
+                self.vcs
+                    .unstage_lines(&path, hunk.old_start, hunk.new_start, pick)
+            } else {
+                self.vcs
+                    .stage_lines(&path, scope, hunk.old_start, hunk.new_start, pick)
+            };
+            match result {
+                Ok(()) => done += pick.old.len() + pick.new.len(),
+                Err(e) => {
+                    self.exit_visual_mode();
+                    self.set_error(format!("{verb} lines failed: {e}"));
+                    if done > 0 {
+                        self.after_local_change(format!("{verb} stopped after {done} lines"));
+                    }
+                    return;
+                }
+            }
+        }
+        self.exit_visual_mode();
+        let past = if unstage { "Unstaged" } else { "Staged" };
+        self.after_local_change(format!(
+            "{past} {done} line{}",
+            if done == 1 { "" } else { "s" }
+        ));
+    }
+
     /// `X`: ask before discarding the hunk under the cursor.
     pub fn request_discard_hunk(&mut self) {
         let Some(scope) = self.require_local_scope("Discarding a hunk") else {

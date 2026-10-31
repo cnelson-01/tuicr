@@ -167,8 +167,10 @@ pub const ENTRIES: &[Entry] = &[
     // ── Local changes ────────────────────────────────────────────────────
     e(Diff, "Local changes", "s", "Stage the file", Keys("s")),
     e(Diff, "Local changes", "u", "Unstage the file", Keys("u")),
-    e(Diff, "Local changes", "S", "Stage the hunk (or the selected lines)", Keys("S")),
-    e(Diff, "Local changes", "U", "Unstage the hunk (or the selected lines)", Keys("U")),
+    e(Diff, "Local changes", "S", "Stage the hunk", Keys("S")),
+    e(Diff, "Local changes", "U", "Unstage the hunk", Keys("U")),
+    e(Diff, "Local changes", "V then S", "Stage only the selected lines", Keys("V")),
+    e(Diff, "Local changes", "V then U", "Unstage only the selected lines", Keys("V")),
     e(Diff, "Local changes", "X", "Discard the hunk (rollback)", Keys("X")),
     e(Global, "Local changes", ":discard", "Discard every change to the file", Cmd("discard")),
     e(Global, "Local changes", ":stage", "Stage the reviewed files", Cmd("stage")),

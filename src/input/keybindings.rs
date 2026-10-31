@@ -902,6 +902,8 @@ fn map_visual_mode_with_q_quits(key: KeyEvent, q_quits: bool) -> Action {
         (KeyCode::Char('c'), KeyModifiers::NONE) => Action::AddRangeComment,
         (KeyCode::Enter, KeyModifiers::NONE) => Action::AddRangeComment,
         (KeyCode::Char('y'), KeyModifiers::NONE) => Action::ExportToClipboard,
+        (KeyCode::Char('S'), _) => Action::StageHunk,
+        (KeyCode::Char('U'), _) => Action::UnstageHunk,
         (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
         (KeyCode::Char('v') | KeyCode::Char('V'), _) => Action::ExitMode,
         (KeyCode::Char('q'), KeyModifiers::NONE) => q_action(q_quits),

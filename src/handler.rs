@@ -2319,6 +2319,8 @@ pub fn handle_visual_action(app: &mut App, action: Action) {
                 app.exit_visual_mode();
             }
         }
+        Action::StageHunk => app.stage_selected_lines(false),
+        Action::UnstageHunk => app.stage_selected_lines(true),
         Action::ExportToClipboard => {
             match app.copy_visual_selection() {
                 Ok(0) => app.set_message("Nothing to copy"),

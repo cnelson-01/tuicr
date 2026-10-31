@@ -89,7 +89,7 @@ screen, and the status-bar hints for most panes are partial or truncated.
 
 ### Local changes
 
-- [ ] No line-level staging (JetBrains per-line checkboxes). Stage the
+- [x] No line-level staging (JetBrains per-line checkboxes). Stage the
       visual-selected lines
 - [ ] Stash picker can pop, apply, or drop, but can't preview a stash's diff
 
