@@ -119,6 +119,7 @@ pub const ENTRIES: &[Entry] = &[
     e(Global, "View", "<leader>w", "Toggle ignore-whitespace", Keys("<leader>w")),
     e(Global, "View", ":set relativenumber!", "Toggle relative line numbers", Cmd("set relativenumber!")),
     e(Global, "View", "<leader>a", "Toggle the blame gutter (annotate)", Keys("<leader>a")),
+    e(Diff, "View", "<leader>A", "Open the commit that last changed this line", Keys("<leader>A")),
     // ── Layout ───────────────────────────────────────────────────────────
     e(Global, "Layout", "<leader><", "Move the side-by-side divider left", Keys("<leader><")),
     e(Global, "Layout", "<leader>>", "Move the side-by-side divider right", Keys("<leader>>")),

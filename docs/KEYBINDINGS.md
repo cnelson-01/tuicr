@@ -156,6 +156,7 @@ considers files that pass the active filters.
 | `<leader>b` | Open the branch picker (also `:branches`) |
 | `<leader>F` | Find in files: opens the command line with `find ` |
 | `<leader>a` | Toggle the blame gutter (also `:blame`, `:set blame!`) |
+| `<leader>A` | Load the commit that last changed the cursor line as the review (also `:blame-commit`); works with the gutter off |
 | `<leader><` / `<leader>>` | Move the side-by-side divider left / right (also `<leader>,` / `<leader>.`, `:set split N`, or drag the `│`) |
 | `<leader>[` / `<leader>]` | Narrow / widen the file tree (also `:set treewidth N`, or drag its border) |
 | `<leader>0` | Reset the divider to 50/50 and the file tree to 20% |

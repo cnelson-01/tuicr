@@ -121,6 +121,7 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     CommandSpec::new(&["set blame"], CommandKind::SetBlame(true)),
     CommandSpec::new(&["set noblame"], CommandKind::SetBlame(false)),
     CommandSpec::new(&["history"], CommandKind::FileHistory),
+    CommandSpec::new(&["blame-commit"], CommandKind::BlameCommit),
     CommandSpec::new(&["set reviewed"], CommandKind::SetShowReviewed(true)),
     CommandSpec::new(&["set noreviewed"], CommandKind::SetShowReviewed(false)),
     CommandSpec::new(
@@ -218,6 +219,7 @@ enum CommandKind {
     ContinueOperation,
     SkipOperation,
     Console,
+    BlameCommit,
     ResetSplit,
     /// `Some` sets, `None` toggles.
     SetIgnoreWhitespace(Option<bool>),
@@ -1169,6 +1171,11 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
         CommandKind::SkipOperation => {
             app.exit_command_mode();
             app.skip_operation();
+            CommandAfterDispatch::KeepMode
+        }
+        CommandKind::BlameCommit => {
+            app.exit_command_mode();
+            app.show_blame_commit();
             CommandAfterDispatch::KeepMode
         }
         CommandKind::Console => {

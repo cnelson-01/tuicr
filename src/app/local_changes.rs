@@ -543,10 +543,7 @@ impl App {
                 "Viewing {stash}: {} \u{00b7} :stashes to pop or apply it",
                 entry.message
             )),
-            Err(e) => self.set_error(format!(
-                "Can't show {stash}: {}",
-                e.to_string().trim()
-            )),
+            Err(e) => self.set_error(format!("Can't show {stash}: {}", e.to_string().trim())),
         }
     }
 

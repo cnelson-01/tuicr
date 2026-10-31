@@ -740,9 +740,14 @@ fn main() -> anyhow::Result<()> {
                                 app.start_find_prompt();
                                 continue;
                             }
-                            // `<leader>a` toggles the blame (annotate) gutter.
+                            // `<leader>a` toggles the blame (annotate) gutter;
+                            // `<leader>A` opens the commit behind the line.
                             crossterm::event::KeyCode::Char('a') => {
                                 app.toggle_blame();
+                                continue;
+                            }
+                            crossterm::event::KeyCode::Char('A') => {
+                                app.show_blame_commit();
                                 continue;
                             }
                             // Layout: move the side-by-side divider, resize

@@ -91,11 +91,11 @@ screen, and the status-bar hints for most panes are partial or truncated.
 
 - [x] No line-level staging (JetBrains per-line checkboxes). Stage the
       visual-selected lines
-- [ ] Stash picker can pop, apply, or drop, but can't preview a stash's diff
+- [x] Stash picker can pop, apply, or drop, but can't preview a stash's diff
 
 ### Annotate
 
-- [ ] The blame gutter is a dead end. Add a key that jumps from the line's
+- [x] The blame gutter is a dead end. Add a key that jumps from the line's
       commit to that commit in the log, with its diff loaded
 
 ### Transparency

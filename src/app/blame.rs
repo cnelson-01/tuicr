@@ -200,6 +200,70 @@ impl App {
         }
     }
 
+    /// `<leader>A` / `:blame-commit`: load the commit that last changed the
+    /// line under the cursor as the review (JetBrains: click an annotation).
+    /// Blame is computed for the file on the spot when it isn't cached yet.
+    pub fn show_blame_commit(&mut self) {
+        if self.blame_revision_unsupported() {
+            self.set_message("Blame is not available for PR reviews");
+            return;
+        }
+        // Expanded context counts too: it is unchanged code with a new-side
+        // line number like any context line.
+        let expanded = match self.line_annotations.get(self.diff_state.cursor_line) {
+            Some(super::AnnotatedLine::ExpandedContext { gap_id, line_idx }) => self
+                .get_expanded_line(gap_id, *line_idx)
+                .and_then(|l| l.new_lineno)
+                .map(|n| (n, crate::model::LineSide::New)),
+            _ => None,
+        };
+        let Some((line, side)) = expanded.or_else(|| self.get_line_at_cursor()) else {
+            self.set_warning("Move the cursor onto a code line");
+            return;
+        };
+        if side == crate::model::LineSide::Old {
+            self.set_message("A deleted line has no blame here; try the new side");
+            return;
+        }
+        let Some(file) = self.diff_files.get(self.diff_state.current_file_idx) else {
+            return;
+        };
+        let key = blame_key(file);
+        let path = file.display_path().clone();
+        if !self.blame.cache.contains_key(&key) {
+            let revision = self.blame_revision();
+            match self.vcs.blame_file(&path, revision.as_deref()) {
+                Ok(lines) => {
+                    self.blame.cache.insert(key.clone(), lines);
+                }
+                Err(e) => {
+                    self.set_error(format!("Blame failed: {}", e.to_string().trim()));
+                    return;
+                }
+            }
+        }
+        let Some(blamed) = self
+            .blame
+            .cache
+            .get(&key)
+            .and_then(|lines| lines.get(line.saturating_sub(1) as usize))
+            .and_then(Option::as_ref)
+            .cloned()
+        else {
+            self.set_message(format!("{}:{line} is not committed yet", path.display()));
+            return;
+        };
+        let short: String = blamed.sha.chars().take(7).collect();
+        match self.open_revision_range(&blamed.sha) {
+            Ok(_) => self.set_message(format!(
+                "{}:{line} last changed in {short} by {} \u{00b7} <leader>g to pick another review",
+                path.display(),
+                blamed.author
+            )),
+            Err(e) => self.set_error(format!("Can't open {short}: {}", e.to_string().trim())),
+        }
+    }
+
     /// `:history`: the log pane filtered to commits touching the focused
     /// file, with the pane focused.
     pub fn show_file_history(&mut self) {
