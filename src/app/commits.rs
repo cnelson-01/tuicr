@@ -718,7 +718,7 @@ impl App {
                 return;
             }
             self.set_message(format!(
-                "{op} stopped on conflicts \u{2014} resolve + w, then `git {op} --continue`"
+                "{op} stopped on conflicts \u{2014} resolve + w, then :continue (or :abort)"
             ));
         } else {
             let err = err.to_string();

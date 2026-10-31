@@ -436,6 +436,7 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             InputMode::MergeConflict => " MERGE ".to_string(),
             InputMode::Palette => " ACTIONS ".to_string(),
             InputMode::Console => " CONSOLE ".to_string(),
+            InputMode::RebaseEditor => " REBASE ".to_string(),
         };
 
         let mode_width = mode_str.width();
@@ -628,6 +629,14 @@ fn mode_hints(app: &App) -> Vec<Hint> {
             hint("u undo"),
             hint("w write"),
             pinned("esc back"),
+        ],
+        InputMode::RebaseEditor => vec![
+            hint("j/k move"),
+            hint("p/r/s/f/d action"),
+            hint("J/K reorder"),
+            hint("u reset"),
+            pinned("\u{21b5} run"),
+            pinned("esc cancel"),
         ],
         InputMode::Console => vec![
             hint("j/k scroll"),

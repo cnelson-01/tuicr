@@ -698,6 +698,8 @@ pub enum InputMode {
     Palette,
     /// Git console (`:console`): the git commands tuicr ran.
     Console,
+    /// Interactive rebase editor (`i` in the log, `:rebase -i`).
+    RebaseEditor,
 }
 
 pub use blame::{BLAME_WIDTH, BlameState, overlay_label};
@@ -709,6 +711,7 @@ pub use history::HistoryAction;
 pub use layout::SPLIT_STEP_PCT;
 pub use local_changes::{CommitComposer, DiscardTarget, StashPicker};
 pub use palette::Palette;
+pub use rebase_editor::{RebaseEditor, RebaseRow};
 pub use remote::{RemoteOp, RemoteOpAnswer, RemoteOpInFlight};
 
 /// State for the fullscreen side-by-side merge conflict screen.
@@ -1689,6 +1692,10 @@ pub struct App {
     pub git_confirm_return: InputMode,
     /// Git console view state (`:console`); `Some` while it is open.
     pub console: Option<ConsoleView>,
+    /// Interactive rebase editor; `Some` while `input_mode == RebaseEditor`.
+    pub rebase_editor: Option<RebaseEditor>,
+    /// The editor's commits in their original order, to tell what changed.
+    pub rebase_original: Vec<String>,
     /// Branch picker modal state; `Some` while `input_mode == BranchPicker`.
     pub branch_picker: Option<BranchPicker>,
     /// Start point for the next `:branch <name>`, set by `n` in a selector.
@@ -2116,6 +2123,7 @@ mod modes;
 mod navigation;
 mod palette;
 mod pr;
+mod rebase_editor;
 mod remote;
 mod reviewed;
 mod search;

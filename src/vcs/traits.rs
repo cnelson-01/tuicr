@@ -81,6 +81,45 @@ pub struct CommitInfo {
     pub time: DateTime<Utc>,
 }
 
+/// What an interactive rebase does with one commit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RebaseAction {
+    Pick,
+    /// Keep the change, replace the message with [`RebaseStep::message`].
+    Reword,
+    /// Fold into the commit above it, combining the messages.
+    Squash,
+    /// Fold into the commit above it, keeping that commit's message.
+    Fixup,
+    Drop,
+}
+
+impl RebaseAction {
+    pub fn verb(self) -> &'static str {
+        match self {
+            Self::Pick => "pick",
+            Self::Reword => "reword",
+            Self::Squash => "squash",
+            Self::Fixup => "fixup",
+            Self::Drop => "drop",
+        }
+    }
+
+    /// Whether the commit is folded into the one before it.
+    pub fn melds(self) -> bool {
+        matches!(self, Self::Squash | Self::Fixup)
+    }
+}
+
+/// One line of an interactive rebase todo, oldest first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RebaseStep {
+    pub action: RebaseAction,
+    pub id: String,
+    /// New full message for [`RebaseAction::Reword`].
+    pub message: Option<String>,
+}
+
 /// A ref that points at a commit, for the log's label chips.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RefLabel {
@@ -725,6 +764,15 @@ pub trait VcsBackend: Send {
     fn push(&self) -> Result<String> {
         Err(crate::error::TuicrError::UnsupportedOperation(
             "Pushing is not supported for this VCS".into(),
+        ))
+    }
+
+    /// Rewrite the commits after `base` (exclusive; `None` rewrites from the
+    /// root) as `steps` say, in that order. A conflict stop is left in place
+    /// for the merge view and `:continue` / `:abort`.
+    fn rebase_interactive(&self, _base: Option<&str>, _steps: &[RebaseStep]) -> Result<()> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Interactive rebase is not supported for this VCS".into(),
         ))
     }
 

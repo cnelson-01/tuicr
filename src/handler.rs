@@ -795,6 +795,8 @@ pub fn handle_command_action(app: &mut App, action: Action) {
                 match result {
                     GitOpCommand::Merge(branch) => app.merge_into_current(&branch),
                     GitOpCommand::Rebase(onto) => app.rebase_current_onto(&onto),
+                    GitOpCommand::RebaseInteractive(Some(rev)) => app.open_rebase_editor(&rev),
+                    GitOpCommand::RebaseInteractive(None) => app.open_rebase_editor_at_cursor(),
                     GitOpCommand::DeleteBranch(name) => app.delete_branch(&name),
                     GitOpCommand::RenameBranch(old, new) => app.rename_branch(old.as_deref(), &new),
                     GitOpCommand::Upstream(up) => app.set_upstream(&up),
@@ -1555,6 +1557,8 @@ enum GitOpCommand {
     Merge(String),
     /// `:rebase <branch>`.
     Rebase(String),
+    /// `:rebase -i [rev]` (the log cursor without a rev).
+    RebaseInteractive(Option<String>),
     /// `:branch -d <name>` / `:branch -D <name>`.
     DeleteBranch(String),
     /// `:branch -m [old] <new>`.
@@ -1572,6 +1576,10 @@ fn parse_git_op_command(cmd: &str) -> Option<GitOpCommand> {
     let one = |v: &[&str]| (v.len() == 1).then(|| v[0].to_string());
     match (verb, rest.as_slice()) {
         ("merge", [branch]) => Some(GitOpCommand::Merge(branch.to_string())),
+        ("rebase", ["-i" | "--interactive"]) => Some(GitOpCommand::RebaseInteractive(None)),
+        ("rebase", ["-i" | "--interactive", rev]) => {
+            Some(GitOpCommand::RebaseInteractive(Some(rev.to_string())))
+        }
         ("rebase", [onto]) => Some(GitOpCommand::Rebase(onto.to_string())),
         ("upstream", [up]) => Some(GitOpCommand::Upstream(up.to_string())),
         ("branch", ["-d" | "-D" | "--delete", names @ ..]) => {
@@ -1924,6 +1932,7 @@ fn handle_local_target_action(app: &mut App, action: Action) {
         Action::SelectorReset => app.start_reset_prompt(),
         Action::SelectorTag => app.start_tag_prompt(),
         Action::SelectorCopyHash => app.copy_cursor_commit_hash(),
+        Action::SelectorInteractiveRebase => app.open_rebase_editor_at_cursor(),
         Action::BeginTargetFilter => app.begin_commit_filter(),
         _ => {}
     }
@@ -2024,6 +2033,44 @@ pub fn handle_stash_picker_action(app: &mut App, action: Action) {
 }
 
 /// Keys in the branch picker modal.
+/// Interactive rebase editor. Letters are commands unless a reword subject
+/// is being typed, when they are text.
+pub fn handle_rebase_editor_action(app: &mut App, action: Action) {
+    use crate::vcs::traits::RebaseAction;
+    let editing = app
+        .rebase_editor
+        .as_ref()
+        .is_some_and(|e| e.editing.is_some());
+    if editing {
+        match action {
+            Action::InsertChar(c) => app.rebase_editor_type(c),
+            Action::DeleteChar => app.rebase_editor_backspace(),
+            Action::ClearLine => app.rebase_editor_clear_subject(),
+            Action::SubmitInput => app.rebase_editor_finish_reword(),
+            Action::ExitMode => app.rebase_editor_cancel_reword(),
+            _ => {}
+        }
+        return;
+    }
+    match action {
+        Action::CursorDown(n) => app.rebase_editor_move(n as isize),
+        Action::CursorUp(n) => app.rebase_editor_move(-(n as isize)),
+        Action::InsertChar('j') => app.rebase_editor_move(1),
+        Action::InsertChar('k') => app.rebase_editor_move(-1),
+        Action::InsertChar('J') => app.rebase_editor_shift(1),
+        Action::InsertChar('K') => app.rebase_editor_shift(-1),
+        Action::InsertChar('p') => app.rebase_editor_set(RebaseAction::Pick),
+        Action::InsertChar('r') => app.rebase_editor_set(RebaseAction::Reword),
+        Action::InsertChar('s') => app.rebase_editor_set(RebaseAction::Squash),
+        Action::InsertChar('f') => app.rebase_editor_set(RebaseAction::Fixup),
+        Action::InsertChar('d') => app.rebase_editor_set(RebaseAction::Drop),
+        Action::InsertChar('u') => app.rebase_editor_reset(),
+        Action::SubmitInput => app.rebase_editor_run(),
+        Action::ExitMode | Action::InsertChar('q') => app.close_rebase_editor(),
+        _ => {}
+    }
+}
+
 /// Git console: scroll, toggle reads, clear, close.
 pub fn handle_console_action(app: &mut App, action: Action) {
     match action {
@@ -2163,6 +2210,7 @@ fn handle_log_pane_action(app: &mut App, action: Action) {
         Action::SelectorReset => app.start_reset_prompt(),
         Action::SelectorTag => app.start_tag_prompt(),
         Action::SelectorCopyHash => app.copy_cursor_commit_hash(),
+        Action::SelectorInteractiveRebase => app.open_rebase_editor_at_cursor(),
         // Esc clears an active filter first; a second Esc leaves the pane.
         Action::ExitMode => {
             if !app.clear_commit_filter() {

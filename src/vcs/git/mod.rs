@@ -6,7 +6,9 @@ pub(crate) mod raw;
 pub mod repository;
 pub mod staging;
 
-use crate::vcs::traits::{BlameLine, BranchInfo, CommitQuery, HunkScope, ResetMode, StashEntry};
+use crate::vcs::traits::{
+    BlameLine, BranchInfo, CommitQuery, HunkScope, RebaseAction, RebaseStep, ResetMode, StashEntry,
+};
 use chrono::{DateTime, TimeZone, Utc};
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -884,6 +886,12 @@ impl VcsBackend for GitBackend {
         }
     }
 
+    fn rebase_interactive(&self, base: Option<&str>, steps: &[RebaseStep]) -> Result<()> {
+        let root = &self.info().root_path;
+        let result = rebase_with_steps(root, base, steps);
+        self.refresh_after_cli_op(result)
+    }
+
     fn run_git(&self, args: &[&str], network: bool) -> Result<String> {
         let root = &self.info().root_path;
         let result = if network {
@@ -1044,6 +1052,65 @@ fn rebase_with_todo(root: &Path, target: &str, action: TodoAction<'_>) -> Result
     }
     let mut args: Vec<String> = vec!["rebase".to_string(), "-i".to_string()];
     args.extend(base_args);
+    run_git_env(root, &args, &envs).map(|_| ())
+}
+
+/// `git rebase -i` driven by a prepared todo. Rewords get their messages
+/// from a queue: git opens the editor once per `reword` and `squash`, in
+/// todo order, and a small script hands each reword its message (squash
+/// stops keep git's combined message).
+fn rebase_with_steps(root: &Path, base: Option<&str>, steps: &[RebaseStep]) -> Result<()> {
+    if steps.is_empty() {
+        return Err(TuicrError::VcsCommand("Nothing to rebase".into()));
+    }
+    if steps[0].action.melds() {
+        return Err(TuicrError::VcsCommand(
+            "The first commit has nothing above it to squash or fix up into".into(),
+        ));
+    }
+    let scratch = tempfile::tempdir()
+        .map_err(|e| TuicrError::VcsCommand(format!("Failed to create a temp dir: {e}")))?;
+    let io_err = |e: std::io::Error| TuicrError::VcsCommand(format!("Failed to write: {e}"));
+    let mut todo = String::new();
+    let mut editor_calls = 0usize;
+    for step in steps {
+        todo.push_str(&format!("{} {}\n", step.action.verb(), step.id));
+        match step.action {
+            RebaseAction::Reword => {
+                editor_calls += 1;
+                let message = step.message.as_deref().unwrap_or_default();
+                std::fs::write(scratch.path().join(format!("msg.{editor_calls}")), message)
+                    .map_err(io_err)?;
+            }
+            RebaseAction::Squash => editor_calls += 1,
+            _ => {}
+        }
+    }
+    let todo_path = scratch.path().join("todo");
+    std::fs::write(&todo_path, todo).map_err(io_err)?;
+    let editor_path = scratch.path().join("editor.sh");
+    let dir = scratch.path().display().to_string();
+    std::fs::write(
+        &editor_path,
+        format!(
+            "#!/bin/sh\nn=$(cat '{dir}/count' 2>/dev/null || echo 0)\nn=$((n + 1))\n\
+             echo \"$n\" > '{dir}/count'\n\
+             if [ -f '{dir}/msg.'\"$n\" ]; then cp '{dir}/msg.'\"$n\" \"$1\"; fi\n"
+        ),
+    )
+    .map_err(io_err)?;
+    let envs: Vec<(&str, String)> = vec![
+        (
+            "GIT_SEQUENCE_EDITOR",
+            format!("cp '{}'", todo_path.display()),
+        ),
+        ("GIT_EDITOR", format!("sh '{}'", editor_path.display())),
+    ];
+    let mut args: Vec<String> = vec!["rebase".to_string(), "-i".to_string()];
+    match base {
+        Some(base) => args.push(base.to_string()),
+        None => args.push("--root".to_string()),
+    }
     run_git_env(root, &args, &envs).map(|_| ())
 }
 
@@ -2363,6 +2430,82 @@ mod tests {
         assert_eq!(
             fs::read_to_string(a.join("f.txt")).unwrap(),
             "one\ntwo\nthree\n"
+        );
+    }
+
+    #[test]
+    fn interactive_rebase_reorders_rewords_folds_and_drops() {
+        // given five commits, each adding its own file
+        let temp_dir = tempdir().expect("failed to create temp dir");
+        let root = temp_dir.path();
+        setup_standard_repo(root);
+        let base = git_id(root, "HEAD");
+        let add_commit = |name: &str| {
+            fs::write(root.join(format!("src/{name}.txt")), format!("{name}\n")).expect("write");
+            run_git_command(root, &["add", "."]).expect("add");
+            run_git_command(root, &["commit", "-qm", name]).expect("commit");
+            git_id(root, "HEAD")
+        };
+        let a = add_commit("a");
+        let b = add_commit("b");
+        let c = add_commit("c");
+        let d = add_commit("d");
+        let e = add_commit("e");
+        let backend = GitBackend::discover_from(
+            root,
+            GitBackendPreference::Libgit2,
+            DiffWhitespaceMode::Normal,
+        )
+        .expect("backend");
+        let step = |action, id: &str, message: Option<&str>| RebaseStep {
+            action,
+            id: id.to_string(),
+            message: message.map(str::to_string),
+        };
+
+        // when: move c first, reword it, fixup b into a, drop d, squash e
+        backend
+            .rebase_interactive(
+                Some(&base),
+                &[
+                    step(RebaseAction::Reword, &c, Some("c first\n\nmoved up")),
+                    step(RebaseAction::Pick, &a, None),
+                    step(RebaseAction::Fixup, &b, None),
+                    step(RebaseAction::Drop, &d, None),
+                    step(RebaseAction::Squash, &e, None),
+                ],
+            )
+            .expect("interactive rebase");
+
+        // then: two commits remain above the base, in the new order
+        let subjects =
+            run_git_command(root, &["log", "--format=%s", &format!("{base}..HEAD")]).expect("log");
+        let subjects: Vec<&str> = subjects.lines().collect();
+        assert_eq!(subjects, vec!["a", "c first"]);
+        assert!(
+            backend
+                .commit_message("HEAD~1")
+                .unwrap()
+                .contains("moved up")
+        );
+        // b was folded into a, e squashed into it too, d is gone
+        let files =
+            run_git_command(root, &["show", "--name-only", "--format=", "HEAD"]).expect("show");
+        assert!(files.contains("src/a.txt") && files.contains("src/b.txt"));
+        assert!(files.contains("src/e.txt"), "{files}");
+        assert!(!root.join("src/d.txt").exists());
+        let squashed = backend.commit_message("HEAD").unwrap();
+        assert!(
+            squashed.contains('a') && squashed.contains('e'),
+            "{squashed}"
+        );
+
+        // and a todo starting with a fold is refused before git runs
+        let head = git_id(root, "HEAD");
+        assert!(
+            backend
+                .rebase_interactive(None, &[step(RebaseAction::Squash, &head, None)])
+                .is_err()
         );
     }
 

@@ -206,6 +206,8 @@ pub enum Action {
     SelectorTag,
     /// Copy the cursor commit's full hash (`y`).
     SelectorCopyHash,
+    /// Interactive rebase from the cursor commit (`i`).
+    SelectorInteractiveRebase,
 
     // Local changes (working-tree reviews)
     /// Stage the focused file (`s`).
@@ -295,6 +297,7 @@ pub fn map_key_to_action_with_q_quits(
         InputMode::FindResults => map_find_results_mode(key),
         InputMode::Palette => map_palette_mode(key),
         InputMode::Console => map_console_mode(key),
+        InputMode::RebaseEditor => map_rebase_editor_mode(key),
     }
 }
 
@@ -636,6 +639,25 @@ fn map_palette_mode(key: KeyEvent) -> Action {
     }
 }
 
+/// Rebase editor: printable keys arrive as `InsertChar` so the handler can
+/// treat them as commands (`p`, `r`, `J`, ...) or as text while a reword
+/// subject is being typed.
+fn map_rebase_editor_mode(key: KeyEvent) -> Action {
+    match (key.code, key.modifiers) {
+        (KeyCode::Down, KeyModifiers::NONE) => Action::CursorDown(1),
+        (KeyCode::Up, KeyModifiers::NONE) => Action::CursorUp(1),
+        (KeyCode::Char('u'), KeyModifiers::CONTROL) => Action::ClearLine,
+        (KeyCode::Down, KeyModifiers::ALT) => Action::InsertChar('J'),
+        (KeyCode::Up, KeyModifiers::ALT) => Action::InsertChar('K'),
+        (KeyCode::Enter, _) => Action::SubmitInput,
+        (KeyCode::Esc, _) => Action::ExitMode,
+        (KeyCode::Backspace, _) => Action::DeleteChar,
+        (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => Action::InsertChar(c),
+        (KeyCode::Char(c), mods) if is_altgr_text(mods) => Action::InsertChar(c),
+        _ => Action::None,
+    }
+}
+
 /// Git console: `j` / `k` scroll, `m` toggles reads, `c` clears.
 fn map_console_mode(key: KeyEvent) -> Action {
     match (key.code, key.modifiers) {
@@ -734,6 +756,7 @@ fn map_commit_select_mode_with_q_quits(key: KeyEvent, q_quits: bool) -> Action {
         (KeyCode::Char('x'), KeyModifiers::NONE) => Action::SelectorReset,
         (KeyCode::Char('t'), KeyModifiers::NONE) => Action::SelectorTag,
         (KeyCode::Char('y'), KeyModifiers::NONE) => Action::SelectorCopyHash,
+        (KeyCode::Char('i'), KeyModifiers::NONE) => Action::SelectorInteractiveRebase,
         (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
         (KeyCode::Char('q'), KeyModifiers::NONE) => q_action(q_quits),
         (KeyCode::Char(':'), _) => Action::EnterCommandMode,
@@ -768,6 +791,7 @@ pub fn map_log_pane_mode(key: KeyEvent, leader_key: char, q_quits: bool) -> Acti
         (KeyCode::Char('x'), KeyModifiers::NONE) => Action::SelectorReset,
         (KeyCode::Char('t'), KeyModifiers::NONE) => Action::SelectorTag,
         (KeyCode::Char('y'), KeyModifiers::NONE) => Action::SelectorCopyHash,
+        (KeyCode::Char('i'), KeyModifiers::NONE) => Action::SelectorInteractiveRebase,
         (KeyCode::Char('/'), _) => Action::BeginTargetFilter,
         (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
         _ => map_normal_mode_with_q_quits(key, leader_key, q_quits),

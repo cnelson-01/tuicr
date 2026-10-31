@@ -299,6 +299,7 @@ remote-tracking ones. `:compare ma`, `↓`, `↓`, `Enter` picks the second matc
 | `:push!` | Force-push with `--force-with-lease` after the same preview, for history you rewrote (reword, drop, fixup); the lease refuses if the remote moved since your last fetch |
 | `:merge <branch>` | Merge `<branch>` into the current branch (`--no-edit`). On conflicts, `:merge` opens the resolver, `:continue` finishes, `:abort` backs out |
 | `:rebase <branch>` | Rebase the current branch onto `<branch>` |
+| `:rebase -i [rev]` | Interactive rebase editor from `rev` (default: the log cursor) up to HEAD; `i` in the log pane does the same. See below |
 | `:continue` / `:skip` | Finish the merge / rebase / cherry-pick / revert in progress once conflicts are staged; skip the commit a rebase stopped on |
 | `:branch -d <name>` | Delete a branch; an unmerged one asks before `-D` |
 | `:branch -m [old] <new>` | Rename a branch (the current one when `old` is left out) |
@@ -489,6 +490,28 @@ rebase, cherry-pick, or revert in progress.
 A checkout refuses to run over a dirty working tree; `Ctrl-s` here or `:checkout! <target>`
 stash first (untracked files included) and restore afterwards. If the pop conflicts, the stash
 is kept and the status bar says so.
+
+## Interactive rebase
+
+`i` on a log commit (or `:rebase -i <rev>`) lists that commit and everything
+above it on the current branch, oldest first, the order git applies them.
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` | Move the cursor |
+| `J` / `K` (`Alt-↓` / `Alt-↑`) | Move the commit later / earlier |
+| `p` | Pick |
+| `r` | Reword: edit the subject in place (`Enter` keeps it, `Esc` cancels, `Ctrl-u` clears); the body is kept |
+| `s` / `f` | Squash / fix up into the commit above it |
+| `d` | Drop |
+| `u` | Back to all picks in the original order |
+| `Enter` | Run the rebase |
+| `Esc` | Close without changing anything |
+
+The footer says what a run would do (`reordered, 1 reworded, 1 dropped`) and
+refuses a plan whose first kept commit squashes into nothing. Ranges containing
+merges are refused. A conflict stops the rebase with `REBASE IN PROGRESS` in the
+header: resolve with `:merge`, then `:continue`, `:skip`, or `:abort`.
 
 ## Commit selection / review target selector
 

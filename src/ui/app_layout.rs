@@ -13,7 +13,7 @@ use crate::ui::log_pane::render_log_pane;
 use crate::ui::selector::render_commit_select;
 use crate::ui::{
     branch_picker, comment_panel, console, find_results, help_popup, merge_conflict, palette,
-    stash_picker, status_bar, styles, submit_modals, summary_popup,
+    rebase_editor, stash_picker, status_bar, styles, submit_modals, summary_popup,
 };
 
 const FILE_LIST_MIN_HEIGHT: u16 = 4;
@@ -123,6 +123,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
     if app.input_mode == InputMode::Palette {
         palette::render_palette(frame, app);
+    }
+    if app.input_mode == InputMode::RebaseEditor {
+        rebase_editor::render_rebase_editor(frame, app);
     }
     // The stash picker stays under its own drop-confirmation prompt.
     if app.input_mode == InputMode::StashPicker

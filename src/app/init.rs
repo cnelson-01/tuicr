@@ -630,6 +630,8 @@ impl App {
             pending_git: None,
             git_confirm_return: InputMode::Normal,
             console: None,
+            rebase_editor: None,
+            rebase_original: Vec::new(),
             log_pane_wanted: false,
             branch_picker: None,
             pending_branch_start: None,

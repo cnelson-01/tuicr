@@ -199,6 +199,8 @@ pub const ENTRIES: &[Entry] = &[
     e(Log, "Commit", "s", "Squash the picked commits", Keys("s")),
     e(Log, "Commit", "D", "Drop the commit", Keys("D")),
     e(Log, "Commit", "b", "Rebase the current branch onto the commit", Keys("b")),
+    e(Log, "Commit", "i", "Interactively rebase from here (reorder, squash, ...)", Keys("i")),
+    e(Global, "Commit", ":rebase -i REV", "Interactive rebase from a commit", Prompt("rebase -i ")),
     e(Log, "Commit", "x", "Reset the branch to the commit", Keys("x")),
     e(Log, "Commit", "a", "Abort the operation in progress", Keys("a")),
     e(Global, "Commit", ":undo", "Undo the last commit (keep changes staged)", Cmd("undo")),
