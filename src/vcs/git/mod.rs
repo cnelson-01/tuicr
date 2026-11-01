@@ -1220,20 +1220,25 @@ fn non_interactive_git_env(root: &Path) -> Vec<(&'static str, String)> {
 }
 
 /// Remote-tracking refs and their tips, `origin/HEAD` aliases excluded.
+/// Names are cut from the full refname: newer git shortens `origin/HEAD`
+/// to plain `origin`, which a `/HEAD` check on the short name would miss.
 fn remote_ref_tips(root: &Path) -> Result<HashMap<String, String>> {
     let output = run_git_command(
         root,
         &[
             "for-each-ref",
-            "--format=%(refname:short)%00%(objectname)",
+            "--format=%(refname)%00%(objectname)",
             "refs/remotes",
         ],
     )?;
     Ok(output
         .lines()
         .filter_map(|line| line.split_once('\0'))
-        .filter(|(name, _)| !name.ends_with("/HEAD"))
-        .map(|(name, oid)| (name.to_string(), oid.to_string()))
+        .filter(|(full, _)| !full.ends_with("/HEAD"))
+        .filter_map(|(full, oid)| {
+            let name = full.strip_prefix("refs/remotes/")?;
+            Some((name.to_string(), oid.to_string()))
+        })
         .collect())
 }
 
@@ -1483,7 +1488,9 @@ fn parse_branch_list(output: &str) -> Vec<BranchInfo> {
             let track = fields.next().unwrap_or("");
             let head = fields.next().unwrap_or("");
             let is_remote = full.starts_with("refs/remotes/");
-            if is_remote && name.ends_with("/HEAD") {
+            // The full name, since newer git shortens `origin/HEAD` to
+            // plain `origin`.
+            if is_remote && full.ends_with("/HEAD") {
                 return None;
             }
             let (ahead, behind) = parse_track_counts(track);
@@ -2142,11 +2149,13 @@ mod tests {
         let output = "refs/heads/main\0main\0aaa\0origin/main\0[ahead 1, behind 2]\0*\n\
                       refs/heads/dev\0dev\0bbb\0\0\0 \n\
                       refs/remotes/origin/HEAD\0origin/HEAD\0aaa\0\0\0 \n\
+                      refs/remotes/fork/HEAD\0fork\0aaa\0\0\0 \n\
                       refs/remotes/origin/main\0origin/main\0aaa\0\0\0 \n\
                       refs/heads/old\0old\0ccc\0origin/old\0[gone]\0 \n";
         let branches = parse_branch_list(output);
         let names: Vec<&str> = branches.iter().map(|b| b.name.as_str()).collect();
-        // locals first (by name), then remotes; origin/HEAD dropped
+        // locals first (by name), then remotes; HEAD aliases dropped
+        // whether git shortens them to `origin/HEAD` or to bare `fork`
         assert_eq!(names, ["dev", "main", "old", "origin/main"]);
         let main = &branches[1];
         assert!(main.is_current);

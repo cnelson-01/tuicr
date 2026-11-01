@@ -333,10 +333,11 @@ impl VcsBackend for GitCliBackend {
             return Ok(Vec::new());
         }
         let branch_tip_names = get_branch_tip_names(&self.root_path);
-        // Walk every local branch, not just HEAD, so the selector can show
-        // branch tracks. `--date-order` sorts rows by commit date while
-        // still keeping children above parents, which the commit-graph
-        // lane layout relies on.
+        // Walk every local and remote-tracking branch, not just HEAD, so the
+        // selector can show branch tracks and commits that exist only on a
+        // remote. `--date-order` sorts rows by commit date while still
+        // keeping children above parents, which the commit-graph lane
+        // layout relies on.
         let output = run_git_command_args(
             &self.root_path,
             [
@@ -345,6 +346,7 @@ impl VcsBackend for GitCliBackend {
                 OsStr::new(&format!("--max-count={limit}")),
                 OsStr::new("--date-order"),
                 OsStr::new("--branches"),
+                OsStr::new("--remotes"),
                 OsStr::new(COMMIT_FORMAT),
                 OsStr::new("HEAD"),
             ],
@@ -1160,9 +1162,9 @@ pub(super) fn search_commits(
         "--fixed-strings".into(),
         "--all-match".into(),
     ];
-    // Which refs to walk: every branch plus HEAD by default; otherwise the
-    // `branch:` substrings (as globs over local and remote-tracking names)
-    // and the exact `ref:` revisions.
+    // Which refs to walk: every local and remote-tracking branch plus HEAD
+    // by default; otherwise the `branch:` substrings (as globs over local
+    // and remote-tracking names) and the exact `ref:` revisions.
     let scoped = !query.branch.is_empty() || !query.refs.is_empty();
     for branch in &query.branch {
         let glob = format!("*{branch}*");
@@ -1171,6 +1173,7 @@ pub(super) fn search_commits(
     }
     if !scoped {
         args.push("--branches".into());
+        args.push("--remotes".into());
     }
     for word in &query.text {
         args.push(format!("--grep={word}"));
@@ -1243,7 +1246,9 @@ pub(super) fn get_ref_index(workdir: &Path) -> RefIndex {
                 RefKind::Local
             }
         } else if full.starts_with("refs/remotes/") {
-            if short.ends_with("/HEAD") {
+            // Match on the full name: newer git shortens `origin/HEAD` to
+            // plain `origin`.
+            if full.ends_with("/HEAD") {
                 continue;
             }
             RefKind::Remote
@@ -2241,6 +2246,70 @@ mod tests {
         cli_ids.sort_unstable();
         libgit2_ids.sort_unstable();
         assert_eq!(cli_ids, libgit2_ids);
+    }
+
+    #[test]
+    fn lists_commits_that_exist_only_on_a_remote_tracking_branch() {
+        // given a commit reachable only from origin/fix (no local branch)
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let workdir = temp_dir.path();
+        git(workdir, &["init", "-b", "main"]);
+        git(workdir, &["config", "user.email", "test@example.com"]);
+        git(workdir, &["config", "user.name", "Test User"]);
+        write_file(workdir, "f.txt", "base\n");
+        git(workdir, &["add", "."]);
+        git(workdir, &["commit", "-m", "base"]);
+        git(workdir, &["checkout", "-qb", "fix"]);
+        write_file(workdir, "f.txt", "fix\n");
+        git(workdir, &["commit", "-am", "remote fix"]);
+        git(workdir, &["update-ref", "refs/remotes/origin/fix", "HEAD"]);
+        git(
+            workdir,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/fix",
+            ],
+        );
+        git(workdir, &["checkout", "-q", "main"]);
+        git(workdir, &["branch", "-D", "fix"]);
+        let backend = GitCliBackend::discover_from(workdir, DiffWhitespaceMode::Normal)
+            .expect("failed to discover backend");
+        let repo = git2::Repository::open(workdir).expect("failed to open repo");
+
+        // when both backends walk the log
+        let cli = backend.get_recent_commits(0, 10).expect("cli log");
+        let libgit2 = repository::get_recent_commits(&repo, 0, 10).expect("libgit2 log");
+
+        // then the remote-only commit is listed once, with its remote chip
+        let cli_rows: Vec<(&str, &[RefLabel])> = cli
+            .iter()
+            .map(|c| (c.summary.as_str(), c.refs.as_slice()))
+            .collect();
+        let libgit2_rows: Vec<(&str, &[RefLabel])> = libgit2
+            .iter()
+            .map(|c| (c.summary.as_str(), c.refs.as_slice()))
+            .collect();
+        let remote_chip = [RefLabel {
+            name: "origin/fix".to_string(),
+            kind: RefKind::Remote,
+        }];
+        let main_chip = [RefLabel {
+            name: "main".to_string(),
+            kind: RefKind::Head,
+        }];
+        // (the origin/HEAD alias adds no chip of its own)
+        for rows in [&cli_rows, &libgit2_rows] {
+            assert_eq!(
+                rows,
+                &[("remote fix", &remote_chip[..]), ("base", &main_chip[..])]
+            );
+        }
+        // and a search with no branch filter walks it too
+        let found = search_commits(workdir, &CommitQuery::parse("fix").expect("query"), 0, 10)
+            .expect("search");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].summary, "remote fix");
     }
 
     #[test]

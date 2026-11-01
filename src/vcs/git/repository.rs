@@ -67,6 +67,23 @@ fn get_branch_tip_names(repo: &Repository) -> HashMap<Oid, Vec<String>> {
     names_by_tip
 }
 
+/// Tips of the remote-tracking branches, sorted by name. Symbolic refs
+/// (`origin/HEAD`) have no direct target and are skipped; the branch they
+/// name is already in the list.
+fn remote_branch_tips(repo: &Repository) -> Vec<Oid> {
+    let mut tips: Vec<(String, Oid)> = Vec::new();
+    if let Ok(branches) = repo.branches(Some(BranchType::Remote)) {
+        for (branch, _) in branches.flatten() {
+            let (Some(target), Ok(Some(name))) = (branch.get().target(), branch.name()) else {
+                continue;
+            };
+            tips.push((name.to_string(), target));
+        }
+    }
+    tips.sort_unstable();
+    tips.into_iter().map(|(_, oid)| oid).collect()
+}
+
 /// Every ref pointing at each commit plus HEAD, the libgit2 twin of the
 /// CLI backend's ref index. Annotated tags are peeled to their commit.
 struct RefIndex {
@@ -164,12 +181,13 @@ pub fn get_recent_commits(
     let mut revwalk = repo.revwalk()?;
     revwalk.push_head()?;
     let branch_tip_names = get_branch_tip_names(repo);
-    // Walk every local branch, not just HEAD, so the selector can show
-    // branch tracks. TOPOLOGICAL | TIME matches `git log --date-order`:
-    // rows sort by commit date while children stay above parents, which
-    // the commit-graph lane layout relies on. Tips are pushed in sorted
-    // order — HashMap iteration is randomized per process and would
-    // reshuffle equal-date rows on every launch.
+    // Walk every local and remote-tracking branch, not just HEAD, so the
+    // selector can show branch tracks and commits that exist only on a
+    // remote. TOPOLOGICAL | TIME matches `git log --date-order`: rows sort
+    // by commit date while children stay above parents, which the
+    // commit-graph lane layout relies on. Tips are pushed in sorted order
+    // — HashMap iteration is randomized per process and would reshuffle
+    // equal-date rows on every launch.
     let mut tips: Vec<_> = branch_tip_names.keys().copied().collect();
     tips.sort_unstable_by_key(|oid| {
         branch_tip_names
@@ -178,7 +196,7 @@ pub fn get_recent_commits(
             .cloned()
             .unwrap_or_default()
     });
-    for tip in tips {
+    for tip in tips.into_iter().chain(remote_branch_tips(repo)) {
         let _ = revwalk.push(tip);
     }
     revwalk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)?;

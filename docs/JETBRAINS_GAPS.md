@@ -1,6 +1,6 @@
 # JetBrains parity: gap analysis (experimental)
 
-Branch: `experimental/jetbrains-parity`, cut from `feature/git-tool-window`
+Branch: `experimental/git-ui`, cut from `feature/git-tool-window`
 after every phase of [ROADMAP.md](ROADMAP.md) shipped.
 
 The yardstick is the JetBrains Git tool window and diff viewer, the git side
@@ -59,6 +59,11 @@ screen, and the status-bar hints for most panes are partial or truncated.
 - [x] The log row glues the ref label onto the subject (`[topic/refactor]flip`)
       and shows one ref per commit. Show every ref, styled by kind: HEAD,
       local branch, remote branch, tag
+- [x] The log walks only local branches, so commits that exist only on a
+      remote (`origin/feature`) never appear, and remote labels are a dim
+      grey. Walk remote-tracking branches too and color them apart (purple,
+      as in JetBrains), in the log and the branch picker; `c` on a
+      remote-only tip creates the tracking branch
 - [x] No commit details pane in the live preview (hash, author, date,
       parents, refs, full message). The message pseudo-file appears only for a
       committed single-commit review

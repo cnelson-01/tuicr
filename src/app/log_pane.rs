@@ -73,8 +73,8 @@ impl App {
         result
     }
 
-    /// Selector rows straight from the VCS: history across local branches
-    /// plus the conflicts / unstaged / staged pseudo rows on top. Returns the
+    /// Selector rows straight from the VCS: history across local and
+    /// remote-tracking branches plus the conflicts / unstaged / staged pseudo rows on top. Returns the
     /// rows and whether more history can be paged in. Shared with the
     /// fullscreen selector's post-operation refresh.
     pub(in crate::app) fn log_rows_from_vcs(&self) -> (Vec<CommitInfo>, bool) {

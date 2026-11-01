@@ -5,7 +5,7 @@
 
 use super::{App, InputMode};
 use crate::vcs::detect_vcs;
-use crate::vcs::traits::{BranchInfo, RefKind};
+use crate::vcs::traits::{BranchInfo, CommitInfo, RefKind};
 
 /// The branch picker modal: every local and remote-tracking branch, filtered
 /// by what the user types, with the cursor on a row of the filtered view.
@@ -319,22 +319,52 @@ impl App {
     }
 
     /// The checkout target for the selector's cursor row: the commit's own
-    /// local branch when it is a tip, otherwise the commit itself (detached).
+    /// local branch when it is a tip; the local name of a remote-tracking
+    /// tip (`origin/fix` → `fix`, which git creates tracking it) when no
+    /// local branch has that name and no other remote does; otherwise the
+    /// commit itself (detached). Every case lands on the row's commit.
     /// `None` for pseudo rows and the overflow row.
     pub fn cursor_checkout_target(&self) -> Option<String> {
         let commit = self.commit_list.get(self.commit_list_cursor)?;
         if Self::is_special_commit(commit) {
             return None;
         }
+        let local = commit
+            .refs
+            .iter()
+            .find(|r| matches!(r.kind, RefKind::Head | RefKind::Local))
+            .map(|r| r.name.clone())
+            .or_else(|| commit.branch_name.clone());
         Some(
-            commit
-                .refs
-                .iter()
-                .find(|r| matches!(r.kind, RefKind::Head | RefKind::Local))
-                .map(|r| r.name.clone())
-                .or_else(|| commit.branch_name.clone())
+            local
+                .or_else(|| self.remote_tip_local_name(commit))
                 .unwrap_or_else(|| commit.id.clone()),
         )
+    }
+
+    /// The name `git checkout` would turn into a new tracking branch for a
+    /// remote-tracking ref on `commit`, if that is unambiguous.
+    fn remote_tip_local_name(&self, commit: &CommitInfo) -> Option<String> {
+        let branches = self.vcs.list_branches().ok()?;
+        commit
+            .refs
+            .iter()
+            .filter(|r| r.kind == RefKind::Remote)
+            .filter_map(|r| r.name.split_once('/').map(|(_, rest)| rest))
+            .find(|name| {
+                let local_taken = branches.iter().any(|b| !b.is_remote && b.name == *name);
+                let remotes = branches
+                    .iter()
+                    .filter(|b| b.is_remote)
+                    .filter(|b| {
+                        b.name
+                            .split_once('/')
+                            .is_some_and(|(_, rest)| rest == *name)
+                    })
+                    .count();
+                !local_taken && remotes == 1
+            })
+            .map(str::to_string)
     }
 
     /// The commit id under the selector's cursor, for `:branch` prompts.

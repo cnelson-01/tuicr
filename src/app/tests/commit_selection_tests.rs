@@ -1,10 +1,11 @@
 use crate::app::*;
 use crate::model::FileStatus;
-use crate::vcs::traits::VcsType;
+use crate::vcs::traits::{BranchInfo, RefKind, RefLabel, VcsType};
 
 struct DummyVcs {
     info: VcsInfo,
     range_diff: Vec<DiffFile>,
+    branches: Vec<BranchInfo>,
 }
 
 impl VcsBackend for DummyVcs {
@@ -43,6 +44,10 @@ impl VcsBackend for DummyVcs {
     ) -> Result<u32> {
         Ok(0)
     }
+
+    fn list_branches(&self) -> Result<Vec<BranchInfo>> {
+        Ok(self.branches.clone())
+    }
 }
 
 fn build_app(commit_list: Vec<CommitInfo>) -> App {
@@ -50,6 +55,14 @@ fn build_app(commit_list: Vec<CommitInfo>) -> App {
 }
 
 fn build_app_with_range_diff(commit_list: Vec<CommitInfo>, range_diff: Vec<DiffFile>) -> App {
+    build_app_with(commit_list, range_diff, Vec::new())
+}
+
+fn build_app_with(
+    commit_list: Vec<CommitInfo>,
+    range_diff: Vec<DiffFile>,
+    branches: Vec<BranchInfo>,
+) -> App {
     let vcs_info = VcsInfo {
         root_path: PathBuf::from("/tmp"),
         head_commit: "head".to_string(),
@@ -67,6 +80,7 @@ fn build_app_with_range_diff(commit_list: Vec<CommitInfo>, range_diff: Vec<DiffF
         Box::new(DummyVcs {
             info: vcs_info.clone(),
             range_diff,
+            branches,
         }),
         vcs_info,
         Theme::dark(),
@@ -1063,4 +1077,56 @@ fn mouse_wheel_moves_commit_picker_cursor_by_configured_lines() {
     assert_eq!(app.commit_list_cursor, 4);
     wheel(&mut app, crossterm::event::MouseEventKind::ScrollUp);
     assert_eq!(app.commit_list_cursor, 3);
+}
+
+fn branch_info(name: &str, is_remote: bool) -> BranchInfo {
+    BranchInfo {
+        name: name.to_string(),
+        tip_id: "abc".to_string(),
+        is_current: false,
+        is_remote,
+        upstream: None,
+        ahead: 0,
+        behind: 0,
+        upstream_gone: false,
+    }
+}
+
+fn tip_of(id: &str, refs: &[(&str, RefKind)]) -> CommitInfo {
+    let mut commit = normal_commit(id);
+    commit.refs = refs
+        .iter()
+        .map(|(name, kind)| RefLabel {
+            name: (*name).to_string(),
+            kind: *kind,
+        })
+        .collect();
+    commit
+}
+
+#[test]
+fn checkout_from_a_remote_only_tip_targets_a_new_tracking_branch() {
+    // given the cursor on a commit only origin/fix points at
+    let remote_tip = tip_of("c1", &[("origin/fix", RefKind::Remote)]);
+    let branches = vec![branch_info("main", false), branch_info("origin/fix", true)];
+    let app = build_app_with(vec![remote_tip.clone()], Vec::new(), branches);
+
+    // then checkout names the local branch git creates tracking it
+    assert_eq!(app.cursor_checkout_target().as_deref(), Some("fix"));
+
+    // but a local `fix` elsewhere, or a second remote's `fix`, would land
+    // somewhere else or be ambiguous, so the commit is checked out detached
+    for extra in [branch_info("fix", false), branch_info("fork/fix", true)] {
+        let branches = vec![branch_info("origin/fix", true), extra];
+        let app = build_app_with(vec![remote_tip.clone()], Vec::new(), branches);
+        assert_eq!(app.cursor_checkout_target().as_deref(), Some("c1"));
+    }
+
+    // and a local branch on the same commit still wins
+    let both = tip_of(
+        "c2",
+        &[("fix", RefKind::Local), ("origin/fix", RefKind::Remote)],
+    );
+    let app = build_app_with(vec![both], Vec::new(), Vec::new());
+    assert_eq!(app.cursor_checkout_target().as_deref(), Some("fix"));
 }

@@ -475,7 +475,7 @@ with `<leader>+` / `<leader>-`, `:set logheight N`, or `log_height = N`.
 | `p` | Cherry-pick the picks (or cursor commit) onto the current branch |
 | `b` | Rebase the current branch onto the cursor commit |
 | `s` | Squash the picks into one commit |
-| `c` | Check out the cursor commit's branch, or the commit itself (detached) |
+| `c` | Check out the cursor commit's branch (a remote-only tip `origin/fix` becomes a new local `fix` tracking it), or the commit itself (detached) |
 | `n` | New branch at the cursor commit: opens `:branch ` for the name |
 | `a` | Abort the in-progress merge / cherry-pick / rebase / revert |
 | `B` | Open the branch picker |
@@ -516,7 +516,8 @@ Staged, unstaged, and conflicts rows stay visible while filtering.
 `<leader>b`, `B` in a selector, or `:branches` lists local branches (current marked `*`) and
 remote-tracking branches, with each local branch's upstream and ahead/behind counts. Log rows
 carry every ref as a chip: `[HEAD → main]` for the checked-out branch (`[HEAD]` when detached),
-`[main]` local, dimmed `[origin/main]` remote, and `<v1.0>` tag. The header shows the current
+`[main]` local, `[origin/main]` remote in its own color (purple in most themes, also in the
+picker), and `<v1.0>` tag. The header shows the current
 branch's outgoing / incoming counts against its upstream (`git:main ↑2 ↓1`) and any merge,
 rebase, cherry-pick, or revert in progress.
 
@@ -566,8 +567,9 @@ header: resolve with `:merge`, then `:continue`, `:skip`, or `:abort`.
 
 ## Commit selection / review target selector
 
-The Local tab draws a commit graph across all local branches: each branch gets a
-colored track, with branch chips on tips. When the repository has unresolved
+The Local tab draws a commit graph across all local and remote-tracking branches, so commits
+that so far exist only on `origin/…` show up too: each branch gets a colored track, with branch
+chips on tips. When the repository has unresolved
 merge conflicts, a `· conflicts ·` row appears at the top — `Enter` on it opens
 the merge conflict view.
 
@@ -591,7 +593,7 @@ first, with children always above their parents so the graph stays coherent.
 | `p` | Cherry-pick the picked (or cursor) commits onto the current branch — works with non-contiguous picks |
 | `b` | Rebase the current branch onto the cursor commit |
 | `s` | Squash the selected range (must end at HEAD) into one commit |
-| `c` | Check out the cursor commit's branch, or the commit itself (detached) |
+| `c` | Check out the cursor commit's branch (a remote-only tip `origin/fix` becomes a new local `fix` tracking it), or the commit itself (detached) |
 | `n` | New branch at the cursor commit: opens `:branch ` for the name |
 | `a` | Abort the in-progress merge / cherry-pick / rebase / revert |
 | `B` | Open the branch picker |

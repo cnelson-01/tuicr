@@ -1,5 +1,5 @@
 //! The persistent log pane docked above the diff: the commit graph across
-//! local branches, the pick set, and a marker on the rows whose diff is on
+//! local and remote-tracking branches, the pick set, and a marker on the rows whose diff is on
 //! screen. Rendering reads the pane's own list state; it never touches the
 //! selector's flat fields.
 

@@ -53,7 +53,7 @@ pub(super) fn render_branch_picker(frame: &mut Frame, app: &App) {
         let name_style = if is_cursor {
             Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
         } else if branch.is_remote {
-            Style::default().fg(theme.fg_dim)
+            styles::remote_branch_style(theme)
         } else if branch.is_current {
             styles::branch_style(theme).add_modifier(Modifier::BOLD)
         } else {

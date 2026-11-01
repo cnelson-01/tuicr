@@ -133,6 +133,19 @@ pub fn branch_style(theme: &Theme) -> Style {
     Style::default().fg(theme.branch_name)
 }
 
+/// Remote-tracking branches (`origin/main`): the theme's renamed-file
+/// colour, purple in most themes like JetBrains' remote labels, so they
+/// stand apart from local branches. A theme that already spends that colour
+/// on local branches gets its added-file colour instead.
+pub fn remote_branch_style(theme: &Theme) -> Style {
+    let color = if theme.file_renamed == theme.branch_name {
+        theme.file_added
+    } else {
+        theme.file_renamed
+    };
+    Style::default().fg(color)
+}
+
 pub fn dir_icon_style(theme: &Theme) -> Style {
     Style::default().fg(theme.diff_hunk_header)
 }
@@ -242,6 +255,21 @@ pub fn graph_track_style(_theme: &Theme, color_index: usize) -> Style {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remote_branches_never_share_the_local_branch_colour() {
+        // given themes whose renamed-file colour differs from, and matches,
+        // their branch colour
+        for theme in [Theme::dark(), Theme::github_dark_colorblind()] {
+            // then remote-tracking branches still read apart from local ones
+            assert_ne!(
+                remote_branch_style(&theme).fg,
+                branch_style(&theme).fg,
+                "{:?}",
+                theme.branch_name
+            );
+        }
+    }
 
     #[test]
     fn selection_marker_changes_only_marker_foregrounds() {

@@ -187,7 +187,7 @@ fn ref_chip_spans<'a>(spec: &CommitRowSpec<'a>, width: usize) -> Vec<Span<'a>> {
             let style = match kind {
                 ChipKind::Head => head_style,
                 ChipKind::Local => styles::branch_style(theme),
-                ChipKind::Remote => Style::default().fg(theme.fg_dim),
+                ChipKind::Remote => styles::remote_branch_style(theme),
                 ChipKind::Tag => styles::pseudo_commit_tag_style(theme),
             };
             (text, style)
@@ -531,6 +531,49 @@ mod tests {
         // then
         let text = line_text(&line);
         assert!(text.contains("[feat/foo]"), "got: {text:?}");
+    }
+
+    #[test]
+    fn should_color_remote_branch_chips_apart_from_local_ones() {
+        // given a commit that is the tip of a local and a remote branch
+        let theme = Theme::dark();
+        let mut c = commit("abc1234", "Add feature", Some("main"));
+        c.refs = vec![
+            crate::vcs::traits::RefLabel {
+                name: "main".to_string(),
+                kind: RefKind::Local,
+            },
+            crate::vcs::traits::RefLabel {
+                name: "origin/main".to_string(),
+                kind: RefKind::Remote,
+            },
+        ];
+        // when
+        let line = render_commit_row(&CommitRowSpec {
+            commit: &c,
+            is_cursor: false,
+            is_selected: false,
+            is_loaded: false,
+            is_reviewed: false,
+            theme: &theme,
+            graph: None,
+            layout: CommitRowLayout::fit_rows(std::slice::from_ref(&c), 200, 0),
+        });
+        // then each chip carries its own kind's colour
+        let chip_fg = |text: &str| {
+            line.spans
+                .iter()
+                .find(|s| s.content == text)
+                .unwrap_or_else(|| panic!("no {text} chip in {:?}", line_text(&line)))
+                .style
+                .fg
+        };
+        assert_eq!(chip_fg("[main]"), styles::branch_style(&theme).fg);
+        assert_eq!(
+            chip_fg("[origin/main]"),
+            styles::remote_branch_style(&theme).fg
+        );
+        assert_ne!(chip_fg("[main]"), chip_fg("[origin/main]"));
     }
 
     #[test]
