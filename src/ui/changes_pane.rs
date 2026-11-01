@@ -173,13 +173,15 @@ fn row_line(theme: &Theme, row: &ChangesRow, grouped: bool, width: usize) -> Lin
             Span::raw(indent),
             Span::styled(format!("{GAP}{text}"), dim),
         ]),
-        ChangesRow::Uninitialized { path, .. } => Line::from(vec![
-            Span::raw(indent),
-            Span::styled(
-                format!("{GAP}- {}{GAP}(not initialized)", path.display()),
-                dim,
-            ),
-        ]),
+        ChangesRow::Uninitialized { path, .. } => {
+            let name = format!("{GAP}- {}", path.display());
+            let used = indent.width() + name.width();
+            let mut spans = vec![Span::raw(indent), Span::styled(name, dim)];
+            if let Some(shown) = fit_detail("(not initialized)", width.saturating_sub(used)) {
+                spans.push(Span::styled(format!("{GAP}{shown}"), dim));
+            }
+            Line::from(spans)
+        }
     }
 }
 
@@ -228,17 +230,44 @@ fn entry_line(
         Span::raw(" "),
         Span::styled(name, name_style),
     ];
+    let mut used = used;
     if !grouped && let Some(dir) = entry_directory(key, entry) {
         let remaining = width.saturating_sub(used);
         if remaining >= MIN_DIR_CELLS {
             let shown = truncate_path_smart(&dir, remaining - GAP.width());
+            used += GAP.width() + shown.width();
             spans.push(Span::styled(format!("{GAP}{shown}"), dim));
         }
     }
-    if let Some(detail) = entry_detail(entry) {
-        spans.push(Span::styled(format!("{GAP}{detail}"), dim));
+    if let Some(detail) = entry_detail(entry)
+        && let Some(shown) = fit_detail(&detail, width.saturating_sub(used))
+    {
+        spans.push(Span::styled(format!("{GAP}{shown}"), dim));
     }
     Line::from(spans)
+}
+
+/// The dim detail cut to the cells left on the row: whole when it fits,
+/// otherwise shortened with an ellipsis so a clipped `modified content`
+/// never reads as `modifi`, and dropped when fewer than [`MIN_DIR_CELLS`]
+/// remain.
+fn fit_detail(detail: &str, remaining: usize) -> Option<String> {
+    let room = remaining.checked_sub(GAP.width())?;
+    if room < MIN_DIR_CELLS {
+        return None;
+    }
+    if detail.width() <= room {
+        return Some(detail.to_string());
+    }
+    let mut shown = String::new();
+    for ch in detail.chars() {
+        if shown.width() + ch.to_string().width() + 1 > room {
+            break;
+        }
+        shown.push(ch);
+    }
+    let shown = shown.trim_end().to_string();
+    Some(format!("{shown}\u{2026}"))
 }
 
 /// The dim directory shown after a file's name in flat mode: the parent of
@@ -260,12 +289,17 @@ fn entry_directory(key: &ChangeDiffKey, entry: &ChangeEntry) -> Option<String> {
 }
 
 /// The dim detail after the name: a submodule's state (`+3 commits`,
-/// `modified content`, ...) or `(embedded repo)`.
+/// `modified content`, ...), `(embedded repo)`, or the source of a rename
+/// or copy (`← old.txt`).
 fn entry_detail(entry: &ChangeEntry) -> Option<String> {
     match &entry.kind {
         ChangeEntryKind::Submodule(change) => Some(change.detail()).filter(|d| !d.is_empty()),
         ChangeEntryKind::EmbeddedRepo => Some("(embedded repo)".to_string()),
-        ChangeEntryKind::File => None,
+        ChangeEntryKind::File => entry
+            .old_path
+            .as_ref()
+            .filter(|_| matches!(entry.status, ChangeStatus::Renamed | ChangeStatus::Copied))
+            .map(|old| format!("\u{2190} {}", old.display())),
     }
 }
 
@@ -491,17 +525,20 @@ mod tests {
             "\u{25bc} Staged (3)",
             "    \u{25a3} A changes.rs",
             "    \u{25a3} M mod.rs",
-            "    \u{25a3} S lib  +3 commit",
+            // Detail text is cut to the row with an ellipsis, never mid-word
+            // at the pane edge.
+            "    \u{25a3} S lib  +3 commi\u{2026}",
             "\u{25bc} Unstaged (3)",
             "    \u{25a2} M tree.rs",
             "  \u{25b6} \u{25a2} S vendor/x",
             "\u{25bc} Unversioned files (2",
             "    \u{25a2} ? notes.md",
-            "? nested",
-            "- tools  (not initia",
+            "? nested  (embe\u{2026}",
+            "- tools  (not initi\u{2026}",
         ] {
             assert!(text.contains(expected), "missing {expected:?} in:\n{text}");
         }
+        assert!(!text.contains("+3 commit"), "clipped mid-word:\n{text}");
     }
 
     #[test]
@@ -711,8 +748,11 @@ mod tests {
         let buffer = draw(&mut app, 120, 24);
         let inner = app.file_list_inner_area.unwrap();
         let row = row_text(&buffer, inner.y + 2);
-        assert!(row.starts_with("\u{2502}Staged (3)"), "{row}");
-        assert_eq!(app.changes.as_ref().unwrap().scroll_x, 2);
+        // Entry details are cut to the pane, so only the 23-cell
+        // "Unversioned files (2)" header overflows the 22-cell viewport:
+        // the pan is clamped to one cell and the group rows shift by it.
+        assert!(row.starts_with("\u{2502} Staged (3)"), "{row}");
+        assert_eq!(app.changes.as_ref().unwrap().scroll_x, 1);
         assert_eq!(app.changes.as_ref().unwrap().viewport_width, 22);
         assert_eq!(app.changes.as_ref().unwrap().viewport_height, 20);
     }
@@ -802,6 +842,52 @@ mod tests {
             "{text}"
         );
         assert!(!text.contains("pointer"), "{text}");
+    }
+
+    #[test]
+    fn long_plain_discard_prompt_wraps_instead_of_clipping() {
+        let mut app = sample_app();
+        let mut entry = ChangeEntry::file("renamed.txt", ChangeStatus::Renamed);
+        entry.old_path = Some(PathBuf::from("plain.txt"));
+        app.pending_discard = Some(DiscardTarget::Entry {
+            key: ChangeDiffKey::new(ChangeGroup::Staged, "renamed.txt"),
+            entry,
+        });
+        app.enter_confirm_mode(ConfirmAction::DiscardChanges);
+        let text = buffer_text(&draw(&mut app, 120, 24));
+        assert!(text.contains("Undo the rename plain.txt"), "{text}");
+        // The tail of the sentence wraps onto a second row instead of being
+        // cut at the box's edge.
+        assert!(
+            text.contains("restored from HEAD. This cannot be"),
+            "{text}"
+        );
+        assert!(text.contains("undone."), "{text}");
+    }
+
+    #[test]
+    fn renamed_rows_show_their_source() {
+        let mut set = ChangeSet::default();
+        let mut entry = ChangeEntry::file("renamed.txt", ChangeStatus::Renamed);
+        entry.old_path = Some(PathBuf::from("plain.txt"));
+        set.push(ChangeGroup::Staged, entry);
+        let mut app = app_with_set(set);
+        app.file_list_pct = 40;
+        let text = buffer_text(&draw(&mut app, 160, 24));
+        assert!(text.contains("R renamed.txt  \u{2190} plain.txt"), "{text}");
+        // In the default 22-cell pane the source does not fit and is
+        // dropped rather than clipped mid-word.
+        let text = buffer_text(&draw(&mut app_with_set_default(), 120, 24));
+        assert!(text.contains("R renamed.txt   "), "{text}");
+        assert!(!text.contains("\u{2190}"), "{text}");
+    }
+
+    fn app_with_set_default() -> App {
+        let mut set = ChangeSet::default();
+        let mut entry = ChangeEntry::file("renamed.txt", ChangeStatus::Renamed);
+        entry.old_path = Some(PathBuf::from("plain.txt"));
+        set.push(ChangeGroup::Staged, entry);
+        app_with_set(set)
     }
 
     /// Median frame time for a pane of 500 untracked entries at 180x50,

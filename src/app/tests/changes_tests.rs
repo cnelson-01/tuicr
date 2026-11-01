@@ -64,6 +64,12 @@ struct Handles {
     submodules: Arc<Mutex<HashMap<PathBuf, ChangeSet>>>,
     working_tree: Arc<Mutex<Vec<DiffFile>>>,
     calls: Arc<Mutex<Vec<String>>>,
+    /// When set, `get_change_set` fails with this message (an `index.lock`
+    /// held by another process).
+    change_set_error: Arc<Mutex<Option<String>>>,
+    /// When set, `discard_change_group` fails with this message after
+    /// logging the call (a group loop that stopped midway).
+    discard_error: Arc<Mutex<Option<String>>>,
 }
 
 /// A `VcsBackend` for the Changes view: answers from a stored `ChangeSet`,
@@ -159,6 +165,9 @@ impl VcsBackend for ChangesMock {
 
     fn get_change_set(&self) -> Result<ChangeSet> {
         self.log("get_change_set");
+        if let Some(err) = self.handles.change_set_error.lock().unwrap().clone() {
+            return Err(TuicrError::VcsCommand(err));
+        }
         Ok(self.handles.set.lock().unwrap().clone())
     }
 
@@ -257,6 +266,9 @@ impl VcsBackend for ChangesMock {
             entries.len(),
             sub_label(submodule)
         ));
+        if let Some(err) = self.handles.discard_error.lock().unwrap().clone() {
+            return Err(TuicrError::VcsCommand(err));
+        }
         if submodule.is_none() {
             self.mutate(|set| set.group_mut(group).clear());
         }
@@ -2111,4 +2123,372 @@ fn wheel_over_the_pane_scrolls_its_viewport() {
     let view = h.app.changes.as_ref().expect("view");
     assert!(view.list.offset() > 0);
     assert!(view.selected_idx() >= view.list.offset());
+}
+
+// ---------------------------------------------------------------------------
+// Review fixes: prompts, refusals and refresh paths
+// ---------------------------------------------------------------------------
+
+#[test]
+fn unstaged_entry_discard_prompt_names_the_index_and_the_staged_one_head() {
+    let mut h = open(sample_set());
+    h.app.changes_select(ROW_UNSTAGED_F);
+    h.pane(Action::ChangesDiscard);
+    assert_eq!(h.app.input_mode, InputMode::Confirm);
+    let prompt = h.app.pending_discard.as_ref().expect("pending").prompt();
+    assert_eq!(
+        prompt,
+        "Discard the unstaged changes to f? The working tree goes back to the index; staged changes are kept. This cannot be undone."
+    );
+    h.app.cancel_discard();
+
+    h.app.changes_select(ROW_STAGED_F);
+    h.pane(Action::ChangesDiscard);
+    let prompt = h.app.pending_discard.as_ref().expect("pending").prompt();
+    assert_eq!(
+        prompt,
+        "Discard all changes to f? Index and working tree go back to HEAD. This cannot be undone."
+    );
+    h.app.cancel_discard();
+}
+
+#[test]
+fn entry_prompts_match_the_commands_for_intent_to_add_and_unstaged_renames() {
+    let ita = DiscardTarget::Entry {
+        key: key(ChangeGroup::Unstaged, "new.txt"),
+        entry: file("new.txt", ChangeStatus::Added),
+    };
+    assert_eq!(
+        ita.prompt(),
+        "Drop the intent-to-add for new.txt? The file is kept and becomes untracked."
+    );
+    let staged_add = DiscardTarget::Entry {
+        key: key(ChangeGroup::Staged, "new.txt"),
+        entry: file("new.txt", ChangeStatus::Added),
+    };
+    assert!(
+        staged_add
+            .prompt()
+            .starts_with("Delete the new file new.txt?")
+    );
+
+    let mut renamed = file("b.txt", ChangeStatus::Renamed);
+    renamed.old_path = Some(PathBuf::from("a.txt"));
+    let unstaged = DiscardTarget::Entry {
+        key: key(ChangeGroup::Unstaged, "b.txt"),
+        entry: renamed.clone(),
+    };
+    assert_eq!(
+        unstaged.prompt(),
+        "Undo the rename a.txt \u{2192} b.txt? b.txt is deleted and a.txt restored from the index. This cannot be undone."
+    );
+    let staged = DiscardTarget::Entry {
+        key: key(ChangeGroup::Staged, "b.txt"),
+        entry: renamed,
+    };
+    assert_eq!(
+        staged.prompt(),
+        "Undo the rename a.txt \u{2192} b.txt? b.txt is deleted and a.txt restored from HEAD. This cannot be undone."
+    );
+}
+
+#[test]
+fn group_discard_prompt_details_submodule_checkouts_and_skips() {
+    let mut moved_dirty = moved_pointer();
+    moved_dirty.untracked_content = true;
+    let entries = vec![
+        file("f", ChangeStatus::Modified),
+        gitlink("lib", ChangeStatus::Modified, moved_dirty),
+        gitlink("lib2", ChangeStatus::Modified, dirty_only()),
+        gitlink(
+            "gone",
+            ChangeStatus::Deleted,
+            SubmoduleChange {
+                index_id: Some(OLD_ID.to_string()),
+                registered: true,
+                ..Default::default()
+            },
+        ),
+    ];
+    let target = DiscardTarget::Group {
+        group: ChangeGroup::Unstaged,
+        submodule: None,
+        entries,
+    };
+    assert_eq!(
+        target.prompt(),
+        "Discard all 4 unstaged entries? Working tree goes back to the index. This cannot be undone."
+    );
+    assert_eq!(
+        target.detail(),
+        vec![
+            "submodule lib: checkout 2222222 \u{2192} 1111111; modified and untracked files inside it are thrown away",
+            "lib2 is skipped: a submodule with uncommitted changes inside it",
+            "submodule gone is cloned or checked out again",
+        ]
+    );
+    let plain = DiscardTarget::Group {
+        group: ChangeGroup::Unstaged,
+        submodule: None,
+        entries: vec![file("f", ChangeStatus::Modified)],
+    };
+    assert!(plain.detail().is_empty());
+}
+
+#[test]
+fn hunk_ops_on_an_entry_inside_an_expanded_submodule_are_refused() {
+    let (set, inner) = dirty_submodule_set();
+    let mut h = open(set);
+    h.handles
+        .submodules
+        .lock()
+        .unwrap()
+        .insert(PathBuf::from("lib"), inner);
+    h.pane(Action::ChangesExpand);
+    let inner_key = ChangeDiffKey::in_submodule(ChangeGroup::Unstaged, "lib", "a.txt");
+    let inner_idx = h
+        .app
+        .changes_rows()
+        .iter()
+        .position(|row| row.entry_key() == Some(&inner_key))
+        .expect("nested entry row");
+    h.app.changes_select(inner_idx);
+    assert_eq!(h.previewed_key(), Some(inner_key));
+    h.app.focused_panel = FocusedPanel::Diff;
+    h.clear_calls();
+
+    handle_diff_action(&mut h.app, Action::StageHunk);
+    assert_eq!(
+        h.message(),
+        "Hunks inside a submodule: stage or discard the whole file with s / X in the Changes pane"
+    );
+    handle_diff_action(&mut h.app, Action::DiscardHunk);
+    assert_eq!(h.app.input_mode, InputMode::Normal);
+    assert!(h.app.pending_discard.is_none());
+    handle_diff_action(&mut h.app, Action::UnstageHunk);
+    assert!(h.calls().is_empty(), "calls: {:?}", h.calls());
+}
+
+#[test]
+fn closing_the_merge_view_refreshes_the_changes_tree() {
+    let mut h = open(sample_set());
+    h.app.input_mode = InputMode::MergeConflict;
+    h.clear_calls();
+
+    h.app.close_merge_view();
+
+    assert_eq!(h.app.input_mode, InputMode::Normal);
+    assert!(h.app.changes_active());
+    assert!(
+        h.calls().contains(&"get_change_set".to_string()),
+        "{:?}",
+        h.calls()
+    );
+}
+
+#[test]
+fn c_in_the_selector_leaves_a_pr_review_for_the_changes_view() {
+    let mut h = build(
+        sample_set(),
+        VcsType::Git,
+        pull_request_source(),
+        InputMode::CommitSelect,
+    );
+
+    handle_commit_select_action(&mut h.app, Action::OpenChangesView);
+
+    assert!(h.app.changes_active(), "{}", h.message());
+    assert_eq!(h.app.input_mode, InputMode::Normal);
+    assert_eq!(
+        h.app.session.diff_source,
+        SessionDiffSource::StagedAndUnstaged
+    );
+}
+
+#[test]
+fn palette_changes_rows_do_not_replay_their_key_when_the_view_cannot_open() {
+    use crate::input::catalog::{ENTRIES, Scope};
+    let mut h = build(
+        sample_set(),
+        VcsType::Git,
+        pull_request_source(),
+        InputMode::Normal,
+    );
+    h.app.open_palette();
+    for c in "refresh the view".chars() {
+        h.app.palette_push(c);
+    }
+    let palette = h.app.palette.as_ref().expect("palette");
+    assert_eq!(
+        ENTRIES[palette.matches[palette.cursor]].scope,
+        Scope::Changes
+    );
+
+    h.app.palette_run();
+
+    assert!(!h.app.changes_active());
+    assert!(
+        h.app.injected_keys.is_empty(),
+        "r must not reach the file tree as ToggleReviewed: {:?}",
+        h.app.injected_keys
+    );
+    assert!(h.message().contains("leave the PR review first"));
+}
+
+#[test]
+fn a_failed_group_discard_still_refreshes_the_tree() {
+    let mut h = open(sample_set());
+    *h.handles.discard_error.lock().unwrap() =
+        Some("lib was removed and is not in .gitmodules".to_string());
+    h.app.changes_select(ROW_UNSTAGED_GROUP);
+    h.pane(Action::ChangesDiscard);
+    assert_eq!(h.app.input_mode, InputMode::Confirm);
+    h.clear_calls();
+
+    h.app.confirm_discard();
+
+    assert_eq!(
+        &h.calls()[..2],
+        ["discard_change_group unstaged 2 None", "get_change_set"]
+    );
+    assert!(
+        h.message().starts_with("Discard failed:"),
+        "{}",
+        h.message()
+    );
+}
+
+#[test]
+fn s_and_u_on_group_rows_keep_their_verb() {
+    let mut h = open(sample_set());
+    h.app.changes_select(ROW_UNSTAGED_GROUP);
+    h.clear_calls();
+    h.pane(Action::UnstageFile);
+    assert!(h.calls().is_empty());
+    assert_eq!(
+        h.message(),
+        "Nothing in Unstaged is staged; Space or s stages the group"
+    );
+    h.pane(Action::StageFile);
+    assert_eq!(h.calls()[0], "change_bulk_op StageTracked None");
+
+    h.app.changes_select(0);
+    h.clear_calls();
+    h.pane(Action::StageFile);
+    assert!(h.calls().is_empty());
+    assert_eq!(h.message(), "Everything in this group is staged already");
+    h.pane(Action::UnstageFile);
+    assert_eq!(h.calls()[0], "change_bulk_op UnstageAll None");
+}
+
+#[test]
+fn capital_a_names_the_embedded_repos_it_skipped() {
+    let mut set = sample_set();
+    set.push(
+        ChangeGroup::Untracked,
+        ChangeEntry {
+            path: PathBuf::from("nested"),
+            old_path: None,
+            status: ChangeStatus::Untracked,
+            kind: ChangeEntryKind::EmbeddedRepo,
+        },
+    );
+    set.sort();
+    let mut h = open(set);
+
+    h.pane(Action::ChangesStageAll);
+
+    assert_eq!(
+        h.message(),
+        "Staged everything; skipped embedded repo nested"
+    );
+    assert!(
+        h.app
+            .changes
+            .as_ref()
+            .expect("view")
+            .set
+            .untracked
+            .iter()
+            .any(ChangeEntry::is_embedded_repo)
+    );
+}
+
+#[test]
+fn t_on_a_clean_tree_says_nothing_to_stash() {
+    let mut h = open(ChangeSet::default());
+    h.clear_calls();
+
+    h.pane(Action::ChangesStash);
+
+    assert_eq!(h.message(), "Nothing to stash");
+    assert!(h.calls().is_empty(), "{:?}", h.calls());
+}
+
+#[test]
+fn a_refresh_failure_after_an_operation_is_not_hidden_by_the_success_message() {
+    let mut h = open(sample_set());
+    h.app.changes_select(ROW_UNSTAGED_G);
+    *h.handles.change_set_error.lock().unwrap() = Some("index.lock exists".to_string());
+
+    h.pane(Action::ChangesToggleStage);
+
+    assert!(
+        h.message()
+            .starts_with("Staged g, but reloading the diff failed"),
+        "{}",
+        h.message()
+    );
+}
+
+#[test]
+fn mouse_click_below_the_last_row_only_focuses_the_pane() {
+    let mut h = open(sample_set());
+    let inner = pane_rects(&mut h.app);
+    h.app.focused_panel = FocusedPanel::Diff;
+    let rows = h.app.changes_rows().len() as u16;
+    let before = h.selected_idx();
+    h.clear_calls();
+
+    click(&mut h.app, inner.x + 4, inner.y + rows + 1);
+
+    assert_eq!(h.app.focused_panel, FocusedPanel::FileList);
+    assert_eq!(h.selected_idx(), before);
+    assert!(h.calls().is_empty(), "{:?}", h.calls());
+}
+
+#[test]
+fn mouse_click_on_the_indent_of_a_panned_row_only_selects() {
+    let (set, inner_set) = dirty_submodule_set();
+    let mut h = open(set);
+    h.handles
+        .submodules
+        .lock()
+        .unwrap()
+        .insert(PathBuf::from("lib"), inner_set);
+    let inner = pane_rects(&mut h.app);
+    h.app.changes.as_mut().expect("view").scroll_x = 2;
+    h.clear_calls();
+
+    // Row 1 is `lib` (depth 1, expander at content column 2). Panned by
+    // two, the screen's first cell is still the indent, not the expander.
+    click(&mut h.app, inner.x, inner.y + 1);
+
+    assert_eq!(h.selected_idx(), 1);
+    assert!(h.calls().is_empty(), "{:?}", h.calls());
+    assert!(h.app.changes.as_ref().expect("view").submodules.is_empty());
+}
+
+#[test]
+fn u_from_the_diff_on_an_unstaged_preview_points_at_the_pane() {
+    let mut h = open(sample_set());
+    h.app.changes_select(ROW_UNSTAGED_F);
+    h.app.focused_panel = FocusedPanel::Diff;
+
+    handle_diff_action(&mut h.app, Action::UnstageHunk);
+
+    assert_eq!(
+        h.message(),
+        "Unstage hunks from the Staged entry of this path in the Changes pane; u unstages the whole file"
+    );
 }

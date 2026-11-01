@@ -495,12 +495,16 @@ fn handle_left_click(app: &mut App, pos: Position) {
     if app.changes_active()
         && let Some(inner) = app.file_list_inner_area
         && inner.contains(pos)
-        && let Some(idx) = app.changes_row_at_screen_row(pos.y)
     {
+        // A click below the last row focuses the pane and nothing else: the
+        // file tree's hit-test would otherwise resolve the same screen row
+        // against the preview's own tree items.
         app.focused_panel = FocusedPanel::FileList;
-        let col = usize::from(pos.x.saturating_sub(inner.x))
-            + app.changes.as_ref().map_or(0, |view| view.scroll_x);
-        app.changes_click(idx, col);
+        if let Some(idx) = app.changes_row_at_screen_row(pos.y) {
+            let col = usize::from(pos.x.saturating_sub(inner.x))
+                + app.changes.as_ref().map_or(0, |view| view.scroll_x);
+            app.changes_click(idx, col);
+        }
         return;
     }
 

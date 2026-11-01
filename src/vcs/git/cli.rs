@@ -547,21 +547,10 @@ impl VcsBackend for GitCliBackend {
     }
 
     fn stage_file(&self, path: &Path) -> Result<()> {
-        let output = Command::new("git")
-            .current_dir(&self.root_path)
-            .arg("add")
-            .arg("--")
-            .arg(path)
-            .output()
-            .map_err(|e| TuicrError::VcsCommand(format!("Failed to run git: {e}")))?;
-
-        if !output.status.success() {
-            return Err(TuicrError::VcsCommand(
-                String::from_utf8_lossy(&output.stderr).trim().to_string(),
-            ));
-        }
-
-        Ok(())
+        // Through the shared runner, so the add is in the git console like
+        // every other spawn, and literal, so a `[` in the name stays a name.
+        let path = path.to_string_lossy();
+        super::run_git_literal(&self.root_path, &["add", "--", &path]).map(|_| ())
     }
 
     fn get_merge_conflicts(&self) -> Result<Option<MergeConflictInfo>> {

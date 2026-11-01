@@ -119,8 +119,11 @@ impl App {
             }
             Run::Prompt(prefill) => self.inject_text(&format!(":{prefill}")),
             Run::Keys(keys) => {
-                self.focus_scope(entry.scope);
-                self.injected_keys.extend(catalog::parse_keys(keys, leader));
+                // A key replayed into a pane that could not open would land
+                // in whatever has focus with its old meaning.
+                if self.focus_scope(entry.scope) {
+                    self.injected_keys.extend(catalog::parse_keys(keys, leader));
+                }
             }
         }
     }
@@ -136,10 +139,13 @@ impl App {
         }));
     }
 
-    /// Move focus to the pane whose keys an entry replays.
-    fn focus_scope(&mut self, scope: Scope) {
+    /// Move focus to the pane whose keys an entry replays. `false` when that
+    /// pane could not be brought up (the Changes view in a PR review, in
+    /// pristine mode, or on a VCS without an index), so the keys are not
+    /// replayed into something else.
+    fn focus_scope(&mut self, scope: Scope) -> bool {
         if self.input_mode != InputMode::Normal {
-            return;
+            return true;
         }
         match scope {
             Scope::Diff => self.focused_panel = FocusedPanel::Diff,
@@ -157,11 +163,15 @@ impl App {
                 if !self.changes_active() {
                     self.open_changes_view();
                 }
+                if !self.changes_active() {
+                    return false;
+                }
                 self.show_file_list = true;
                 self.focused_panel = FocusedPanel::FileList;
             }
             Scope::Global | Scope::Branches | Scope::Stashes | Scope::Merge => {}
         }
+        true
     }
 }
 

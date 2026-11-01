@@ -878,6 +878,7 @@ impl App {
     pub fn close_merge_view(&mut self) {
         let Some(view) = self.merge_view.as_mut() else {
             self.input_mode = InputMode::Normal;
+            self.refresh_changes_after_merge_view();
             return;
         };
         if view.files.iter().any(|f| f.dirty) && !view.discard_armed {
@@ -892,6 +893,16 @@ impl App {
             self.refresh_commit_selector_rows();
         } else if self.log_pane.is_some() {
             self.refresh_log_rows_keep_cursor();
+        }
+        self.refresh_changes_after_merge_view();
+    }
+
+    /// The merge view stages resolved files and `--continue` commits; a
+    /// Changes view it was opened from (Space on a conflict) would otherwise
+    /// keep its "Merge conflicts" group and preview until `r`.
+    fn refresh_changes_after_merge_view(&mut self) {
+        if self.changes_active() {
+            self.refresh_changes_view(None);
         }
     }
 

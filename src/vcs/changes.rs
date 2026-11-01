@@ -295,6 +295,25 @@ impl ChangeEntry {
         }
     }
 
+    /// Whether `X` on the group row leaves this entry alone (counted as
+    /// skipped in the result): embedded repositories and conflicted entries
+    /// have no discard; a dirty-only submodule's files would be thrown away
+    /// under a prompt that only mentions the index and working tree; a
+    /// deleted gitlink that is not in `.gitmodules` is refused per entry.
+    pub fn skipped_by_group_discard(&self, group: ChangeGroup) -> bool {
+        if self.is_embedded_repo() || self.status == ChangeStatus::Conflicted {
+            return true;
+        }
+        let Some(sm) = self.submodule() else {
+            return false;
+        };
+        match self.status {
+            ChangeStatus::Deleted => !sm.registered,
+            ChangeStatus::Added => false,
+            _ => sm.dirty() && !sm.pointer_moved(group),
+        }
+    }
+
     /// Every path git must be told about for this entry: the path, plus the
     /// rename / copy source when there is one.
     pub fn pathspecs(&self) -> Vec<&Path> {
@@ -580,5 +599,46 @@ mod tests {
             Some(ChangeGroup::Staged)
         );
         assert_eq!(set.group_of(Path::new("g"), ChangeGroup::Unstaged), None);
+    }
+
+    #[test]
+    fn group_discard_skips_embedded_conflicted_dirty_only_and_unregistered_deleted() {
+        let dirty = SubmoduleChange {
+            head_id: Some("a".into()),
+            index_id: Some("a".into()),
+            workdir_id: Some("a".into()),
+            modified_content: true,
+            registered: true,
+            ..Default::default()
+        };
+        let mut entry = ChangeEntry::file("lib", ChangeStatus::Modified);
+        entry.kind = ChangeEntryKind::Submodule(dirty.clone());
+        assert!(entry.skipped_by_group_discard(ChangeGroup::Unstaged));
+        let moved = SubmoduleChange {
+            workdir_id: Some("b".into()),
+            ..dirty
+        };
+        entry.kind = ChangeEntryKind::Submodule(moved);
+        assert!(
+            !entry.skipped_by_group_discard(ChangeGroup::Unstaged),
+            "a moved pointer is discarded, dirt and all (the prompt says so)"
+        );
+        let mut gone = ChangeEntry::file("other", ChangeStatus::Deleted);
+        gone.kind = ChangeEntryKind::Submodule(SubmoduleChange {
+            head_id: Some("a".into()),
+            ..Default::default()
+        });
+        assert!(gone.skipped_by_group_discard(ChangeGroup::Staged));
+        let mut embedded = ChangeEntry::file("nested", ChangeStatus::Untracked);
+        embedded.kind = ChangeEntryKind::EmbeddedRepo;
+        assert!(embedded.skipped_by_group_discard(ChangeGroup::Untracked));
+        assert!(
+            ChangeEntry::file("f", ChangeStatus::Conflicted)
+                .skipped_by_group_discard(ChangeGroup::Conflicted)
+        );
+        assert!(
+            !ChangeEntry::file("f", ChangeStatus::Modified)
+                .skipped_by_group_discard(ChangeGroup::Unstaged)
+        );
     }
 }

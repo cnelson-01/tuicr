@@ -954,7 +954,9 @@ impl App {
     /// `invalidated_count` is the number of previously reviewed files whose content changed.
     pub fn reload_diff_files(&mut self) -> Result<(usize, usize)> {
         if self.changes_active() {
-            self.refresh_changes_view(None);
+            // A set that cannot be read is this call's error, so the
+            // caller's success message does not overwrite it.
+            self.refresh_changes_view_inner()?;
             return Ok((self.diff_files.len(), 0));
         }
         let diff_files = self.fetch_diff_files()?;

@@ -7,7 +7,7 @@
 //! just the matching hunk, so the rendered (tab-expanded, highlighted) lines
 //! never have to be turned back into a patch.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::{App, ConfirmAction, DiffSource, FileTreeItem, FocusedPanel, InputMode};
 use crate::error::TuicrError;
@@ -81,11 +81,22 @@ impl DiscardTarget {
 
     /// Extra lines under the question (`render_confirm_dialog_with_detail`
     /// when non-empty): the submodule pointer move and what happens to the
-    /// files inside it. Empty for hunks, files and groups.
+    /// files inside it. For a group, one line per submodule the loop would
+    /// check out, clone or clean inside, and per entry it skips. Empty for
+    /// hunks and files.
     pub fn detail(&self) -> Vec<String> {
-        let Self::Entry { key, entry } = self else {
-            return Vec::new();
-        };
+        match self {
+            Self::Entry { key, entry } => Self::entry_detail(key, entry),
+            Self::Group {
+                group,
+                submodule,
+                entries,
+            } => Self::group_detail(*group, submodule.as_deref(), entries),
+            _ => Vec::new(),
+        }
+    }
+
+    fn entry_detail(key: &ChangeDiffKey, entry: &ChangeEntry) -> Vec<String> {
         let ChangeEntryKind::Submodule(sm) = &entry.kind else {
             return Vec::new();
         };
@@ -126,6 +137,60 @@ impl DiscardTarget {
         lines
     }
 
+    /// What the group loop does beyond "index / working tree": a submodule
+    /// row is checked out at the restored pointer (its dirt thrown away
+    /// when the pointer moved), cloned when its directory is gone, and the
+    /// entries `discard_change_group` skips are named as skipped.
+    fn group_detail(
+        group: ChangeGroup,
+        submodule: Option<&Path>,
+        entries: &[ChangeEntry],
+    ) -> Vec<String> {
+        let mut lines = Vec::new();
+        for entry in entries {
+            let shown = match submodule {
+                Some(sub) => sub.join(&entry.path),
+                None => entry.path.clone(),
+            };
+            let shown = shown.display();
+            if entry.skipped_by_group_discard(group) {
+                let why = if entry.is_embedded_repo() {
+                    "an embedded repository"
+                } else if entry.status == ChangeStatus::Conflicted {
+                    "conflicted"
+                } else if entry.status == ChangeStatus::Deleted {
+                    "not in .gitmodules"
+                } else {
+                    "a submodule with uncommitted changes inside it"
+                };
+                lines.push(format!("{shown} is skipped: {why}"));
+                continue;
+            }
+            let Some(sm) = entry.submodule() else {
+                continue;
+            };
+            match entry.status {
+                ChangeStatus::Added => {}
+                ChangeStatus::Deleted => {
+                    lines.push(format!("submodule {shown} is cloned or checked out again"));
+                }
+                _ if sm.pointer_moved(group) => {
+                    let (old, new) = sm.sides(group);
+                    let (old, new) = (short7(old.unwrap_or("")), short7(new.unwrap_or("")));
+                    lines.push(if sm.dirty() {
+                        format!(
+                            "submodule {shown}: checkout {new} → {old}; modified and untracked files inside it are thrown away"
+                        )
+                    } else {
+                        format!("submodule {shown}: checkout {new} → {old}")
+                    });
+                }
+                _ => {}
+            }
+        }
+        lines
+    }
+
     /// The question for one Changes-view entry (§1.6 of the design: one
     /// sentence per entry kind and status, always naming the path).
     fn entry_prompt(key: &ChangeDiffKey, entry: &ChangeEntry) -> String {
@@ -139,6 +204,11 @@ impl DiscardTarget {
                 ChangeStatus::Added if key.group == ChangeGroup::Staged => format!(
                     "Delete the new file {path}? It exists only in the index and the working tree. This cannot be undone."
                 ),
+                // Unstaged `A`: an intent-to-add; `git reset -- path` keeps
+                // the file.
+                ChangeStatus::Added => format!(
+                    "Drop the intent-to-add for {path}? The file is kept and becomes untracked."
+                ),
                 ChangeStatus::Renamed | ChangeStatus::Copied => {
                     let old = entry
                         .old_path
@@ -149,9 +219,14 @@ impl DiscardTarget {
                         })
                         .unwrap_or_default();
                     let old = old.display();
+                    // Staged: `checkout HEAD -- old`; unstaged: `checkout -- old`.
+                    let source = match key.group {
+                        ChangeGroup::Staged => "HEAD",
+                        _ => "the index",
+                    };
                     if entry.status == ChangeStatus::Renamed {
                         format!(
-                            "Undo the rename {old} → {path}? {path} is deleted and {old} restored from HEAD. This cannot be undone."
+                            "Undo the rename {old} → {path}? {path} is deleted and {old} restored from {source}. This cannot be undone."
                         )
                     } else {
                         format!(
@@ -159,8 +234,13 @@ impl DiscardTarget {
                         )
                     }
                 }
-                _ => format!(
+                // Staged: `checkout HEAD -- path` (both halves); unstaged:
+                // `checkout -- path` (the staged half is kept).
+                _ if key.group == ChangeGroup::Staged => format!(
                     "Discard all changes to {path}? Index and working tree go back to HEAD. This cannot be undone."
+                ),
+                _ => format!(
+                    "Discard the unstaged changes to {path}? The working tree goes back to the index; staged changes are kept. This cannot be undone."
                 ),
             },
             ChangeEntryKind::Submodule(sm) => match entry.status {
@@ -276,6 +356,14 @@ impl App {
             return None;
         }
         let (key, entry) = self.changes_previewed_entry()?;
+        // An inner entry's preview carries the superproject-prefixed path;
+        // the hunk commands run in the superproject, where the submodule
+        // is one gitlink and `git diff -- sub/file` prints nothing.
+        if key.submodule.is_some() {
+            return Some(
+                "Hunks inside a submodule: stage or discard the whole file with s / X in the Changes pane",
+            );
+        }
         match &entry.kind {
             ChangeEntryKind::Submodule(_) | ChangeEntryKind::EmbeddedRepo => {
                 Some("Submodules stage whole: press s in the Changes pane")
@@ -375,9 +463,11 @@ impl App {
             return;
         };
         if scope != HunkScope::Staged {
-            self.set_message(
-                "Unstage hunks from the staged view (`:commits`, then Staged changes); u unstages the whole file",
-            );
+            self.set_message(if self.changes_active() {
+                "Unstage hunks from the Staged entry of this path in the Changes pane; u unstages the whole file"
+            } else {
+                "Unstage hunks from the staged view (`:commits`, then Staged changes); u unstages the whole file"
+            });
             return;
         }
         let Some((path, old_start, new_start)) = self.hunk_coordinates_at_cursor() else {
@@ -467,10 +557,12 @@ impl App {
             return;
         };
         if unstage != (scope == HunkScope::Staged) {
-            self.set_message(if unstage {
-                "Unstage lines from the staged view (`:commits`, then Staged changes)"
-            } else {
+            self.set_message(if !unstage {
                 "These lines are staged already; U unstages them"
+            } else if self.changes_active() {
+                "Unstage lines from the Staged entry of this path in the Changes pane"
+            } else {
+                "Unstage lines from the staged view (`:commits`, then Staged changes)"
             });
             return;
         }
@@ -599,7 +691,14 @@ impl App {
         };
         match result {
             Ok(message) => self.after_local_change(message),
-            Err(e) => self.set_error(format!("Discard failed: {e}")),
+            Err(e) => {
+                // A group loop stops at the first failure with the entries
+                // before it already discarded; the tree must say so.
+                if self.changes_active() {
+                    self.refresh_changes_view(None);
+                }
+                self.set_error(format!("Discard failed: {e}"));
+            }
         }
     }
 
@@ -695,6 +794,12 @@ impl App {
 
     /// `:stash [message]`: stash the working tree (untracked included).
     pub fn stash_push_current(&mut self, message: Option<&str>) {
+        // `git stash push` on a clean tree says "No local changes to save"
+        // and exits 0; with the Changes view open the tree is known.
+        if self.changes_view().is_some_and(|view| view.set.is_empty()) {
+            self.set_message("Nothing to stash");
+            return;
+        }
         let message = message
             .map(str::trim)
             .filter(|m| !m.is_empty())

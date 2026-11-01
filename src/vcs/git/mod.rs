@@ -290,6 +290,13 @@ impl GitBackend {
         }
         Ok((files, embedded))
     }
+
+    /// Whether the index holds unmerged (stage 1-3) entries: a merge,
+    /// cherry-pick or rebase stopped on conflicts.
+    fn has_unmerged_entries(&self) -> Result<bool> {
+        run_git_command(&self.info().root_path, &["ls-files", "-u", "-z"])
+            .map(|output| !output.is_empty())
+    }
 }
 
 /// Whether the file still carries a merge marker at the start of a line.
@@ -304,6 +311,19 @@ fn has_conflict_markers(path: &Path) -> bool {
 /// Read a named remote's fetch URL, including Git's `insteadOf` rewrites.
 pub(super) fn remote_url(repo_root: &Path, name: &str) -> Result<String> {
     run_git_command(repo_root, &["remote", "get-url", "--", name])
+}
+
+/// [`run_git_command`] with every pathspec taken literally. Paths handed to
+/// a mutating command come straight from status, so `[`, `*` and `?` in a
+/// file name must name that file and never its siblings (`foo[1].txt` next
+/// to `foo1.txt`). The read side (`run_git_diff_bytes`) is literal already.
+/// Pathspec magic (`:!x/`) is disabled too; write it as `:(exclude,literal)`
+/// and run through [`run_git_command`] instead.
+pub(super) fn run_git_literal(workdir: &Path, args: &[&str]) -> Result<String> {
+    let mut full = Vec::with_capacity(args.len() + 1);
+    full.push("--literal-pathspecs");
+    full.extend_from_slice(args);
+    run_git_command(workdir, &full)
 }
 
 pub(super) fn run_git_command(workdir: &Path, args: &[&str]) -> Result<String> {
@@ -617,8 +637,8 @@ impl VcsBackend for GitBackend {
         let path = path.to_string_lossy();
         // `reset` needs a HEAD; on an unborn branch fall back to dropping
         // the entry from the index.
-        let result = run_git_command(root, &["reset", "-q", "--", &path])
-            .or_else(|_| run_git_command(root, &["rm", "-q", "--cached", "--", &path]))
+        let result = run_git_literal(root, &["reset", "-q", "--", &path])
+            .or_else(|_| run_git_literal(root, &["rm", "-q", "--cached", "--", &path]))
             .map(|_| ());
         self.refresh_after_cli_op(result)
     }
@@ -626,14 +646,14 @@ impl VcsBackend for GitBackend {
     fn discard_file(&self, path: &Path) -> Result<()> {
         let root = &self.info().root_path;
         let path = path.to_string_lossy();
-        let tracked = run_git_command(root, &["ls-files", "--error-unmatch", "--", &path]).is_ok();
+        let tracked = run_git_literal(root, &["ls-files", "--error-unmatch", "--", &path]).is_ok();
         let in_head = run_git_command(root, &["cat-file", "-e", &format!("HEAD:{path}")]).is_ok();
         let result = if !tracked {
-            run_git_command(root, &["clean", "-f", "-q", "--", &path])
+            run_git_literal(root, &["clean", "-f", "-q", "--", &path])
         } else if in_head {
-            run_git_command(root, &["checkout", "HEAD", "--", &path])
+            run_git_literal(root, &["checkout", "HEAD", "--", &path])
         } else {
-            run_git_command(root, &["rm", "-q", "-f", "--", &path])
+            run_git_literal(root, &["rm", "-q", "-f", "--", &path])
         }
         .map(|_| ());
         self.refresh_after_cli_op(result)
@@ -1154,7 +1174,7 @@ impl VcsBackend for GitBackend {
                     self.stage_file(&entry.path)
                 } else if entry.status == ChangeStatus::Deleted {
                     let result =
-                        run_git_command(root, &["rm", "-q", "-f", "--cached", "--", &path])
+                        run_git_literal(root, &["rm", "-q", "-f", "--cached", "--", &path])
                             .map(|_| ());
                     self.refresh_after_cli_op(result)
                 } else {
@@ -1197,7 +1217,8 @@ impl VcsBackend for GitBackend {
         }
         let root = &self.info().root_path;
         let path = entry.path.to_string_lossy().into_owned();
-        let git = |args: &[&str]| run_git_command(root, args).map(|_| ());
+        // Every pathspec here is a status path, taken literally.
+        let git = |args: &[&str]| run_git_literal(root, args).map(|_| ());
         let old_path = || {
             entry
                 .old_path
@@ -1212,6 +1233,11 @@ impl VcsBackend for GitBackend {
                 (ChangeGroup::Untracked, _) | (_, ChangeStatus::Untracked) => {
                     git(&["clean", "-f", "-q", "--", &path])
                 }
+                // An unstaged `A` is an intent-to-add (`git add -N`): the
+                // index holds an empty placeholder and the working tree the
+                // only copy of the content, which `checkout --` would
+                // truncate. Drop the placeholder; the file stays, untracked.
+                (ChangeGroup::Unstaged, ChangeStatus::Added) => git(&["reset", "-q", "--", &path]),
                 // Exists only in the index and the working tree.
                 (_, ChangeStatus::Added) => git(&["rm", "-q", "-f", "--", &path]),
                 (ChangeGroup::Staged, ChangeStatus::Renamed) => match old_path() {
@@ -1223,13 +1249,18 @@ impl VcsBackend for GitBackend {
                     git(&["rm", "-q", "-f", "--", &path])
                 }
                 // libgit2 pairs a deleted index entry with an untracked
-                // file: the source comes back from the index, the target
-                // is an untracked file to delete.
+                // file, porcelain (`2 .R`) with an intent-to-add target:
+                // the source comes back from the index; the target loses
+                // its placeholder entry, if any, and is deleted (`clean`
+                // skips a path the index knows).
                 (ChangeGroup::Unstaged, ChangeStatus::Renamed | ChangeStatus::Copied) => {
+                    let delete_target = || {
+                        git(&["reset", "-q", "--", &path])
+                            .and_then(|_| git(&["clean", "-f", "-q", "--", &path]))
+                    };
                     match old_path() {
-                        Some(old) => git(&["checkout", "--", &old])
-                            .and_then(|_| git(&["clean", "-f", "-q", "--", &path])),
-                        None => git(&["clean", "-f", "-q", "--", &path]),
+                        Some(old) => git(&["checkout", "--", &old]).and_then(|_| delete_target()),
+                        None => delete_target(),
                     }
                 }
                 (ChangeGroup::Staged, _) => git(&["checkout", "HEAD", "--", &path]),
@@ -1239,9 +1270,11 @@ impl VcsBackend for GitBackend {
             },
             ChangeEntryKind::Submodule(change) => {
                 let inside = |args: &[&str]| self.run_in_submodule(&path, args);
-                let clean_inside = || {
-                    inside(&["checkout", "-q", "--", "."]).and_then(|_| inside(&["clean", "-fdq"]))
-                };
+                // The submodule's index too, so a change staged inside it
+                // goes as well and the detach that may follow has a clean
+                // tree to move.
+                let clean_inside =
+                    || inside(&["reset", "-q", "--hard"]).and_then(|_| inside(&["clean", "-fdq"]));
                 match entry.status {
                     ChangeStatus::Added => git(&["rm", "--cached", "-q", "-f", "--", &path]),
                     ChangeStatus::Deleted if !change.registered => {
@@ -1255,7 +1288,22 @@ impl VcsBackend for GitBackend {
                         } else {
                             Ok(())
                         };
-                        reset.and_then(|_| git(&["submodule", "update", "--checkout", "--", &path]))
+                        // `--init` too: a registered submodule that was
+                        // never initialised makes `update` a no-op that
+                        // exits 0 with a hint on stdout.
+                        reset
+                            .and_then(|_| {
+                                git(&["submodule", "update", "--init", "--checkout", "--", &path])
+                            })
+                            .and_then(|_| {
+                                if root.join(&entry.path).join(".git").exists() {
+                                    Ok(())
+                                } else {
+                                    Err(TuicrError::VcsCommand(format!(
+                                        "{path} is still not checked out; run git submodule update --init -- {path}"
+                                    )))
+                                }
+                            })
                     }
                     _ if change.pointer_moved(key.group) => {
                         let (old, _) = change.sides(key.group);
@@ -1314,20 +1362,12 @@ impl VcsBackend for GitBackend {
             } else {
                 let mut args = vec!["clean", "-f", "-q", "--"];
                 args.extend(paths.iter().map(String::as_str));
-                run_git_command(&self.info().root_path, &args).map(|_| embedded.len())
+                run_git_literal(&self.info().root_path, &args).map(|_| embedded.len())
             }
         } else {
             let mut skipped = 0;
             for entry in entries {
-                let dirty_only = entry.submodule().is_some_and(|sm| {
-                    sm.dirty()
-                        && !sm.pointer_moved(group)
-                        && !matches!(entry.status, ChangeStatus::Added | ChangeStatus::Deleted)
-                });
-                if entry.is_embedded_repo()
-                    || entry.status == ChangeStatus::Conflicted
-                    || dirty_only
-                {
+                if entry.skipped_by_group_discard(group) {
                     skipped += 1;
                     continue;
                 }
@@ -1344,11 +1384,23 @@ impl VcsBackend for GitBackend {
             return self.submodule_backend(sub)?.change_bulk_op(op, None);
         }
         let root = &self.info().root_path;
+        // Mid-merge, `add -u` / `add -A` would record conflict markers as
+        // the resolution of every unmerged path and `reset` would drop the
+        // conflict stages (and MERGE_HEAD) for HEAD's side. The per-entry
+        // path refuses those; so does the whole-repository one.
+        if self.has_unmerged_entries()? {
+            return Err(TuicrError::UnsupportedOperation(
+                "Resolve the merge conflicts first (:merge)".to_string(),
+            ));
+        }
         let result = match op {
             ChangeBulkOp::StageTracked => run_git_command(root, &["add", "-u"]).map(|_| ()),
             ChangeBulkOp::StageAll => {
                 let (_, embedded) = self.untracked_paths()?;
-                let excludes: Vec<String> = embedded.iter().map(|p| format!(":!{p}/")).collect();
+                let excludes: Vec<String> = embedded
+                    .iter()
+                    .map(|p| format!(":(exclude,literal){p}/"))
+                    .collect();
                 let mut args = vec!["add", "-A"];
                 if !excludes.is_empty() {
                     args.extend(["--", "."]);
@@ -1364,7 +1416,12 @@ impl VcsBackend for GitBackend {
                 } else {
                     run_git_stdin(
                         root,
-                        &["add", "--pathspec-from-file=-", "--pathspec-file-nul"],
+                        &[
+                            "--literal-pathspecs",
+                            "add",
+                            "--pathspec-from-file=-",
+                            "--pathspec-file-nul",
+                        ],
                         &files.join("\0"),
                     )
                     .map(|_| ())
@@ -1770,7 +1827,7 @@ fn extract_hunk_patch(
         HunkScope::Unstaged => {}
     }
     args.extend(["--", &path]);
-    let diff = run_git_command(root, &args)?;
+    let diff = run_git_literal(root, &args)?;
 
     #[derive(PartialEq)]
     enum State {

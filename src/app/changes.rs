@@ -433,9 +433,14 @@ impl App {
     /// Opens the view (always `InputMode::Normal`), or the degraded flat
     /// working-tree review on hg / jj.
     pub fn open_changes_view(&mut self) {
-        if matches!(self.diff_source, DiffSource::PullRequest(_)) {
+        // From the selector, `C` is the act of leaving the PR review, like
+        // Enter on a local target: the session and the source are replaced
+        // below. From the review itself, say how to get there.
+        if matches!(self.diff_source, DiffSource::PullRequest(_))
+            && self.input_mode != InputMode::CommitSelect
+        {
             self.set_warning(
-                "The Changes view works on the local checkout; leave the PR review first (:commits)",
+                "The Changes view works on the local checkout; leave the PR review first (:commits, then C)",
             );
             return;
         }
@@ -636,7 +641,7 @@ impl App {
 
     // ---- Selection and preview -------------------------------------------
 
-    fn changes_view(&self) -> Option<&ChangesView> {
+    pub(in crate::app) fn changes_view(&self) -> Option<&ChangesView> {
         self.changes.as_ref().filter(|_| self.changes_active())
     }
 
@@ -945,7 +950,9 @@ impl App {
     }
 
     /// `s`: stage the entry (a conflicted entry is marked resolved; the
-    /// backend refuses while markers remain); a group row behaves like Space.
+    /// backend refuses while markers remain). On a group row the key keeps
+    /// its verb: the Unstaged and Unversioned groups are staged whole, the
+    /// Staged group is left alone (Space is the toggle).
     pub fn changes_stage_at_cursor(&mut self) {
         let Some(row) = self.changes_selected_row().cloned() else {
             return;
@@ -954,7 +961,15 @@ impl App {
             ChangesRow::Entry { key, entry, .. } => self.changes_stage_rules(key, entry),
             ChangesRow::Group {
                 group, submodule, ..
-            } => self.changes_group_checkbox(group, submodule),
+            } => match group {
+                ChangeGroup::Unstaged | ChangeGroup::Untracked => {
+                    self.changes_group_checkbox(group, submodule)
+                }
+                ChangeGroup::Staged => {
+                    self.set_message("Everything in this group is staged already")
+                }
+                ChangeGroup::Conflicted => self.set_message("Resolve conflicts with :merge"),
+            },
             ChangesRow::Directory { .. } => self.changes_toggle_collapse_at_cursor(),
             ChangesRow::Uninitialized {
                 path, submodule, ..
@@ -963,7 +978,8 @@ impl App {
         }
     }
 
-    /// `u`: unstage the entry; a group row behaves like Space.
+    /// `u`: unstage the entry. On a group row the key keeps its verb: the
+    /// Staged group is unstaged whole, the others have nothing staged.
     pub fn changes_unstage_at_cursor(&mut self) {
         let Some(row) = self.changes_selected_row().cloned() else {
             return;
@@ -972,7 +988,14 @@ impl App {
             ChangesRow::Entry { key, entry, .. } => self.changes_unstage_rules(key, entry),
             ChangesRow::Group {
                 group, submodule, ..
-            } => self.changes_group_checkbox(group, submodule),
+            } => match group {
+                ChangeGroup::Staged => self.changes_group_checkbox(group, submodule),
+                ChangeGroup::Conflicted => self.set_message("Resolve conflicts with :merge"),
+                ChangeGroup::Unstaged | ChangeGroup::Untracked => self.set_message(format!(
+                    "Nothing in {} is staged; Space or s stages the group",
+                    group.label()
+                )),
+            },
             ChangesRow::Directory { .. } => self.changes_toggle_collapse_at_cursor(),
             ChangesRow::Uninitialized {
                 path, submodule, ..
@@ -1107,12 +1130,33 @@ impl App {
     }
 
     fn changes_bulk_in(&mut self, op: ChangeBulkOp, submodule: Option<PathBuf>) {
+        // `A` leaves embedded repositories alone; name them, as the docs say.
+        let skipped: Vec<String> = match op {
+            ChangeBulkOp::StageAll | ChangeBulkOp::StageUntracked => self
+                .changes_set_for(submodule.as_deref())
+                .map(|set| {
+                    set.untracked
+                        .iter()
+                        .filter(|entry| entry.is_embedded_repo())
+                        .map(|entry| entry.path.to_string_lossy().into_owned())
+                        .collect()
+                })
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
         match self.vcs.change_bulk_op(op, submodule.as_deref()) {
             Ok(()) => {
-                let message = match &submodule {
+                let mut message = match &submodule {
                     Some(sub) => format!("{} in {}", op.done_message(), sub.display()),
                     None => op.done_message().to_string(),
                 };
+                if !skipped.is_empty() {
+                    message.push_str(&format!(
+                        "; skipped embedded repo{} {}",
+                        if skipped.len() == 1 { "" } else { "s" },
+                        skipped.join(", ")
+                    ));
+                }
                 self.after_local_change(message);
             }
             Err(e) => {
@@ -1470,6 +1514,13 @@ impl App {
             return;
         }
         self.changes_select(idx);
+        // The renderer pans everything but the indent, so while panned the
+        // indent cells sit over content that was never on screen: a click
+        // there only selects.
+        let scroll_x = self.changes.as_ref().map_or(0, |view| view.scroll_x);
+        if scroll_x > 0 && col.saturating_sub(scroll_x) < row.depth() * CHANGES_INDENT {
+            return;
+        }
         match &row {
             ChangesRow::Group { .. } | ChangesRow::Directory { .. } => {
                 self.changes_toggle_collapse_at_cursor()
@@ -1489,17 +1540,26 @@ impl App {
     /// `r`, `:e`, and every local-change operation: re-read the change set,
     /// drop cached diffs, keep the selection, re-show its diff.
     pub fn refresh_changes_view(&mut self, message: Option<String>) {
-        if self.refresh_changes_view_inner()
-            && let Some(message) = message
-        {
-            self.set_message(message);
+        match self.refresh_changes_view_inner() {
+            Ok(true) => {
+                if let Some(message) = message {
+                    self.set_message(message);
+                }
+            }
+            Ok(false) => {}
+            Err(e) => self.set_error(format!("Failed to read the change set: {e}")),
         }
     }
 
     /// `r`: refresh and say what the tree holds.
     pub fn changes_refresh(&mut self) {
-        if !self.refresh_changes_view_inner() {
-            return;
+        match self.refresh_changes_view_inner() {
+            Ok(true) => {}
+            Ok(false) => return,
+            Err(e) => {
+                self.set_error(format!("Failed to read the change set: {e}"));
+                return;
+            }
         }
         let Some(view) = self.changes_view() else {
             return;
@@ -1514,18 +1574,14 @@ impl App {
         self.set_message(summary);
     }
 
-    /// `true` when the set was re-read and installed.
-    fn refresh_changes_view_inner(&mut self) -> bool {
+    /// `Ok(true)` when the set was re-read and installed, `Ok(false)` when
+    /// the view is not active. A set that cannot be read is the caller's
+    /// error to show, so a success message never papers over a stale tree.
+    pub(in crate::app) fn refresh_changes_view_inner(&mut self) -> Result<bool, TuicrError> {
         if !self.changes_active() {
-            return false;
+            return Ok(false);
         }
-        let set = match self.vcs.get_change_set() {
-            Ok(set) => self.filter_change_set(set, None),
-            Err(e) => {
-                self.set_error(format!("Failed to read the change set: {e}"));
-                return false;
-            }
-        };
+        let set = self.filter_change_set(self.vcs.get_change_set()?, None);
         // Expanded submodules: re-read the ones that are still dirty, drop
         // the rest and every failed expansion.
         let expanded: Vec<PathBuf> = self
@@ -1555,7 +1611,7 @@ impl App {
         }
 
         let Some(view) = self.changes.as_mut() else {
-            return false;
+            return Ok(false);
         };
         let prev_row = view.selected_row().cloned();
         let prev_idx = view.selected_idx();
@@ -1570,7 +1626,7 @@ impl App {
         self.changes_reselect(prev_row, prev_idx, prev_key, true);
         self.refresh_log_rows_keep_cursor();
         self.refresh_repo_status();
-        true
+        Ok(true)
     }
 
     /// Diff watch landing: install a fresher change set. `true` when the

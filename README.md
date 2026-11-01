@@ -345,7 +345,7 @@ and its keys, or `?` for the full reference.
 | `;z` | Zen mode: diff only |
 | `;g` / `;b` | Log pane (commit graph) / branch picker |
 | `;C` | Changes view: staged / unstaged / unversioned tree with per-entry diffs; `Space` stages, `c` commits, `X` discards |
-| `:changes` | Toggle the Changes view (`C` on the selector's Local tab opens it) |
+| `:changes` | Toggle the Changes view (`C` on the selector's Local tab or in the log pane opens it) |
 | `Ctrl-l` | Redraw the whole screen |
 | `?` | Toggle full help |
 

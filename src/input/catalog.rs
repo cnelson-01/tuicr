@@ -196,16 +196,16 @@ pub const ENTRIES: &[Entry] = &[
     e(Global, "Changes", "<leader>C", "Changes view (commit tool window)", Keys("<leader>C")),
     e(Global, "Changes", ":changes", "Toggle the Changes view", Cmd("changes")),
     e(Global, "Changes", ":set changes / :set nochanges", "Open / close the Changes view", Cmd("set changes")),
-    e(Log, "Changes", "C", "Open the Changes view from the selector", Keys("C")),
+    e(Log, "Changes", "C", "Open the Changes view (selector or log pane)", Keys("C")),
     e(Changes, "Changes", "j / k", "Move; the diff previews the entry", Keys("j")),
     e(Changes, "Changes", "Space / Enter", "Stage or unstage the entry (or the whole group)", Keys("<Space>")),
-    e(Changes, "Changes", "s / u", "Stage / unstage the entry", Keys("s")),
-    e(Changes, "Changes", "a", "Stage every tracked change", Keys("a")),
-    e(Changes, "Changes", "A", "Stage everything, unversioned files too", Keys("A")),
-    e(Changes, "Changes", "U", "Unstage everything", Keys("U")),
+    e(Changes, "Changes", "s / u", "Stage / unstage the entry (or the whole group)", Keys("s")),
+    e(Changes, "Changes", "a", "Stage all tracked changes", Keys("a")),
+    e(Changes, "Changes", "A", "Stage all, unversioned files too", Keys("A")),
+    e(Changes, "Changes", "U", "Unstage all", Keys("U")),
     e(Changes, "Changes", "X", "Discard the entry or group (asks first)", Keys("X")),
     e(Changes, "Changes", "c / C", "Commit / amend from the view", Keys("c")),
-    e(Changes, "Changes", "t", "Stash the working tree", Keys("t")),
+    e(Changes, "Changes", "t", "Stash the working tree, untracked files included", Keys("t")),
     e(Changes, "Changes", "r", "Refresh the view", Keys("r")),
     e(Changes, "Changes", "f", "Flat list / group by directory", Keys("f")),
     e(Changes, "Changes", "l / h", "Expand / collapse a group, folder, or submodule", Keys("l")),
@@ -539,5 +539,17 @@ mod tests {
             "{next:?}"
         );
         assert_eq!(Scope::Changes.label(), "changes");
+    }
+
+    #[test]
+    fn bulk_rows_match_the_hint_bar_phrases() {
+        for (query, keys) in [("stage all", "a"), ("stage all", "A"), ("unstage all", "U")] {
+            assert!(
+                ENTRIES.iter().any(|e| e.scope == Scope::Changes
+                    && e.keys == keys
+                    && match_score(query, e.desc).is_some()),
+                "{query:?} should find the {keys} row"
+            );
+        }
     }
 }

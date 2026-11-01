@@ -1,6 +1,6 @@
 use ratatui::{
     Frame,
-    layout::{Constraint, Flex, Layout, Rect},
+    layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
@@ -601,9 +601,14 @@ pub fn format_comment_lines(
     result
 }
 
+/// A Y/N question. The box is at least half the screen wide and grows to
+/// the message; a message wider than the screen allows wraps onto more
+/// rows, so the end of the sentence (what is restored, "cannot be undone")
+/// is never cut off.
 pub fn render_confirm_dialog(frame: &mut Frame, app: &App, message: &str) {
     let theme = &app.theme;
-    let area = centered_rect(50, 20, frame.area());
+    let screen = frame.area();
+    let (area, rows) = confirm_dialog_area(screen, message);
 
     frame.render_widget(Clear, area);
 
@@ -616,22 +621,67 @@ pub fn render_confirm_dialog(frame: &mut Frame, app: &App, message: &str) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let lines = vec![
-        Line::from(""),
-        Line::from(Span::raw(message)),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("  [Y]", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw("es    "),
-            Span::styled("[N]", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw("o"),
-        ]),
-    ];
+    let mut lines = vec![Line::from("")];
+    lines.extend(rows.into_iter().map(|row| Line::from(Span::raw(row))));
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("  [Y]", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw("es    "),
+        Span::styled("[N]", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw("o"),
+    ]));
 
     let paragraph = Paragraph::new(lines)
         .style(styles::popup_style(theme))
         .alignment(ratatui::layout::Alignment::Center);
     frame.render_widget(paragraph, inner);
+}
+
+/// The confirm box for `message` on `screen`, with the message wrapped at
+/// word boundaries to the box's inner width: at least half the screen
+/// (the historical size), wide enough for the message plus a cell of
+/// margin on each side when it fits, never wider than the screen minus a
+/// two-cell border on each side.
+fn confirm_dialog_area(screen: Rect, message: &str) -> (Rect, Vec<String>) {
+    let message_width = message.width() as u16;
+    let max_width = screen.width.saturating_sub(4).max(1);
+    let width = (screen.width / 2)
+        .max(message_width + 4)
+        .min(max_width)
+        .max(1);
+    let inner_width = usize::from(width.saturating_sub(4).max(1));
+    let rows = wrap_words(message, inner_width);
+    // Blank, message rows, blank, the [Y]es / [N]o line, plus the borders.
+    let height = (rows.len() as u16 + 5).min(screen.height.max(1));
+    let area = Rect {
+        x: screen.x + screen.width.saturating_sub(width) / 2,
+        y: screen.y + screen.height.saturating_sub(height) / 2,
+        width: width.min(screen.width),
+        height,
+    };
+    (area, rows)
+}
+
+/// Greedy word wrap by display width; a single word wider than `width`
+/// gets a row of its own and is clipped by the widget.
+fn wrap_words(text: &str, width: usize) -> Vec<String> {
+    let mut rows = Vec::new();
+    let mut current = String::new();
+    for word in text.split_whitespace() {
+        if current.is_empty() {
+            current.push_str(word);
+        } else if current.width() + 1 + word.width() <= width {
+            current.push(' ');
+            current.push_str(word);
+        } else {
+            rows.push(std::mem::take(&mut current));
+            current.push_str(word);
+        }
+    }
+    if !current.is_empty() || rows.is_empty() {
+        rows.push(current);
+    }
+    rows
 }
 
 /// A confirmation with lines of detail under the question (the commits a
@@ -699,14 +749,6 @@ pub fn render_confirm_dialog_with_detail(
         Paragraph::new(lines).style(styles::popup_style(theme)),
         inner,
     );
-}
-
-fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let vertical = Layout::vertical([Constraint::Percentage(percent_y)]).flex(Flex::Center);
-    let horizontal = Layout::horizontal([Constraint::Percentage(percent_x)]).flex(Flex::Center);
-    let [area] = vertical.areas(area);
-    let [area] = horizontal.areas(area);
-    area
 }
 
 #[cfg(test)]
@@ -1271,5 +1313,22 @@ mod tests {
             .collect::<String>();
 
         assert!(header.contains("[github @alice]"));
+    }
+
+    #[test]
+    fn confirm_dialog_grows_and_wraps_to_keep_the_whole_message_on_screen() {
+        let screen = Rect::new(0, 0, 120, 24);
+        let message = "Undo the rename plain.txt \u{2192} renamed.txt? renamed.txt is deleted and plain.txt restored from HEAD. This cannot be undone.";
+        let (area, rows) = confirm_dialog_area(screen, message);
+        assert_eq!(area.width, 116, "as wide as the screen allows");
+        assert!(rows.len() >= 2, "{rows:?}");
+        let inner = usize::from(area.width) - 4;
+        assert!(rows.iter().all(|r| r.width() <= inner), "{rows:?}");
+        assert_eq!(rows.join(" "), message, "nothing is lost");
+        assert_eq!(area.height, rows.len() as u16 + 5);
+
+        let (short_area, short_rows) = confirm_dialog_area(screen, "Discard this hunk?");
+        assert_eq!(short_area.width, 60, "never narrower than half the screen");
+        assert_eq!(short_rows, vec!["Discard this hunk?".to_string()]);
     }
 }

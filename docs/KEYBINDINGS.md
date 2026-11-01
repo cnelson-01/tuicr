@@ -480,7 +480,8 @@ submodule that could not be read keeps its row, with the error as a dim note und
 
 `<leader>C` opens the pane focused, focuses it when the diff has focus (re-reading the change
 set), and closes it when it already has focus; `:changes` toggles, `:set changes` /
-`:set nochanges` set, and `C` on the selector's Local tab opens it. Loading any other review
+`:set nochanges` set, and `C` on the selector's Local tab or in the log pane opens it (from a
+PR review, `:commits` then `C`). Loading any other review
 (Enter in the log pane, `:commits`, `:compare`, a PR) returns the column to the file tree; the
 next `<leader>C` brings the pane back with its grouping and collapsed state. On Mercurial and
 Jujutsu checkouts, which have no index, `<leader>C` loads the working copy as a flat list
@@ -491,13 +492,13 @@ instead; `--file`, `--all-files` and PR reviews have no checkout to show and say
 | `j` / `k`, `↓` / `↑` | Move the selection (a count works); the diff previews the entry. Note rows are skipped |
 | `g` / `G` | First / last row |
 | `Space` / `Enter` | Stage an unstaged or unversioned entry, unstage a staged one; a conflict opens the merge view. On a group row: stage or unstage the whole group. On a folder row: expand or collapse it. On a `(not initialized)` row: show the `git submodule update --init` hint |
-| `s` / `u` | Stage / unstage the entry (`s` on a conflict marks it resolved, refused while the file still has `<<<<<<<` markers) |
-| `a` | Stage every tracked change (`git add -u`), submodule pointers included |
-| `A` | Stage everything, unversioned files too (`git add -A`; embedded repositories are skipped and named) |
-| `U` | Unstage everything (`git reset`); reversible, so no prompt |
-| `X`, `:discard` | Discard the entry, the dirty submodule, or every entry in the group, after a `y`/`n` prompt that names what goes. A submodule prompt lists the pointer move and what happens to the files inside; the submodule is checked out at the restored pointer |
+| `s` / `u` | Stage / unstage the entry (`s` on a conflict marks it resolved, refused while the file still has `<<<<<<<` markers). On a group row the key keeps its verb: `s` on `Unstaged` / `Unversioned files` stages the whole group, `u` on `Staged` unstages it; the other combinations only say so |
+| `a` | Stage all tracked changes (`git add -u`), submodule pointers included |
+| `A` | Stage all, unversioned files too (`git add -A`; embedded repositories are skipped and named in the message) |
+| `U` | Unstage all (`git reset`); reversible, so no prompt |
+| `X`, `:discard` | Discard the entry, the dirty submodule, or every entry in the group, after a `y`/`n` prompt that names what goes: a `Staged` entry goes back to HEAD in the index and the working tree, an `Unstaged` entry's working tree goes back to the index (its staged half is kept), an unstaged `A` is an intent-to-add whose placeholder is dropped (the file stays, untracked). A submodule prompt lists the pointer move and what happens to the files inside; the submodule is checked out at the restored pointer (`--init` when it was never initialised). A group prompt lists the submodules it checks out or clones and the entries it skips (embedded repositories, conflicts, dirty-only submodules, deleted gitlinks not in `.gitmodules`) |
 | `c` / `C`, `:commit` / `:amend` | Commit / amend: the comment box becomes the message editor and the view refreshes on save. Commits the superproject even when the cursor is inside an expanded submodule |
-| `t`, `:stash` | Stash the working tree |
+| `t`, `:stash` | Stash the working tree, untracked files included (`git stash push --include-untracked`); says so when the tree is clean |
 | `r`, `:e` | Re-read the change set and the previewed diff |
 | `f` | Flat list (the default) / group by directory |
 | `l` / `→` | Expand the group, folder or dirty submodule under the cursor; on any other row, pan right |
@@ -508,7 +509,12 @@ instead; `--file`, `--all-files` and PR reviews have no checkout to show and say
 | `Tab` / `Shift-Tab`, `<leader>h` / `<leader>l` / `<leader>j` / `<leader>k` | Focus cycle, unchanged: the pane takes the file tree's slot |
 | `}` / `{` (diff focused) | Next / previous entry |
 | `s` / `u` / `:discard` (diff focused) | Stage / unstage / discard the previewed entry |
-| `S` / `U` / `X`, visual `S` / `U` (diff focused) | Hunk and line operations on the previewed diff, in the scope its group implies (staged → the index, otherwise the working tree). Refused before any prompt on unversioned, submodule and conflicted entries, which stage whole |
+| `S` / `U` / `X`, visual `S` / `U` (diff focused) | Hunk and line operations on the previewed diff, in the scope its group implies (staged → the index, otherwise the working tree). Refused before any prompt on unversioned, submodule and conflicted entries, which stage whole, and on entries inside an expanded submodule (`s` / `X` in the pane act on the whole file there) |
+
+While a merge, cherry-pick or rebase has unresolved conflicts, `a`, `A` and `U` are refused
+(`git add -u` / `-A` would record the conflict markers as the resolution and `git reset` would
+drop the conflict stages); resolve them with `:merge` first. Every path handed to git is taken
+literally (`--literal-pathspecs`), so a file named `foo[1].txt` never stands for `foo1.txt`.
 
 While the pane is focused these keys mean something else than in the diff or the file tree:
 `c` / `C` (comment → commit / amend), `A` (edit comment → stage all), `a`, `h` / `l` (pan →
@@ -561,6 +567,7 @@ with `<leader>+` / `<leader>-`, `:set logheight N`, or `log_height = N`.
 | `t` | Tag the cursor commit: opens `:tag ` for the name |
 | `y` | Copy the cursor commit's full hash |
 | `/` | Filter the log (see below); `Esc` clears an active filter |
+| `C` | Open the [Changes view](#changes-view) (the same key as on the selector's Local tab) |
 | `Tab` / `Shift-Tab`, `<leader>k` / `<leader>j` | Move focus between the pane and the other panels |
 | `Esc` | Return focus to the diff |
 | Click / wheel | Move the cursor (previews) / scroll |

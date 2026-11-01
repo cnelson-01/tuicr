@@ -505,7 +505,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(""),
         Line::from(Span::styled(
-            "Changes view (<leader>C, :changes, C in the selector)",
+            "Changes view (<leader>C, :changes, C in the selector / log pane)",
             Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
         )),
         Line::from(""),
@@ -524,7 +524,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw(
-                "Open the view focused; focus it when the diff has focus (re-reads the tree); close it when focused",
+                "Open the view focused; focus it (re-reading the tree) when the diff has focus; close it when focused",
             ),
         ]),
         Line::from(vec![
@@ -533,7 +533,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw(
-                "Toggle the view (`:set changes` / `:set nochanges` set it); `C` on the selector's Local tab opens it",
+                "Toggle the view (`:set changes` / `:set nochanges` set it); `C` in the selector or log pane opens it",
             ),
         ]),
         Line::from(vec![
@@ -549,7 +549,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw(
-                "Stage or unstage the entry (Space / Enter); on a group row the whole group; a conflict opens the merge view",
+                "Stage or unstage the entry (Space / Enter); a group row toggles the group; a conflict opens :merge",
             ),
         ]),
         Line::from(vec![
@@ -558,7 +558,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw(
-                "Stage / unstage the entry (`s` on a conflict marks it resolved once the markers are gone)",
+                "Stage / unstage the entry, or the whole group on a group row (`s` on a conflict marks it resolved)",
             ),
         ]),
         Line::from(vec![
@@ -567,7 +567,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw(
-                "Stage every tracked change (`git add -u`) / everything, unversioned files too (`git add -A`)",
+                "Stage all tracked changes (`git add -u`) / all, unversioned files too (`git add -A`, names skipped repos)",
             ),
         ]),
         Line::from(vec![
@@ -575,7 +575,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  U         ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Unstage everything (`git reset`)"),
+            Span::raw("Unstage all (`git reset`); a, A and U are refused while a merge has conflicts"),
         ]),
         Line::from(vec![
             Span::styled(
@@ -583,7 +583,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw(
-                "Discard the entry, the dirty submodule, or the whole group (asks first; `:discard` from the diff acts on the previewed entry)",
+                "Discard the entry, the dirty submodule, or the whole group (asks first; `:discard` from the diff too)",
             ),
         ]),
         Line::from(vec![
@@ -600,7 +600,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  t         ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Stash the working tree (also `:stash`)"),
+            Span::raw("Stash the working tree, untracked files included (also `:stash`)"),
         ]),
         Line::from(vec![
             Span::styled(
@@ -622,7 +622,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw(
-                "Expand / collapse the group, folder or dirty submodule (h on a collapsed row jumps to its parent); on other rows pan",
+                "Expand / collapse the group, folder or dirty submodule (h on a collapsed row: its parent); else pan",
             ),
         ]),
         Line::from(vec![
@@ -652,9 +652,12 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw(
-                "From the diff: next / previous entry; `s` / `u` / `:discard` there act on the previewed entry, `S` / `U` / `X` on its hunks",
+                "From the diff: next / previous entry; `s` / `u` / `:discard` there act on the previewed entry,",
             ),
         ]),
+        Line::from(Span::raw(
+            "            `S` / `U` / `X` on its hunks (refused on unversioned, submodule, conflicted and inner-submodule previews)",
+        )),
         Line::from(Span::raw(
             "  Overrides while the pane is focused: c/C commit, A stage all, a, h/l collapse/expand, r refresh, U unstage all,",
         )),
@@ -685,6 +688,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw(" Grow / shrink the pane (also `:set logheight N`)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  C         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Open the Changes view (the same key as on the selector's Local tab)"),
         ]),
         Line::from(vec![
             Span::styled(
