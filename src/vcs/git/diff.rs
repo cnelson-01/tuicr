@@ -4,11 +4,14 @@ use std::path::{Path, PathBuf};
 use crate::error::{Result, TuicrError};
 use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin};
 use crate::syntax::SyntaxHighlighter;
+use crate::vcs::changes::{ChangeEntry, ChangeGroup, ChangeStatus};
 use crate::vcs::traits::{
     ChangeKind, DiffWhitespaceMode, ResolvedRevisionRange, RevisionDiffTarget,
 };
 use crate::vcs::whitespace::{WhitespaceComparison, materialize_diff};
 use crate::vcs::{enhance_with_full_file_highlight, tabify};
+
+use super::changes;
 
 pub fn get_working_tree_diff(
     repo: &Repository,
@@ -298,6 +301,99 @@ fn get_working_tree_with_commits_diff_once(
         |path| read_path_from_workdir(repo, path),
     );
     Ok(files)
+}
+
+/// The diff of one Changes-view entry of this repository: HEAD → index for
+/// `Staged`, index → working tree for `Unstaged`, the whole file as added
+/// for `Untracked`, and the working-tree content as context lines for
+/// `Conflicted`. Pathspecs are literal, so a path with a space or a glob
+/// character matches itself; a rename passes both of its paths and is
+/// paired back into one delta.
+pub fn get_entry_diff(
+    repo: &Repository,
+    whitespace_mode: &DiffWhitespaceMode,
+    group: ChangeGroup,
+    entry: &ChangeEntry,
+    highlighter: &SyntaxHighlighter,
+) -> Result<Vec<DiffFile>> {
+    if group == ChangeGroup::Conflicted || entry.status == ChangeStatus::Conflicted {
+        return Ok(vec![changes::context_only_diff_file(
+            &entry.path,
+            read_path_from_workdir(repo, &entry.path),
+        )]);
+    }
+    materialize_diff(whitespace_mode, |comparison| {
+        get_entry_diff_once(repo, group, entry, comparison, highlighter)
+    })
+}
+
+fn get_entry_diff_once(
+    repo: &Repository,
+    group: ChangeGroup,
+    entry: &ChangeEntry,
+    comparison: WhitespaceComparison,
+    highlighter: &SyntaxHighlighter,
+) -> Result<Vec<DiffFile>> {
+    let mut opts = diff_options(comparison);
+    opts.disable_pathspec_match(true).include_typechange(true);
+    for path in entry.pathspecs() {
+        opts.pathspec(path.to_string_lossy().as_ref());
+    }
+    let paired = matches!(entry.status, ChangeStatus::Renamed | ChangeStatus::Copied);
+    let index = repo.index()?;
+    match group {
+        ChangeGroup::Staged => {
+            let head = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
+            let mut diff = repo.diff_tree_to_index(head.as_ref(), Some(&index), Some(&mut opts))?;
+            if paired {
+                find_pairs(&mut diff, entry.status)?;
+            }
+            let mut files = parse_diff(&diff, highlighter)?;
+            enhance_with_full_file_highlight(
+                &mut files,
+                highlighter,
+                |path| {
+                    head.as_ref()
+                        .and_then(|tree| read_path_from_tree(repo, tree, path))
+                },
+                |path| read_path_from_index(repo, &index, path),
+            );
+            Ok(files)
+        }
+        ChangeGroup::Unstaged | ChangeGroup::Untracked => {
+            // An unstaged rename's target is an untracked file, so the
+            // working tree side has to include untracked paths for it too.
+            let untracked = group == ChangeGroup::Untracked || paired;
+            opts.include_untracked(untracked)
+                .show_untracked_content(untracked)
+                .recurse_untracked_dirs(untracked);
+            let mut diff = repo.diff_index_to_workdir(Some(&index), Some(&mut opts))?;
+            if paired {
+                find_pairs(&mut diff, entry.status)?;
+            }
+            let mut files = parse_diff(&diff, highlighter)?;
+            enhance_with_full_file_highlight(
+                &mut files,
+                highlighter,
+                |path| read_path_from_index(repo, &index, path),
+                |path| read_path_from_workdir(repo, path),
+            );
+            Ok(files)
+        }
+        ChangeGroup::Conflicted => Err(TuicrError::NoChanges),
+    }
+}
+
+/// Pair the deletion and addition of a rename (or copy) back into one
+/// delta, untracked targets included.
+fn find_pairs(diff: &mut Diff, status: ChangeStatus) -> Result<()> {
+    let mut find = git2::DiffFindOptions::new();
+    find.renames(true).for_untracked(true);
+    if status == ChangeStatus::Copied {
+        find.copies(true);
+    }
+    diff.find_similar(Some(&mut find))?;
+    Ok(())
 }
 
 fn diff_options(comparison: WhitespaceComparison) -> DiffOptions {

@@ -6,7 +6,8 @@ use crate::error::{Result, TuicrError};
 use crate::model::{DiffFile, DiffLine, FileStatus};
 use crate::syntax::SyntaxHighlighter;
 
-use super::{context, diff, repository, staging};
+use super::{changes, context, diff, repository, staging};
+use crate::vcs::changes::{ChangeEntry, ChangeGroup, ChangeSet};
 use crate::vcs::traits::{
     ChangeKind, CommitInfo, ConflictCommit, DiffWhitespaceMode, MergeConflictInfo,
     ResolvedRevisionRange, VcsBackend, VcsInfo, VcsType,
@@ -143,6 +144,32 @@ impl Libgit2Backend {
             let _ = index.read(false);
         }
     }
+
+    pub(super) fn whitespace_mode(&self) -> &DiffWhitespaceMode {
+        &self.whitespace_mode
+    }
+
+    /// Whether the index (or, for a staged deletion, HEAD) records `path`
+    /// as a gitlink; `None` when neither knows the path.
+    pub(super) fn index_entry_is_gitlink(&self, path: &Path) -> Option<bool> {
+        self.reload_index();
+        if let Some(entry) = self.repo.index().ok()?.get_path(path, 0) {
+            return Some(entry.mode == changes::GITLINK_MODE);
+        }
+        let tree = self.repo.head().ok()?.peel_to_tree().ok()?;
+        let entry = tree.get_path(path).ok()?;
+        Some(entry.filemode() as u32 == changes::GITLINK_MODE)
+    }
+
+    /// The preview of one plain-file entry of the Changes view.
+    pub(super) fn get_entry_diff(
+        &self,
+        group: ChangeGroup,
+        entry: &ChangeEntry,
+        highlighter: &SyntaxHighlighter,
+    ) -> Result<Vec<DiffFile>> {
+        diff::get_entry_diff(&self.repo, &self.whitespace_mode, group, entry, highlighter)
+    }
 }
 
 impl VcsBackend for Libgit2Backend {
@@ -168,6 +195,12 @@ impl VcsBackend for Libgit2Backend {
 
     fn list_changed_paths(&self, kind: ChangeKind) -> Result<Vec<PathBuf>> {
         diff::list_changed_paths(&self.repo, kind)
+    }
+
+    fn get_change_set(&self) -> Result<ChangeSet> {
+        // CLI operations rewrite `.git/index` behind libgit2's back.
+        self.reload_index();
+        changes::libgit2_change_set(&self.repo, &self.info.root_path)
     }
 
     fn fetch_context_lines(

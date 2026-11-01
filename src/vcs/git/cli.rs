@@ -10,6 +10,7 @@ use chrono::{TimeZone, Utc};
 use crate::error::{Result, TuicrError};
 use crate::model::{DiffFile, DiffHunk, DiffLine, FileStatus, LineOrigin, LineSide};
 use crate::syntax::SyntaxHighlighter;
+use crate::vcs::changes::{ChangeEntry, ChangeGroup, ChangeSet, ChangeStatus};
 use crate::vcs::diff_parser;
 use crate::vcs::git::raw::{
     pair_metadata_with_patch, parse_raw_metadata_from_patch_output, parse_raw_patch_output,
@@ -22,11 +23,12 @@ use crate::vcs::{
     RevisionDiffTarget, VcsBackend, VcsChangeStatus, VcsInfo,
 };
 use crate::vcs::{
-    container_file_paths, enhance_with_full_file_highlight, slice_context_lines, tabify,
+    container_file_paths, enhance_with_full_file_highlight, read_workdir_file, slice_context_lines,
+    tabify,
 };
 
 use super::{
-    GitRepoMode, RevisionExpression, git_bool_config_enabled, git_command_error,
+    GitRepoMode, RevisionExpression, changes, git_bool_config_enabled, git_command_error,
     git_fsmonitor_config_enabled, run_git_command,
 };
 
@@ -90,6 +92,92 @@ impl GitCliBackend {
         self.repo_mode
     }
 
+    pub(super) fn whitespace_mode(&self) -> &DiffWhitespaceMode {
+        &self.whitespace_mode
+    }
+
+    /// Whether the index (or, for a staged deletion, HEAD) records `path`
+    /// as a gitlink; `None` when neither knows the path. An unlogged probe
+    /// like `get_cli_change_status`.
+    pub(super) fn index_entry_is_gitlink(&self, path: &Path) -> Option<bool> {
+        let probe = |args: &[&str]| -> Option<Vec<u8>> {
+            let output = Command::new("git")
+                .current_dir(&self.root_path)
+                .args(args)
+                .arg(path)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .output()
+                .ok()?;
+            (output.status.success() && !output.stdout.is_empty()).then_some(output.stdout)
+        };
+        let listed = probe(&["ls-files", "-s", "-z", "--"])
+            .or_else(|| probe(&["ls-tree", "-z", "HEAD", "--"]))?;
+        let first = listed.split(|b| *b == 0).next()?;
+        let mode = first.split(|b| *b == b' ').next()?;
+        Some(mode == b"160000")
+    }
+
+    /// The preview of one plain-file entry of the Changes view: HEAD →
+    /// index, index → working tree, the whole untracked file as added, or
+    /// a conflicted file's working-tree content as context.
+    pub(super) fn get_entry_diff(
+        &self,
+        group: ChangeGroup,
+        entry: &ChangeEntry,
+        highlighter: &SyntaxHighlighter,
+    ) -> Result<Vec<DiffFile>> {
+        if group == ChangeGroup::Conflicted || entry.status == ChangeStatus::Conflicted {
+            return Ok(vec![changes::context_only_diff_file(
+                &entry.path,
+                read_workdir_file(&self.root_path, &entry.path),
+            )]);
+        }
+        let pathspecs = entry.pathspecs();
+        match group {
+            ChangeGroup::Staged => {
+                let old_source =
+                    if run_git_command(&self.root_path, &["rev-parse", "--verify", "HEAD"]).is_ok()
+                    {
+                        GitContentSource::Revision("HEAD")
+                    } else {
+                        GitContentSource::None
+                    };
+                self.get_cli_diff(
+                    strings(["diff", "--no-ext-diff", "--binary", "--cached", "--"]),
+                    false,
+                    old_source,
+                    GitContentSource::Index,
+                    highlighter,
+                    &pathspecs,
+                )
+            }
+            ChangeGroup::Unstaged => self.get_cli_diff(
+                strings(["diff", "--no-ext-diff", "--binary", "--"]),
+                false,
+                GitContentSource::Index,
+                GitContentSource::Workdir,
+                highlighter,
+                &pathspecs,
+            ),
+            ChangeGroup::Untracked => {
+                let full_path = self.root_path.join(&entry.path);
+                let file = build_untracked_diff_file(&entry.path, &full_path, highlighter)
+                    .ok_or(TuicrError::NoChanges)?;
+                let mut files = vec![file];
+                normalize_git_cli_paths(&mut files);
+                enhance_with_full_file_highlight(
+                    &mut files,
+                    highlighter,
+                    |_| None,
+                    |path| read_workdir_file(&self.root_path, path),
+                );
+                Ok(files)
+            }
+            ChangeGroup::Conflicted => Err(TuicrError::NoChanges),
+        }
+    }
+
     fn get_cli_diff(
         &self,
         args: Vec<String>,
@@ -97,6 +185,7 @@ impl GitCliBackend {
         old_source: GitContentSource<'_>,
         new_source: GitContentSource<'_>,
         highlighter: &SyntaxHighlighter,
+        pathspecs: &[&Path],
     ) -> Result<Vec<DiffFile>> {
         materialize_diff(&self.whitespace_mode, |comparison| {
             self.get_cli_diff_with_comparison(
@@ -106,10 +195,12 @@ impl GitCliBackend {
                 new_source,
                 highlighter,
                 comparison,
+                pathspecs,
             )
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn get_cli_diff_with_comparison(
         &self,
         mut args: Vec<String>,
@@ -118,6 +209,7 @@ impl GitCliBackend {
         new_source: GitContentSource<'_>,
         highlighter: &SyntaxHighlighter,
         comparison: WhitespaceComparison,
+        pathspecs: &[&Path],
     ) -> Result<Vec<DiffFile>> {
         // Paths and status come from Git's NUL-delimited raw records. Patch
         // headers remain display-only and may follow any user quoting/prefix
@@ -133,6 +225,7 @@ impl GitCliBackend {
             args,
             comparison.ignores_all(),
             highlighter,
+            pathspecs,
         ) {
             Ok(files) => files,
             Err(TuicrError::NoChanges) => Vec::new(),
@@ -233,6 +326,7 @@ impl VcsBackend for GitCliBackend {
             GitContentSource::Revision("HEAD"),
             GitContentSource::Workdir,
             highlighter,
+            &[],
         )
     }
 
@@ -249,6 +343,7 @@ impl VcsBackend for GitCliBackend {
             old_source,
             GitContentSource::Index,
             highlighter,
+            &[],
         )
     }
 
@@ -259,7 +354,12 @@ impl VcsBackend for GitCliBackend {
             GitContentSource::Index,
             GitContentSource::Workdir,
             highlighter,
+            &[],
         )
+    }
+
+    fn get_change_set(&self) -> Result<ChangeSet> {
+        changes::cli_change_set(&self.root_path)
     }
 
     fn get_change_status(&self) -> Result<VcsChangeStatus> {
@@ -399,6 +499,7 @@ impl VcsBackend for GitCliBackend {
             GitContentSource::Revision(&base_rev),
             GitContentSource::Revision(&newest_rev),
             highlighter,
+            &[],
         )
     }
 
@@ -441,6 +542,7 @@ impl VcsBackend for GitCliBackend {
             GitContentSource::Revision(&base_rev),
             GitContentSource::Workdir,
             highlighter,
+            &[],
         )
     }
 
@@ -697,8 +799,9 @@ fn run_git_diff_command(
     args: Vec<String>,
     suppress_header_only_content_changes: bool,
     highlighter: &SyntaxHighlighter,
+    pathspecs: &[&Path],
 ) -> Result<Vec<DiffFile>> {
-    let output = run_git_diff_bytes(workdir, &args, &[])?;
+    let output = run_git_diff_bytes(workdir, &args, pathspecs)?;
     let patches = match parse_raw_patch_output(&output) {
         Ok(patches) => patches,
         Err(_) if suppress_header_only_content_changes => {
@@ -1630,6 +1733,40 @@ mod tests {
         let backend = GitCliBackend::discover_from(workdir, DiffWhitespaceMode::Normal)
             .expect("failed to discover backend");
         (temp_dir, backend, vec![first_id, second_id])
+    }
+
+    #[test]
+    fn change_set_runs_on_a_sparse_checkout_through_the_cli() {
+        use crate::vcs::changes::{ChangeGroup, ChangeStatus};
+        use crate::vcs::git::{GitBackend, GitBackendPreference};
+
+        let (temp_dir, _backend, _ids) = setup_sparse_index_repo();
+        let workdir = temp_dir.path();
+        write_file(workdir, "keep/file.txt", "keep edited\n");
+        write_file(workdir, "keep/new.txt", "new\n");
+        for preference in [GitBackendPreference::Libgit2, GitBackendPreference::Cli] {
+            let backend =
+                GitBackend::discover_from(workdir, preference, DiffWhitespaceMode::Normal)
+                    .expect("discover");
+            assert!(
+                matches!(backend, GitBackend::Cli(_)),
+                "a sparse checkout resolves to the CLI for {preference:?}"
+            );
+            let set = backend.get_change_set().expect("change set");
+            let edited = set
+                .find(ChangeGroup::Unstaged, Path::new("keep/file.txt"))
+                .expect("edited file listed");
+            assert_eq!(edited.status, ChangeStatus::Modified);
+            assert!(
+                set.find(ChangeGroup::Untracked, Path::new("keep/new.txt"))
+                    .is_some()
+            );
+            assert!(
+                set.find(ChangeGroup::Unstaged, Path::new("hidden/file.txt"))
+                    .is_none(),
+                "paths outside the cone are not changes"
+            );
+        }
     }
 
     fn setup_standard_parity_repo() -> (

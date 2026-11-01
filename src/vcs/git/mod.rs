@@ -1,3 +1,4 @@
+mod changes;
 mod cli;
 pub mod context;
 pub mod diff;
@@ -6,6 +7,9 @@ pub(crate) mod raw;
 pub mod repository;
 pub mod staging;
 
+use crate::vcs::changes::{
+    ChangeBulkOp, ChangeDiffKey, ChangeEntry, ChangeEntryKind, ChangeGroup, ChangeSet, ChangeStatus,
+};
 use crate::vcs::traits::{
     BlameLine, BranchInfo, CommitQuery, HunkScope, LinePick, RebaseAction, RebaseStep, ResetMode,
     StashEntry,
@@ -208,6 +212,93 @@ impl GitBackend {
 
         Ok(backend)
     }
+
+    /// The variant this backend was discovered with, so a submodule's own
+    /// backend is opened the same way.
+    fn preference(&self) -> GitBackendPreference {
+        match self {
+            Self::Libgit2(_) => GitBackendPreference::Libgit2,
+            Self::Cli(_) => GitBackendPreference::Cli,
+        }
+    }
+
+    pub(crate) fn whitespace_mode(&self) -> &DiffWhitespaceMode {
+        match self {
+            Self::Libgit2(backend) => backend.whitespace_mode(),
+            Self::Cli(backend) => backend.whitespace_mode(),
+        }
+    }
+
+    /// A backend for the submodule checked out at `sub` (repo-relative),
+    /// opened fresh each time with this backend's preference. An empty or
+    /// missing directory is refused rather than resolved to the
+    /// superproject, which `discover` would otherwise walk up to.
+    fn submodule_backend(&self, sub: &Path) -> Result<GitBackend> {
+        let dir = self.info().root_path.join(sub);
+        if !dir.join(".git").exists() {
+            return Err(TuicrError::VcsCommand(format!(
+                "{} is not checked out",
+                sub.display()
+            )));
+        }
+        let inner =
+            GitBackend::discover_from(&dir, self.preference(), self.whitespace_mode().clone())?;
+        let same_root =
+            std::fs::canonicalize(&inner.info().root_path).ok() == std::fs::canonicalize(&dir).ok();
+        if !same_root {
+            return Err(TuicrError::VcsCommand(format!(
+                "{} is not a repository of its own",
+                sub.display()
+            )));
+        }
+        Ok(inner)
+    }
+
+    /// Whether the index (or, for a staged deletion, HEAD) records `path`
+    /// as a gitlink: the cheap check before a submodule command runs on a
+    /// row that may be stale. `None` when neither knows the path.
+    fn index_entry_is_gitlink(&self, path: &Path) -> Option<bool> {
+        match self {
+            Self::Libgit2(backend) => backend.index_entry_is_gitlink(path),
+            Self::Cli(backend) => backend.index_entry_is_gitlink(path),
+        }
+    }
+
+    /// `git -C <sub> <args>` from the superproject root, so the console
+    /// shows where the command ran.
+    fn run_in_submodule(&self, sub: &str, args: &[&str]) -> Result<()> {
+        let mut full = vec!["-C", sub];
+        full.extend_from_slice(args);
+        run_git_command(&self.info().root_path, &full).map(|_| ())
+    }
+
+    /// Untracked paths as `git ls-files --others` lists them, split into
+    /// files and the nested repositories it never descends into.
+    fn untracked_paths(&self) -> Result<(Vec<String>, Vec<String>)> {
+        let root = &self.info().root_path;
+        let output = run_git_command(root, &["ls-files", "--others", "--exclude-standard", "-z"])?;
+        let mut files = Vec::new();
+        let mut embedded = Vec::new();
+        for path in output.split('\0').filter(|p| !p.is_empty()) {
+            match path.strip_suffix('/') {
+                Some(dir) if changes::is_embedded_repo(root, Path::new(dir)) => {
+                    embedded.push(dir.to_string());
+                }
+                Some(_) => {}
+                None => files.push(path.to_string()),
+            }
+        }
+        Ok((files, embedded))
+    }
+}
+
+/// Whether the file still carries a merge marker at the start of a line.
+fn has_conflict_markers(path: &Path) -> bool {
+    std::fs::read(path).is_ok_and(|bytes| {
+        bytes
+            .split(|b| *b == b'\n')
+            .any(|line| line.starts_with(b"<<<<<<<"))
+    })
 }
 
 /// Read a named remote's fetch URL, including Git's `insteadOf` rewrites.
@@ -215,7 +306,7 @@ pub(super) fn remote_url(repo_root: &Path, name: &str) -> Result<String> {
     run_git_command(repo_root, &["remote", "get-url", "--", name])
 }
 
-fn run_git_command(workdir: &Path, args: &[&str]) -> Result<String> {
+pub(super) fn run_git_command(workdir: &Path, args: &[&str]) -> Result<String> {
     // `-c commit.gpgsign=false` is a no-op for the read-only `config`/`init`
     // calls this makes in production, but it keeps the test-only `commit`
     // calls below from prompting contributors with commit signing enabled
@@ -964,6 +1055,327 @@ impl VcsBackend for GitBackend {
         let output = run_git_command(&self.info().root_path, &args)?;
         Ok(parse_blame_porcelain(&output))
     }
+
+    fn get_change_set(&self) -> Result<ChangeSet> {
+        match self {
+            Self::Libgit2(backend) => backend.get_change_set(),
+            Self::Cli(backend) => backend.get_change_set(),
+        }
+    }
+
+    fn get_submodule_change_set(&self, submodule: &Path) -> Result<ChangeSet> {
+        self.submodule_backend(submodule)?.get_change_set()
+    }
+
+    fn get_change_entry_diff(
+        &self,
+        key: &ChangeDiffKey,
+        entry: &ChangeEntry,
+        highlighter: &SyntaxHighlighter,
+    ) -> Result<Vec<DiffFile>> {
+        if let Some(sub) = &key.submodule {
+            let inner = self.submodule_backend(sub)?;
+            let mut files = inner.get_change_entry_diff(&key.local(), entry, highlighter)?;
+            changes::prefix_paths(&mut files, sub);
+            return Ok(files);
+        }
+        match &entry.kind {
+            ChangeEntryKind::File => match self {
+                Self::Libgit2(backend) => backend.get_entry_diff(key.group, entry, highlighter),
+                Self::Cli(backend) => backend.get_entry_diff(key.group, entry, highlighter),
+            },
+            ChangeEntryKind::Submodule(change) => {
+                // The row travels with the call; only the gitlink bit is
+                // confirmed, so a stale row never runs a submodule log on
+                // a plain file.
+                if self.index_entry_is_gitlink(&entry.path) != Some(true) {
+                    return Err(TuicrError::NoChanges);
+                }
+                let root = &self.info().root_path;
+                let (old, new) = change.sides(key.group);
+                let (forward, rewind) = match (old, new) {
+                    (Some(old), Some(new)) => (
+                        if change.ahead > 0 {
+                            changes::submodule_log(root, &entry.path, old, new)
+                        } else {
+                            Vec::new()
+                        },
+                        if change.behind > 0 {
+                            changes::submodule_log(root, &entry.path, new, old)
+                        } else {
+                            Vec::new()
+                        },
+                    ),
+                    _ => (Vec::new(), Vec::new()),
+                };
+                Ok(vec![changes::gitlink_diff_file(
+                    &entry.path,
+                    old,
+                    new,
+                    change,
+                    &forward,
+                    &rewind,
+                )])
+            }
+            ChangeEntryKind::EmbeddedRepo => {
+                Ok(vec![changes::embedded_repo_diff_file(&entry.path)])
+            }
+        }
+    }
+
+    fn stage_change_entry(&self, key: &ChangeDiffKey, entry: &ChangeEntry) -> Result<()> {
+        if let Some(sub) = &key.submodule {
+            return self
+                .submodule_backend(sub)?
+                .stage_change_entry(&key.local(), entry);
+        }
+        let root = &self.info().root_path;
+        let path = entry.path.to_string_lossy();
+        match &entry.kind {
+            ChangeEntryKind::File => {
+                if entry.status == ChangeStatus::Conflicted
+                    && has_conflict_markers(&root.join(&entry.path))
+                {
+                    return Err(TuicrError::InvalidInput(format!(
+                        "{path} still has conflict markers"
+                    )));
+                }
+                // Both paths of a rename, so the deletion is staged with
+                // the addition and no ` D` is left behind.
+                for pathspec in entry.pathspecs() {
+                    self.stage_file(pathspec)?;
+                }
+                Ok(())
+            }
+            ChangeEntryKind::Submodule(change) => {
+                if change.pointer_moved(key.group) || entry.status == ChangeStatus::Added {
+                    // `git add <sub>` stages the submodule's current HEAD
+                    // as the gitlink, on both variants.
+                    self.stage_file(&entry.path)
+                } else if entry.status == ChangeStatus::Deleted {
+                    let result =
+                        run_git_command(root, &["rm", "-q", "-f", "--cached", "--", &path])
+                            .map(|_| ());
+                    self.refresh_after_cli_op(result)
+                } else {
+                    Err(TuicrError::UnsupportedOperation(format!(
+                        "{path} has uncommitted changes inside it; commit there first"
+                    )))
+                }
+            }
+            ChangeEntryKind::EmbeddedRepo => Err(TuicrError::UnsupportedOperation(format!(
+                "{path} is a git repository; add it with git submodule add, or remove its .git"
+            ))),
+        }
+    }
+
+    fn unstage_change_entry(&self, key: &ChangeDiffKey, entry: &ChangeEntry) -> Result<()> {
+        if let Some(sub) = &key.submodule {
+            return self
+                .submodule_backend(sub)?
+                .unstage_change_entry(&key.local(), entry);
+        }
+        match &entry.kind {
+            ChangeEntryKind::File | ChangeEntryKind::Submodule(_) => {
+                for pathspec in entry.pathspecs() {
+                    self.unstage_file(pathspec)?;
+                }
+                Ok(())
+            }
+            ChangeEntryKind::EmbeddedRepo => Err(TuicrError::UnsupportedOperation(format!(
+                "{} is not staged",
+                entry.path.display()
+            ))),
+        }
+    }
+
+    fn discard_change_entry(&self, key: &ChangeDiffKey, entry: &ChangeEntry) -> Result<()> {
+        if let Some(sub) = &key.submodule {
+            return self
+                .submodule_backend(sub)?
+                .discard_change_entry(&key.local(), entry);
+        }
+        let root = &self.info().root_path;
+        let path = entry.path.to_string_lossy().into_owned();
+        let git = |args: &[&str]| run_git_command(root, args).map(|_| ());
+        let old_path = || {
+            entry
+                .old_path
+                .as_deref()
+                .map(|old| old.to_string_lossy().into_owned())
+        };
+        let result = match &entry.kind {
+            ChangeEntryKind::File => match (key.group, entry.status) {
+                (ChangeGroup::Conflicted, _) | (_, ChangeStatus::Conflicted) => Err(
+                    TuicrError::UnsupportedOperation(format!("Resolve {path} first (:merge)")),
+                ),
+                (ChangeGroup::Untracked, _) | (_, ChangeStatus::Untracked) => {
+                    git(&["clean", "-f", "-q", "--", &path])
+                }
+                // Exists only in the index and the working tree.
+                (_, ChangeStatus::Added) => git(&["rm", "-q", "-f", "--", &path]),
+                (ChangeGroup::Staged, ChangeStatus::Renamed) => match old_path() {
+                    Some(old) => git(&["checkout", "HEAD", "--", &old])
+                        .and_then(|_| git(&["rm", "-q", "-f", "--", &path])),
+                    None => git(&["rm", "-q", "-f", "--", &path]),
+                },
+                (ChangeGroup::Staged, ChangeStatus::Copied) => {
+                    git(&["rm", "-q", "-f", "--", &path])
+                }
+                // libgit2 pairs a deleted index entry with an untracked
+                // file: the source comes back from the index, the target
+                // is an untracked file to delete.
+                (ChangeGroup::Unstaged, ChangeStatus::Renamed | ChangeStatus::Copied) => {
+                    match old_path() {
+                        Some(old) => git(&["checkout", "--", &old])
+                            .and_then(|_| git(&["clean", "-f", "-q", "--", &path])),
+                        None => git(&["clean", "-f", "-q", "--", &path]),
+                    }
+                }
+                (ChangeGroup::Staged, _) => git(&["checkout", "HEAD", "--", &path]),
+                // The working tree goes back to the index; a staged half
+                // of the same file is kept.
+                (ChangeGroup::Unstaged, _) => git(&["checkout", "--", &path]),
+            },
+            ChangeEntryKind::Submodule(change) => {
+                let inside = |args: &[&str]| self.run_in_submodule(&path, args);
+                let clean_inside = || {
+                    inside(&["checkout", "-q", "--", "."]).and_then(|_| inside(&["clean", "-fdq"]))
+                };
+                match entry.status {
+                    ChangeStatus::Added => git(&["rm", "--cached", "-q", "-f", "--", &path]),
+                    ChangeStatus::Deleted if !change.registered => {
+                        Err(TuicrError::UnsupportedOperation(format!(
+                            "{path} was removed and is not in .gitmodules; restore it by hand"
+                        )))
+                    }
+                    ChangeStatus::Deleted => {
+                        let reset = if key.group == ChangeGroup::Staged {
+                            git(&["reset", "-q", "--", &path])
+                        } else {
+                            Ok(())
+                        };
+                        reset.and_then(|_| git(&["submodule", "update", "--checkout", "--", &path]))
+                    }
+                    _ if change.pointer_moved(key.group) => {
+                        let (old, _) = change.sides(key.group);
+                        let target = old.unwrap_or_default().to_string();
+                        // `git checkout -- <sub>` never touches the
+                        // submodule's checkout; detach it at the commit
+                        // the pointer goes back to, without `--force`, so
+                        // an edit the move does not touch survives. Dirt
+                        // the row knows about is thrown away first, as the
+                        // prompt said.
+                        let prepared = if change.dirty() {
+                            clean_inside()
+                        } else {
+                            Ok(())
+                        };
+                        prepared.and_then(|_| match key.group {
+                            ChangeGroup::Staged => git(&["reset", "-q", "--", &path])
+                                .and_then(|_| inside(&["checkout", "-q", "--detach", &target])),
+                            _ => inside(&["checkout", "-q", "--detach", &target]),
+                        })
+                    }
+                    _ if change.dirty() => clean_inside(),
+                    _ => Err(TuicrError::UnsupportedOperation(format!(
+                        "{path} has nothing to discard"
+                    ))),
+                }
+            }
+            ChangeEntryKind::EmbeddedRepo => Err(TuicrError::UnsupportedOperation(format!(
+                "{path} is a git repository; delete it by hand"
+            ))),
+        };
+        self.refresh_after_cli_op(result)
+    }
+
+    fn discard_change_group(
+        &self,
+        group: ChangeGroup,
+        entries: &[ChangeEntry],
+        submodule: Option<&Path>,
+    ) -> Result<usize> {
+        if let Some(sub) = submodule {
+            return self
+                .submodule_backend(sub)?
+                .discard_change_group(group, entries, None);
+        }
+        let result = if group == ChangeGroup::Untracked {
+            // One `clean` for the whole group; nested repositories stay.
+            let (embedded, files): (Vec<&ChangeEntry>, Vec<&ChangeEntry>) =
+                entries.iter().partition(|e| e.is_embedded_repo());
+            let paths: Vec<String> = files
+                .iter()
+                .map(|e| e.path.to_string_lossy().into_owned())
+                .collect();
+            if paths.is_empty() {
+                Ok(embedded.len())
+            } else {
+                let mut args = vec!["clean", "-f", "-q", "--"];
+                args.extend(paths.iter().map(String::as_str));
+                run_git_command(&self.info().root_path, &args).map(|_| embedded.len())
+            }
+        } else {
+            let mut skipped = 0;
+            for entry in entries {
+                let dirty_only = entry.submodule().is_some_and(|sm| {
+                    sm.dirty()
+                        && !sm.pointer_moved(group)
+                        && !matches!(entry.status, ChangeStatus::Added | ChangeStatus::Deleted)
+                });
+                if entry.is_embedded_repo()
+                    || entry.status == ChangeStatus::Conflicted
+                    || dirty_only
+                {
+                    skipped += 1;
+                    continue;
+                }
+                let key = ChangeDiffKey::new(group, entry.path.clone());
+                self.discard_change_entry(&key, entry)?;
+            }
+            Ok(skipped)
+        };
+        self.refresh_after_cli_op(result)
+    }
+
+    fn change_bulk_op(&self, op: ChangeBulkOp, submodule: Option<&Path>) -> Result<()> {
+        if let Some(sub) = submodule {
+            return self.submodule_backend(sub)?.change_bulk_op(op, None);
+        }
+        let root = &self.info().root_path;
+        let result = match op {
+            ChangeBulkOp::StageTracked => run_git_command(root, &["add", "-u"]).map(|_| ()),
+            ChangeBulkOp::StageAll => {
+                let (_, embedded) = self.untracked_paths()?;
+                let excludes: Vec<String> = embedded.iter().map(|p| format!(":!{p}/")).collect();
+                let mut args = vec!["add", "-A"];
+                if !excludes.is_empty() {
+                    args.extend(["--", "."]);
+                    args.extend(excludes.iter().map(String::as_str));
+                }
+                run_git_command(root, &args).map(|_| ())
+            }
+            ChangeBulkOp::StageUntracked => {
+                // One spawn regardless of count: the paths go in on stdin.
+                let (files, _) = self.untracked_paths()?;
+                if files.is_empty() {
+                    Ok(())
+                } else {
+                    run_git_stdin(
+                        root,
+                        &["add", "--pathspec-from-file=-", "--pathspec-file-nul"],
+                        &files.join("\0"),
+                    )
+                    .map(|_| ())
+                }
+            }
+            ChangeBulkOp::UnstageAll => run_git_command(root, &["reset", "-q"])
+                .or_else(|_| run_git_command(root, &["rm", "-r", "-q", "--cached", "."]))
+                .map(|_| ()),
+        };
+        self.refresh_after_cli_op(result)
+    }
 }
 
 /// `git blame --porcelain`: each group starts with `<sha> <orig> <final>
@@ -1290,10 +1702,14 @@ fn describe_fetch(
     summary
 }
 
-/// Run git with `input` on stdin (patches for `git apply`).
+/// Run git with `input` on stdin (patches for `git apply`, NUL-separated
+/// pathspecs for `git add --pathspec-from-file=-`). Recorded in the git
+/// console like every other spawn.
 fn run_git_stdin(workdir: &Path, args: &[&str], input: &str) -> Result<String> {
     use std::io::Write;
     use std::process::{Command, Stdio};
+    let logged: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+    let started = std::time::Instant::now();
     let mut child = Command::new("git")
         .current_dir(workdir)
         .args(args)
@@ -1301,7 +1717,10 @@ fn run_git_stdin(workdir: &Path, args: &[&str], input: &str) -> Result<String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| TuicrError::VcsCommand(format!("Failed to run git: {e}")))?;
+        .map_err(|e| {
+            crate::git_console::record(&logged, None, false, started.elapsed(), &e.to_string());
+            TuicrError::VcsCommand(format!("Failed to run git: {e}"))
+        })?;
     if let Some(mut stdin) = child.stdin.take() {
         stdin
             .write_all(input.as_bytes())
@@ -1310,15 +1729,27 @@ fn run_git_stdin(workdir: &Path, args: &[&str], input: &str) -> Result<String> {
     let output = child
         .wait_with_output()
         .map_err(|e| TuicrError::VcsCommand(format!("Failed to wait for git: {e}")))?;
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    crate::git_console::record(
+        &logged,
+        output.status.code(),
+        output.status.success(),
+        started.elapsed(),
+        if output.status.success() {
+            &stdout
+        } else {
+            &stderr
+        },
+    );
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(TuicrError::VcsCommand(if stderr.is_empty() {
             format!("git {} failed", args.join(" "))
         } else {
             stderr
         }));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    Ok(stdout)
 }
 
 /// The unified diff of `path` from the scope's base, cut down to the file
