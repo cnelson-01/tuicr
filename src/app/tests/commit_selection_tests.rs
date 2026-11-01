@@ -1130,3 +1130,21 @@ fn checkout_from_a_remote_only_tip_targets_a_new_tracking_branch() {
     let app = build_app_with(vec![both], Vec::new(), Vec::new());
     assert_eq!(app.cursor_checkout_target().as_deref(), Some("fix"));
 }
+
+#[test]
+fn moving_onto_the_overflow_row_pages_in_more_history() {
+    // given a selector showing 2 of 5 loaded commits, cursor on the last
+    let commits = (0..5).map(|i| normal_commit(&format!("c{i}"))).collect();
+    let mut app = build_app(commits);
+    app.visible_commit_count = 2;
+    app.has_more_commit = false;
+    app.commit_list_cursor = 1;
+
+    // when the cursor moves down onto the "show more" row
+    app.commit_select_down();
+
+    // then the next page is shown and the cursor sits on a real commit
+    assert_eq!(app.commit_list_cursor, 2);
+    assert_eq!(app.visible_commit_count, 5);
+    assert!(!app.is_on_expand_row());
+}

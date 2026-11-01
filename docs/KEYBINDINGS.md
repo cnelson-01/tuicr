@@ -569,7 +569,8 @@ header: resolve with `:merge`, then `:continue`, `:skip`, or `:abort`.
 
 The Local tab draws a commit graph across all local and remote-tracking branches, so commits
 that so far exist only on `origin/…` show up too: each branch gets a colored track, with branch
-chips on tips. When the repository has unresolved
+chips on tips. History loads as you move down past the last row, so older branches are a scroll
+away rather than behind repeated "show more" presses. When the repository has unresolved
 merge conflicts, a `· conflicts ·` row appears at the top — `Enter` on it opens
 the merge conflict view.
 

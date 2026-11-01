@@ -633,6 +633,14 @@ impl App {
                     self.commit_list_cursor - self.commit_list_viewport_height + 1;
             }
         }
+        // Landing on the overflow row pages in the next commits, so moving
+        // down runs on through history (and reaches old remote-only
+        // branches) instead of stopping at "show more".
+        if self.is_on_expand_row()
+            && let Err(e) = self.grow_commit_list()
+        {
+            self.set_error(format!("Failed to load commits: {e}"));
+        }
     }
 
     /// Space in a selector. The fullscreen selector toggles the cursor row
