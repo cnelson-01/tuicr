@@ -850,7 +850,7 @@ pub trait VcsBackend: Send {
     }
 
     /// Stage only the picked lines of the hunk at `(old_start, new_start)`
-    /// in the `scope` diff (JetBrains' per-line checkboxes).
+    /// in the `scope` diff (an IDE's per-line checkboxes).
     fn stage_lines(
         &self,
         _path: &Path,

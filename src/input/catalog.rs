@@ -1,5 +1,5 @@
 //! The action catalog: every key and `:` command, with where it applies and
-//! what it does. One table feeds the command palette (`Ctrl-p`, JetBrains'
+//! what it does. One table feeds the command palette (`Ctrl-p`, an IDE's
 //! Find Action), the which-key popup shown after a prefix key, and the
 //! descriptions next to `:` completions, so documentation can't drift from
 //! what the keys do as long as entries land with the features they describe.

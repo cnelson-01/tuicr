@@ -336,7 +336,7 @@ fn paint_sbs_active_side_caret(
 /// Mark clipped content while panning without wrap: `‹` in a column's
 /// change-marker slot (just left of the code, so no text is hidden) when
 /// text is scrolled off its left edge, `›` on its last cell when the line
-/// runs past the right edge. JetBrains shows a
+/// runs past the right edge. An IDE shows a
 /// scrollbar; a TUI needs the cue on the row itself.
 #[allow(clippy::too_many_arguments)]
 fn paint_sbs_clip_markers(

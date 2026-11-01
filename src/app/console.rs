@@ -1,4 +1,4 @@
-//! `:console` — the git commands tuicr ran (JetBrains' Git Console), newest
+//! `:console` — the git commands tuicr ran (an IDE's Git Console), newest
 //! at the bottom. `m` switches between changes only and every command,
 //! `c` clears the log.
 

@@ -1,7 +1,7 @@
 //! Intra-line ("word diff") emphasis for a modified line.
 //!
 //! A deletion paired with the addition that replaced it usually differs in a
-//! few tokens. JetBrains paints just those tokens a stronger shade so the
+//! few tokens. IDE diff viewers paint just those tokens a stronger shade so the
 //! eye lands on `10` → `1000` instead of re-reading both lines. Pairing
 //! follows the side-by-side layout: the k-th deletion of a run pairs with
 //! the k-th addition that follows it.

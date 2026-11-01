@@ -134,7 +134,7 @@ pub fn branch_style(theme: &Theme) -> Style {
 }
 
 /// Remote-tracking branches (`origin/main`): the theme's renamed-file
-/// colour, purple in most themes like JetBrains' remote labels, so they
+/// colour, purple in most themes like an IDE's remote labels, so they
 /// stand apart from local branches. A theme that already spends that colour
 /// on local branches gets its added-file colour instead.
 pub fn remote_branch_style(theme: &Theme) -> Style {

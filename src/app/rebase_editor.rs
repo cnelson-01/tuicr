@@ -1,4 +1,4 @@
-//! Interactive rebase editor (JetBrains "Interactively Rebase from Here"):
+//! Interactive rebase editor (an IDE's "Interactively Rebase from Here"):
 //! the commits from the log cursor up to HEAD, oldest first, each with an
 //! action. Reorder with `J` / `K`, set `p`ick / `r`eword / `s`quash /
 //! `f`ixup / `d`rop, and Enter runs the rebase.

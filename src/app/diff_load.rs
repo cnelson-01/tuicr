@@ -55,7 +55,7 @@ impl App {
     }
 
     /// Author, date, parents, and refs of the single commit on screen, for
-    /// the commit message's section header (JetBrains' commit details).
+    /// the commit message's section header (an IDE's commit details).
     pub fn single_commit_details(&self) -> Option<String> {
         let commit = self.single_review_commit()?;
         let local = commit.time.with_timezone(&chrono::Local);

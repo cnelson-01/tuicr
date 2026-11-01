@@ -1,4 +1,4 @@
-//! A log of the git commands tuicr runs, like JetBrains' Git Console:
+//! A log of the git commands tuicr runs, like an IDE's Git Console:
 //! command line, exit status, duration, and output, newest last. Recorded
 //! where git is spawned (`process::run_command_output`, the network runner)
 //! and shown by `:console`. Process-wide because the commands run from

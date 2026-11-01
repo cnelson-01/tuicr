@@ -1,6 +1,6 @@
 # Git tool window roadmap
 
-Goal: make tuicr's history and branch workflow feel like the JetBrains Git tool
+Goal: make tuicr's history and branch workflow feel like an IDE's Git tool
 window. Phases land in order, each as its own commit(s). Tick items as they ship.
 
 ## Phase 1: land the feature branch on current main

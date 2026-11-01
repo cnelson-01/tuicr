@@ -1,5 +1,5 @@
-//! Branch, tag, and in-progress-operation commands from the JetBrains
-//! branch popup and VCS menu: merge into current, rebase current onto,
+//! Branch, tag, and in-progress-operation commands from an IDE's branch
+//! popup and VCS menu: merge into current, rebase current onto,
 //! continue / skip, delete / rename / track a branch, delete a tag, and a
 //! push preview that lists the outgoing commits (with force-with-lease).
 //! Local commands run synchronously through [`VcsBackend::run_git`]; pushes

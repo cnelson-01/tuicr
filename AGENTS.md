@@ -140,7 +140,7 @@ src/
     ├── summary_popup.rs # :summary view of pending local-draft comments
     ├── theme_picker.rs  # :theme runtime picker modal (live preview, / filter)
     ├── comment_panel.rs # Comment input dialog, confirm dialog
-    ├── commit_graph.rs  # JetBrains-style lane layout + track rendering for the selector
+    ├── commit_graph.rs  # IDE-style lane layout + track rendering for the selector
     ├── merge_conflict.rs # Fullscreen tri-pane (ours|result|theirs) merge conflict screen
     ├── intraline.rs     # Word-level emphasis: pair deletions with additions, token LCS, split spans
     ├── palette.rs       # Command palette modal + which-key popup (both from the action catalog)

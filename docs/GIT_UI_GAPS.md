@@ -1,16 +1,16 @@
-# JetBrains parity: gap analysis (experimental)
+# Git UI parity: gap analysis (experimental)
 
 Branch: `experimental/git-ui`, cut from `feature/git-tool-window`
 after every phase of [ROADMAP.md](ROADMAP.md) shipped.
 
-The yardstick is the JetBrains Git tool window and diff viewer, the git side
+The yardstick is a full IDE's Git tool window and diff viewer, the git side
 only. Editor, inspections, and run configurations are out of scope. Each item
 is a gap measured in a real terminal (160x45 and 140x30), not from the docs.
 Items are ticked as they land, each in its own commit.
 
 ## 1. Side-by-side diff readability
 
-JetBrains never wraps in its diff viewer. It scrolls both sides together and
+An IDE diff viewer never wraps. It scrolls both sides together and
 highlights the changed words inside a modified line. You can drag the
 splitter and the tool-window edges, and hide every tool window to read a diff.
 
@@ -26,7 +26,7 @@ splitter and the tool-window edges, and hide every tool window to read a diff.
       `:set split N` command, a reset key, and mouse drag on the divider
 - [x] The file tree is fixed at 20% width. Add keys to resize it, a
       `:set treewidth N` command, and mouse drag on its border
-- [x] No "hide all tool windows" (JetBrains Ctrl-Shift-F12). Add a zen
+- [x] No "hide all tool windows". Add a zen
       toggle that keeps only the diff, and restores the layout when toggled again
 - [x] Ignore-whitespace is config-only. Add a runtime toggle that reloads
       the diff
@@ -37,7 +37,7 @@ splitter and the tool-window edges, and hide every tool window to read a diff.
 
 ## 2. Self-documenting keys
 
-JetBrains has Find Action (search every action by name, see its shortcut,
+An IDE has Find Action (search every action by name, see its shortcut,
 run it), and every menu item shows its shortcut. tuicr has a long static `?`
 screen, and the status-bar hints for most panes are partial or truncated.
 
@@ -62,7 +62,7 @@ screen, and the status-bar hints for most panes are partial or truncated.
 - [x] The log walks only local branches, so commits that exist only on a
       remote (`origin/feature`) never appear, and remote labels are a dim
       grey. Walk remote-tracking branches too and color them apart (purple,
-      as in JetBrains), in the log and the branch picker; `c` on a
+      as in IDE git logs), in the log and the branch picker; `c` on a
       remote-only tip creates the tracking branch
 - [x] No commit details pane in the live preview (hash, author, date,
       parents, refs, full message). The message pseudo-file appears only for a
@@ -71,7 +71,7 @@ screen, and the status-bar hints for most panes are partial or truncated.
 - [x] The log pane starts closed (`show_log = false`), unlike the Git tool
       window. Open it by default once a review is on screen, diff focused
 
-### Branches (JetBrains branch popup)
+### Branches (IDE branch popup)
 
 - [x] The picker can't delete, rename, merge into current, rebase current
       onto, push, or set upstream. It shows no ahead/behind, no last-commit
@@ -82,7 +82,7 @@ screen, and the status-bar hints for most panes are partial or truncated.
 
 ### Commits
 
-- [x] No interactive rebase editor (JetBrains "Interactively Rebase from
+- [x] No interactive rebase editor (an IDE's "Interactively Rebase from
       Here"): reorder, pick, reword, squash, fixup, drop, then run
 - [x] Tags can be created but not deleted or pushed (`:tag -d`,
       `:push --tags`)
@@ -96,7 +96,7 @@ screen, and the status-bar hints for most panes are partial or truncated.
 
 ### Local changes
 
-- [x] No line-level staging (JetBrains per-line checkboxes). Stage the
+- [x] No line-level staging (an IDE's per-line checkboxes). Stage the
       visual-selected lines
 - [x] Stash picker can pop, apply, or drop, but can't preview a stash's diff
 
@@ -107,5 +107,5 @@ screen, and the status-bar hints for most panes are partial or truncated.
 
 ### Transparency
 
-- [x] No git console (JetBrains Console tab). Keep a log of the git commands
+- [x] No git console (an IDE's Console tab). Keep a log of the git commands
       tuicr ran, their exit status, and their output, viewable in the TUI

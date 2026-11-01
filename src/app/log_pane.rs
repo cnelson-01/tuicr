@@ -1,5 +1,5 @@
 //! Persistent log pane: the commit graph docked above the diff while
-//! reviewing, with JetBrains-style live preview of the highlighted commit.
+//! reviewing, with IDE-style live preview of the highlighted commit.
 //!
 //! The fullscreen selector and the inline commit pane both drive `App`'s
 //! flat commit-list fields (`commit_list`, `commit_list_cursor`, ...), and
@@ -209,7 +209,7 @@ impl App {
         self.vcs_info.vcs_type != VcsType::File && !self.is_pristine_mode
     }
 
-    /// Open the pane once a review is on screen, as JetBrains keeps its Git
+    /// Open the pane once a review is on screen, as an IDE keeps its Git
     /// tool window open (`show_log = false` opts out). The startup selector
     /// runs first, and the pane belongs to Normal mode, so this is polled
     /// from the main loop rather than done at startup.

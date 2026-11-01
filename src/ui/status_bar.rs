@@ -79,7 +79,7 @@ pub fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         let vcs_type = &app.vcs_info.vcs_type;
         let branch = app.vcs_info.branch_name.as_deref().unwrap_or("detached");
         // Outgoing / incoming counts against the upstream, and the
-        // operation in progress, like the JetBrains branch widget.
+        // operation in progress, like an IDE's branch widget.
         let mut chip = format!("{vcs_type}:{branch}");
         if let Some(status) = app.repo_status.as_ref() {
             if status.ahead > 0 {

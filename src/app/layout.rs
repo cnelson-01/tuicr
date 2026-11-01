@@ -1,6 +1,6 @@
 //! Pane sizing and density: the side-by-side splitter, the file tree width,
 //! zen mode, and horizontal pans of the diff. The keyboard counterparts of
-//! dragging a JetBrains splitter or hiding every tool window.
+//! dragging an IDE splitter or hiding every tool window.
 
 use super::{
     App, DEFAULT_FILE_LIST_PCT, DEFAULT_SBS_SPLIT_PCT, DiffSource, DiffViewMode,
@@ -115,7 +115,7 @@ impl App {
         None
     }
 
-    /// `<leader>z` — hide every panel but the diff (JetBrains "Hide All Tool
+    /// `<leader>z` — hide every panel but the diff (an IDE's "Hide All Tool
     /// Windows"); a second press restores exactly what was open.
     pub fn toggle_zen(&mut self) {
         if let Some(saved) = self.zen_saved.take() {
@@ -190,7 +190,7 @@ impl App {
     }
 
     /// `:set ignorews` / `<leader>w` — compare lines ignoring whitespace
-    /// (JetBrains' "Ignore whitespaces" diff option). Reopens the backend
+    /// (an IDE's "Ignore whitespaces" diff option). Reopens the backend
     /// with the new mode and reloads the diff.
     pub fn set_ignore_whitespace(&mut self, ignore: bool) {
         if matches!(self.diff_source, DiffSource::PullRequest(_)) {

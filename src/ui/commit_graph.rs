@@ -1,4 +1,4 @@
-//! JetBrains-style commit graph for the fullscreen commit selector.
+//! IDE-style commit graph for the fullscreen commit selector.
 //!
 //! Assigns each commit to a colored lane ("track") and produces per-row
 //! drawing cells for a graph gutter rendered left of the commit hash.

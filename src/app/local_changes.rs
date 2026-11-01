@@ -1,4 +1,4 @@
-//! Local changes, JetBrains "Commit tool window" style: stage / unstage the
+//! Local changes, IDE "Commit tool window" style: stage / unstage the
 //! file or hunk under the cursor, discard a hunk or file behind a
 //! confirmation, commit (or amend) through the comment composer, and stash.
 //!
@@ -530,7 +530,7 @@ impl App {
 
     /// Enter (pop) or `a` (apply, keeping the stash).
     /// `v` in the stash picker: load the stash's changes as the review
-    /// (JetBrains' "Show Diff"), leaving the stash in place. Untracked files
+    /// (an IDE's "Show Diff"), leaving the stash in place. Untracked files
     /// stashed with it are not part of this diff.
     pub fn stash_picker_view(&mut self) {
         let Some(entry) = self.stash_picker_selected() else {

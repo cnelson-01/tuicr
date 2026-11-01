@@ -459,7 +459,7 @@ unstaged view) the pane goes blank until `:e` or the next change.
 ## Log pane
 
 The log pane docks the commit graph above the diff and keeps it there while you review,
-JetBrains-style. It opens on its own once a review is on screen (not for PR reviews,
+like an IDE's Git tool window. It opens on its own once a review is on screen (not for PR reviews,
 plain-file reviews or `--all-files`), with the diff keeping focus; `<leader>g` (or `:log`)
 focuses it, hides it, or brings it back. It replaces the inline commit selector while
 open. Resting the cursor on a commit for a moment loads that commit's diff below; rows

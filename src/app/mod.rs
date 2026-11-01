@@ -1936,7 +1936,7 @@ pub struct DiffState {
     pub viewport_height: usize,
     pub viewport_width: usize,
     pub max_content_width: usize,
-    /// Off by default: like JetBrains, a diff pans both sides together
+    /// Off by default: like an IDE, a diff pans both sides together
     /// instead of wrapping (`:set wrap` / `wrap = true` opt back in).
     pub wrap_lines: bool,
     /// Number of logical lines that fit in the viewport (set during render).

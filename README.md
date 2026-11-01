@@ -18,8 +18,8 @@
 - Review tracking at file or hunk granularity, persisted across sessions.
 - Three export targets: push a real review to GitHub, GitLab, Gitea, Bitbucket, Azure DevOps, or Gerrit, copy
   structured markdown to your clipboard, or pipe to stdout.
-- Commit selector with a JetBrains-style branch graph: colored tracks across all local
-  branches, with branch chips on tips.
+- Commit selector with an IDE-style branch graph: colored tracks across local and
+  remote-tracking branches, with branch chips on tips.
 - Three-pane merge conflict resolution (ours | result | theirs), with each pane attributed
   to its branch and commit: pick ours/theirs/both per conflict, preview the result live,
   write, and stage — straight from the commit selector or `:merge`.

@@ -201,7 +201,7 @@ impl App {
     }
 
     /// `<leader>A` / `:blame-commit`: load the commit that last changed the
-    /// line under the cursor as the review (JetBrains: click an annotation).
+    /// line under the cursor as the review (an IDE: click an annotation).
     /// Blame is computed for the file on the spot when it isn't cached yet.
     pub fn show_blame_commit(&mut self) {
         if self.blame_revision_unsupported() {
