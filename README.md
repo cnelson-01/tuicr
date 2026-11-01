@@ -25,6 +25,8 @@
   write, and stage — straight from the commit selector or `:merge`.
 - Cherry-pick or rebase from the commit selector (`p` / `b`); conflicts drop you straight
   into the resolution view.
+- Changes view: an IDE-style commit tool window — staged / unstaged / unversioned tree with
+  per-entry diffs, checkbox staging, submodules as first-class entries.
 - Works with git, jj, and mercurial. Reviews uncommitted changes, commit ranges, or any GitHub PR,
   GitLab MR, Gitea PR, Bitbucket PR, Azure DevOps PR, or Gerrit change.
 
@@ -342,6 +344,8 @@ and its keys, or `?` for the full reference.
 | `;<` / `;>`, `;[` / `;]` | Move the side-by-side divider, resize the file tree (or drag them) |
 | `;z` | Zen mode: diff only |
 | `;g` / `;b` | Log pane (commit graph) / branch picker |
+| `;C` | Changes view: staged / unstaged / unversioned tree with per-entry diffs; `Space` stages, `c` commits, `X` discards |
+| `:changes` | Toggle the Changes view (`C` on the selector's Local tab opens it) |
 | `Ctrl-l` | Redraw the whole screen |
 | `?` | Toggle full help |
 

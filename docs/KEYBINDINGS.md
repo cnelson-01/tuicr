@@ -170,6 +170,7 @@ considers files that pass the active filters.
 | `<leader>e` | Toggle file list visibility |
 | `<leader>s` | Toggle commit selector visibility (also `:set commits!`) |
 | `<leader>g` | Go to the log pane: opens it (focused) when hidden, focuses it when open, hides it when it already has focus. `:log` / `:set log!` toggle visibility only |
+| `<leader>C` | Go to the [Changes view](#changes-view): opens it (focused) in the file tree's column when hidden, focuses it (re-reading the change set) when open, closes it when it already has focus. `:changes` toggles, `:set changes` / `:set nochanges` set |
 | `<leader>+` / `<leader>-` | Grow / shrink the log pane (also `:set logheight N`) |
 | `<leader>b` | Open the branch picker (also `:branches`) |
 | `<leader>F` | Find in files: opens the command line with `find ` |
@@ -350,6 +351,8 @@ remote-tracking ones. `:compare ma`, `↓`, `↓`, `Enter` picks the second matc
 | `:stash` / `:stash <message>` | Stash the working tree, untracked files included |
 | `:stash pop` | Restore the newest stash |
 | `:stashes` / `:stash list` | Open the stash picker (`Enter` pops, `a` applies, `v` shows the stash's diff as the review, `d` drops) |
+| `:changes` | Toggle the [Changes view](#changes-view), the commit tool window in the file tree's column (also `<leader>C`) |
+| `:set changes` / `:set nochanges` | Open / close the Changes view |
 | `:find <text>` / `:grep <text>` | Search the working tree and show the hits in place of the diff |
 | `:find` | Bring the last results back (or prompt when there are none) |
 | `:compare <base> <other>` (`:select`) | Load `base...other` as the review (what `other` has since the merge base) and narrow the log pane to those two refs. When `other` has nothing beyond `base` the reverse is loaded and the status bar says so. `:compare <other>` compares the current branch; `:compare A..B` is used as typed; bare `:compare` opens the branch picker |
@@ -455,6 +458,77 @@ Hunk operations hand git the hunk's `@@` coordinates and the diff it came from, 
 exactly what is on screen. Untracked files can only be staged or discarded whole. The diff
 reloads after every operation; when the review empties out (everything staged away from the
 unstaged view) the pane goes blank until `:e` or the next change.
+
+## Changes view
+
+`<leader>C` turns the file tree's column into an IDE-style Commit tool window: every local
+change in one tree, grouped as `Merge conflicts`, `Staged`, `Unstaged` and `Unversioned files`,
+each entry with a checkbox (`▣` staged, `▢` not) and a status glyph (`A M D R C T ? !`, `S` for
+a submodule). The diff pane previews the entry under the cursor: a staged entry shows HEAD →
+index, an unstaged one index → working tree, an unversioned file its whole content. A file
+modified in the index and again in the working tree appears under both `Staged` and
+`Unstaged`. In the flat list (the default) the file's directory follows its name, dimmed and
+shortened to the room left; `f` groups entries by directory instead.
+
+Submodules are entries. The preview lists the commits between the two pointers, the dim detail
+reads `+3 commits`, `rewound 2 commits`, `modified content` or `untracked content`, and a dirty
+submodule carries a `▶` that expands (`l`) to its own groups, previews and operations. A
+submodule whose pointer did not move cannot be staged from the pane (commit inside it first).
+Nested repositories that are not in `.gitmodules` are listed as `(embedded repo)` and cannot be
+staged; submodules that are not checked out are listed dimly as `(not initialized)`. A
+submodule that could not be read keeps its row, with the error as a dim note under it.
+
+`<leader>C` opens the pane focused, focuses it when the diff has focus (re-reading the change
+set), and closes it when it already has focus; `:changes` toggles, `:set changes` /
+`:set nochanges` set, and `C` on the selector's Local tab opens it. Loading any other review
+(Enter in the log pane, `:commits`, `:compare`, a PR) returns the column to the file tree; the
+next `<leader>C` brings the pane back with its grouping and collapsed state. On Mercurial and
+Jujutsu checkouts, which have no index, `<leader>C` loads the working copy as a flat list
+instead; `--file`, `--all-files` and PR reviews have no checkout to show and say so.
+
+| Key | Action |
+|-----|--------|
+| `j` / `k`, `↓` / `↑` | Move the selection (a count works); the diff previews the entry. Note rows are skipped |
+| `g` / `G` | First / last row |
+| `Space` / `Enter` | Stage an unstaged or unversioned entry, unstage a staged one; a conflict opens the merge view. On a group row: stage or unstage the whole group. On a folder row: expand or collapse it. On a `(not initialized)` row: show the `git submodule update --init` hint |
+| `s` / `u` | Stage / unstage the entry (`s` on a conflict marks it resolved, refused while the file still has `<<<<<<<` markers) |
+| `a` | Stage every tracked change (`git add -u`), submodule pointers included |
+| `A` | Stage everything, unversioned files too (`git add -A`; embedded repositories are skipped and named) |
+| `U` | Unstage everything (`git reset`); reversible, so no prompt |
+| `X`, `:discard` | Discard the entry, the dirty submodule, or every entry in the group, after a `y`/`n` prompt that names what goes. A submodule prompt lists the pointer move and what happens to the files inside; the submodule is checked out at the restored pointer |
+| `c` / `C`, `:commit` / `:amend` | Commit / amend: the comment box becomes the message editor and the view refreshes on save. Commits the superproject even when the cursor is inside an expanded submodule |
+| `t`, `:stash` | Stash the working tree |
+| `r`, `:e` | Re-read the change set and the previewed diff |
+| `f` | Flat list (the default) / group by directory |
+| `l` / `→` | Expand the group, folder or dirty submodule under the cursor; on any other row, pan right |
+| `h` / `←` | Collapse the row (an expanded submodule drops its inner set), or jump to its parent when it is already collapsed; on a panned row, pan left |
+| `o` / `O` | Expand / collapse every group and folder (submodule expansions are left alone) |
+| `e`, `:edit` | Open the previewed entry in `$EDITOR` |
+| `Esc` | Focus the diff; the pane stays open (it is a tool window, not the tree) |
+| `Tab` / `Shift-Tab`, `<leader>h` / `<leader>l` / `<leader>j` / `<leader>k` | Focus cycle, unchanged: the pane takes the file tree's slot |
+| `}` / `{` (diff focused) | Next / previous entry |
+| `s` / `u` / `:discard` (diff focused) | Stage / unstage / discard the previewed entry |
+| `S` / `U` / `X`, visual `S` / `U` (diff focused) | Hunk and line operations on the previewed diff, in the scope its group implies (staged → the index, otherwise the working tree). Refused before any prompt on unversioned, submodule and conflicted entries, which stage whole |
+
+While the pane is focused these keys mean something else than in the diff or the file tree:
+`c` / `C` (comment → commit / amend), `A` (edit comment → stage all), `a`, `h` / `l` (pan →
+collapse / expand), `r` (reviewed → refresh), `U` (unstage hunk → unstage all), `X` (discard
+hunk → discard entry / group), `f`, `t`, and `e` (editor on the previewed entry). Everything
+else (`:`, `?`, `Ctrl-p`, `Tab`, counts, `Ctrl-d` / `Ctrl-u` / `Ctrl-f` / `Ctrl-b`, `y`, `R`,
+`v`) keeps its meaning.
+
+Every operation refreshes the view at once, as do `r`, `:e` and `<leader>C` refocusing it.
+Edits made outside tuicr show up on the next of those, or on every tick of
+`diff_watch_interval_ms` when that is set (see [CONFIG.md](CONFIG.md)); the default build has
+no background poll.
+
+| Mouse | Effect |
+|-------|--------|
+| Wheel | Scroll the pane |
+| Click on an entry | Select it and preview its diff; a click left of the glyph (the checkbox cells) toggles staging |
+| Click on a group or folder row | Expand or collapse it |
+| Click on a dirty submodule's `▶` / `▼` | Expand or collapse it |
+| Click on a note row | Ignored |
 
 ## Log pane
 
@@ -591,6 +665,7 @@ first, with children always above their parents so the graph stays coherent.
 | `j` / `k` | Move selection |
 | `Space` | Toggle the commit under the cursor in the pick set (non-contiguous picks allowed — pull in single commits from other branches; consecutive presses still sweep a run) |
 | `Enter` | Review the picked commits (must be a contiguous run), open PR, load more PRs, resume a saved review, or open merge conflicts |
+| `C` | Local tab: open the [Changes view](#changes-view), the staged / unstaged / unversioned tree with per-entry previews (`Enter` on the `Staged changes` / `Unstaged changes` rows still loads the whole side as a review) |
 | `p` | Cherry-pick the picked (or cursor) commits onto the current branch — works with non-contiguous picks |
 | `b` | Rebase the current branch onto the cursor commit |
 | `s` | Squash the selected range (must end at HEAD) into one commit |
@@ -679,6 +754,7 @@ Mouse support is on by default. Disable with `mouse = false` in config.
 | Wheel up / down | Scroll the panel under the cursor (file list, comment navigator, diff, commit list, or help popup) without moving the cursor line |
 | Click on a file | Jump to that file (lazygit-style) |
 | Click on a directory | Expand or collapse it |
+| Click in the Changes view | Select the row and preview its diff; on the checkbox cells toggle staging; on a group, folder or submodule expander expand or collapse it (see [Changes view](#changes-view)) |
 | Click on a diff line | Position the cursor on that line |
 | Click on a commit | Toggle selection (or expand the row to load more) |
 | Drag in diff | Highlight a range; press `y` to copy the selected source lines |

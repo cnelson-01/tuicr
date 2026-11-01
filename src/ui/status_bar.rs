@@ -539,6 +539,22 @@ fn mode_hints(app: &App) -> Vec<Hint> {
             hint("esc diff"),
             actions(),
         ],
+        // The Changes pane sits in the file tree's slot, so it must come
+        // before the tree's arm.
+        InputMode::Normal if app.changes_focused() => vec![
+            hint("j/k move"),
+            hint("space stage"),
+            hint("a/A stage all"),
+            hint("U unstage all"),
+            hint("X discard"),
+            hint("c commit"),
+            hint("t stash"),
+            hint("r refresh"),
+            hint("f flat/tree"),
+            hint("l/h expand"),
+            actions(),
+            pinned("? help"),
+        ],
         InputMode::Normal if app.focused_panel == FocusedPanel::FileList => vec![
             hint("j/k move"),
             hint("\u{21b5} open"),
@@ -1373,6 +1389,59 @@ mod header_snapshot_tests {
             None,
         )
         .expect("build local app")
+    }
+
+    #[test]
+    fn header_names_the_changes_source() {
+        use crate::vcs::{ChangeDiffKey, ChangeGroup};
+        let key = ChangeDiffKey::new(ChangeGroup::Unstaged, "src/app/tree.rs");
+        let app = build_local_app(DiffSource::Changes(Some(key)), "abcdef0123456789");
+        assert_eq!(
+            super::header_source_chunk(&app),
+            Some("changes \u{00b7} unstaged \u{00b7} commit abcdef0".to_string())
+        );
+        let nothing = build_local_app(DiffSource::Changes(None), "abcdef0123456789");
+        assert_eq!(
+            super::header_source_chunk(&nothing),
+            Some("changes \u{00b7} commit abcdef0".to_string())
+        );
+    }
+
+    #[test]
+    fn status_bar_hints_for_the_changes_pane() {
+        use crate::app::{ChangesView, FocusedPanel};
+        let mut app = build_local_app(DiffSource::Changes(None), "abcdef0123456789");
+        app.changes = Some(ChangesView::default());
+        app.show_file_list = true;
+        app.focused_panel = FocusedPanel::FileList;
+        assert!(app.changes_focused());
+        let hints = super::fit_hints(&super::mode_hints(&app), 1000);
+        for expected in [
+            "space stage",
+            "a/A stage all",
+            "U unstage all",
+            "X discard",
+            "c commit",
+            "t stash",
+            "r refresh",
+            "f flat/tree",
+            "l/h expand",
+            "^p actions",
+            "? help",
+        ] {
+            assert!(
+                hints.contains(expected),
+                "missing {expected:?} in {hints:?}"
+            );
+        }
+        // The tree's own hints are not advertised while the pane owns the slot.
+        assert!(!hints.contains("i/e filter"), "{hints}");
+
+        app.focused_panel = FocusedPanel::Diff;
+        let hints = super::fit_hints(&super::mode_hints(&app), 1000);
+        assert!(!hints.contains("space stage"), "{hints}");
+        assert!(!hints.contains("c commit"), "{hints}");
+        assert!(hints.contains("c comment"), "{hints}");
     }
 
     #[test]

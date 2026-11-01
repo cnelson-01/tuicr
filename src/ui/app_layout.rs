@@ -4,7 +4,8 @@ use ratatui::{
     widgets::Block,
 };
 
-use crate::app::{App, ConfirmAction, DiscardTarget, InputMode};
+use crate::app::{App, ConfirmAction, InputMode};
+use crate::ui::changes_pane::render_changes_pane;
 use crate::ui::comment_navigator::render_comment_navigator;
 use crate::ui::diff_view::render_diff_view;
 use crate::ui::file_list::render_file_list;
@@ -238,13 +239,13 @@ fn render_main_content(frame: &mut Frame, app: &mut App, area: Rect) {
 
             app.file_list_area = Some(left_chunks[0]);
             app.comment_navigator_area = Some(left_chunks[1]);
-            render_file_list(frame, app, left_chunks[0]);
+            render_left_column(frame, app, left_chunks[0]);
             render_comment_navigator(frame, app, left_chunks[1], &comment_items);
         } else {
             app.file_list_area = Some(chunks[0]);
             app.comment_navigator_area = None;
             app.comment_navigator_inner_area = None;
-            render_file_list(frame, app, chunks[0]);
+            render_left_column(frame, app, chunks[0]);
         }
         render_content_view(frame, app, chunks[1]);
     } else {
@@ -252,6 +253,17 @@ fn render_main_content(frame: &mut Frame, app: &mut App, area: Rect) {
         app.comment_navigator_area = None;
         app.comment_navigator_inner_area = None;
         render_content_view(frame, app, content_area);
+    }
+}
+
+/// The file tree's column: the Changes pane while the Changes view owns the
+/// review (`DiffSource::Changes`), otherwise the file tree. Both record the
+/// same `file_list_inner_area`, so mouse routing needs no second rectangle.
+fn render_left_column(frame: &mut Frame, app: &mut App, area: Rect) {
+    if app.changes_active() {
+        render_changes_pane(frame, app, area);
+    } else {
+        render_file_list(frame, app, area);
     }
 }
 
@@ -277,13 +289,29 @@ fn active_confirm(app: &App) -> Option<ConfirmAction> {
 
 /// Draw the Y/N prompt for the pending confirm, if one is up. Prompts that
 /// act on something name it, and a git command lists its detail (the commits
-/// a push would send) under the question.
+/// a push would send) under the question, as does a submodule discard (the
+/// pointer move and what happens to the files inside).
 fn render_active_confirm(frame: &mut Frame, app: &App) {
     let Some(confirm) = active_confirm(app) else {
         return;
     };
     let title = match confirm {
-        ConfirmAction::DiscardChanges => app.pending_discard.as_ref().map(DiscardTarget::prompt),
+        ConfirmAction::DiscardChanges => match app.pending_discard.as_ref() {
+            Some(target) => {
+                let detail = target.detail();
+                if !detail.is_empty() {
+                    comment_panel::render_confirm_dialog_with_detail(
+                        frame,
+                        app,
+                        &target.prompt(),
+                        &detail,
+                    );
+                    return;
+                }
+                Some(target.prompt())
+            }
+            None => None,
+        },
         ConfirmAction::HistoryRewrite => app
             .pending_history
             .as_ref()

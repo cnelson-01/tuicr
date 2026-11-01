@@ -505,6 +505,164 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(""),
         Line::from(Span::styled(
+            "Changes view (<leader>C, :changes, C in the selector)",
+            Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        )),
+        Line::from(""),
+        Line::from(Span::raw(
+            "  The commit tool window in the file tree's column: merge conflicts, staged, unstaged and unversioned",
+        )),
+        Line::from(Span::raw(
+            "  entries in one tree, each with a checkbox; the diff previews the entry under the cursor. Submodules",
+        )),
+        Line::from(Span::raw(
+            "  are entries (S), dirty ones expand to their own groups; uninitialized ones are listed dimly.",
+        )),
+        Line::from(vec![
+            Span::styled(
+                "  <leader>C ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(
+                "Open the view focused; focus it when the diff has focus (re-reads the tree); close it when focused",
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :changes  ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(
+                "Toggle the view (`:set changes` / `:set nochanges` set it); `C` on the selector's Local tab opens it",
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  j/k g/G   ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Move (counts work; note rows are skipped); the diff previews the entry"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  Space     ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(
+                "Stage or unstage the entry (Space / Enter); on a group row the whole group; a conflict opens the merge view",
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  s / u     ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(
+                "Stage / unstage the entry (`s` on a conflict marks it resolved once the markers are gone)",
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  a / A     ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(
+                "Stage every tracked change (`git add -u`) / everything, unversioned files too (`git add -A`)",
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  U         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Unstage everything (`git reset`)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  X         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(
+                "Discard the entry, the dirty submodule, or the whole group (asks first; `:discard` from the diff acts on the previewed entry)",
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  c / C     ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(
+                "Commit / amend from the view: the comment box becomes the message editor (also `:commit`, `:amend`)",
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  t         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Stash the working tree (also `:stash`)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  r         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Refresh: re-read the change set and the previewed diff (also `:e`)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  f         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Flat list (the default) / group by directory"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  l / h     ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(
+                "Expand / collapse the group, folder or dirty submodule (h on a collapsed row jumps to its parent); on other rows pan",
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  o / O     ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Expand / collapse every group and folder"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  e         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Open the previewed entry in `$EDITOR` (also `:edit`)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  Esc       ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Focus the diff; the pane stays open"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  } / {     ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(
+                "From the diff: next / previous entry; `s` / `u` / `:discard` there act on the previewed entry, `S` / `U` / `X` on its hunks",
+            ),
+        ]),
+        Line::from(Span::raw(
+            "  Overrides while the pane is focused: c/C commit, A stage all, a, h/l collapse/expand, r refresh, U unstage all,",
+        )),
+        Line::from(Span::raw(
+            "  X discard entry/group, f, t, e. Everything else (`:`, `?`, Ctrl-p, Tab, counts, y, R, v) keeps its meaning.",
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
             "Log Pane (persistent commit graph)",
             Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
         )),
@@ -1411,6 +1569,96 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 mod tests {
     use super::*;
     use unicode_width::UnicodeWidthChar;
+
+    #[test]
+    fn help_lists_the_changes_view_section() {
+        use crate::app::{App, DiffSource, InputMode};
+        use crate::model::{DiffFile, DiffLine, FileStatus, ReviewSession, SessionDiffSource};
+        use crate::vcs::traits::{VcsBackend, VcsInfo, VcsType};
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        use std::path::PathBuf;
+
+        struct StubVcs(VcsInfo);
+        impl VcsBackend for StubVcs {
+            fn info(&self) -> &VcsInfo {
+                &self.0
+            }
+            fn get_working_tree_diff(
+                &self,
+                _hl: &crate::syntax::SyntaxHighlighter,
+            ) -> crate::error::Result<Vec<DiffFile>> {
+                Ok(Vec::new())
+            }
+            fn fetch_context_lines(
+                &self,
+                _path: &std::path::Path,
+                _status: FileStatus,
+                _ref_commit: Option<&str>,
+                _start: u32,
+                _end: u32,
+            ) -> crate::error::Result<Vec<DiffLine>> {
+                Ok(Vec::new())
+            }
+            fn file_line_count(
+                &self,
+                _path: &std::path::Path,
+                _status: FileStatus,
+                _ref_commit: Option<&str>,
+            ) -> crate::error::Result<u32> {
+                Ok(0)
+            }
+        }
+
+        let vcs_info = VcsInfo {
+            root_path: PathBuf::from("/tmp"),
+            head_commit: "head".into(),
+            branch_name: Some("main".into()),
+            vcs_type: VcsType::Git,
+        };
+        let session = ReviewSession::new(
+            vcs_info.root_path.clone(),
+            vcs_info.head_commit.clone(),
+            vcs_info.branch_name.clone(),
+            SessionDiffSource::WorkingTree,
+        );
+        let mut app = App::build(
+            Box::new(StubVcs(vcs_info.clone())),
+            vcs_info,
+            crate::theme::Theme::dark(),
+            None,
+            false,
+            Vec::new(),
+            session,
+            DiffSource::WorkingTree,
+            InputMode::Help,
+            Vec::new(),
+            None,
+            None,
+        )
+        .expect("build app");
+
+        let mut terminal = Terminal::new(TestBackend::new(160, 45)).unwrap();
+        terminal
+            .draw(|frame| crate::ui::render(frame, &mut app))
+            .expect("draw frame");
+
+        // The popup scrolls, so read the full text the renderer recorded
+        // for `/` search rather than the visible rows.
+        let text = app.help_state.searchable_lines.join("\n");
+        assert!(text.contains("Changes view"), "{text}");
+        assert!(text.contains("Space / Enter"), "{text}");
+        assert!(text.contains("<leader>C"), "{text}");
+        assert!(
+            text.contains("Overrides while the pane is focused"),
+            "{text}"
+        );
+        // The section sits after Local Changes and before the log pane's.
+        let local = text.find("Local Changes").unwrap();
+        let changes = text.find("Changes view (<leader>C").unwrap();
+        let log = text.find("Log Pane").unwrap();
+        assert!(local < changes && changes < log, "{local} {changes} {log}");
+    }
 
     #[test]
     fn should_substitute_a_visible_glyph_for_a_whitespace_leader() {

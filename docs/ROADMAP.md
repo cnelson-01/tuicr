@@ -60,3 +60,16 @@ window. Phases land in order, each as its own commit(s). Tick items as they ship
 
 - [x] Blame gutter toggle
 - [x] Per-file history view
+
+## Phase 8: working tree changes view
+
+- [x] Grouped Changes pane (`<leader>C`, `:changes`, `C` in the selector): merge conflicts /
+      staged / unstaged / unversioned entries in one tree, each previewed in the diff pane
+- [x] Checkbox, bulk and group staging, commit, stash, refresh and discard from the pane
+- [x] Submodule entries: the commits between the two pointers, checkout on discard
+- [x] Dirty submodules expand to their own entries, diffs and operations
+- [ ] Initialize uninitialized submodules from the pane (`git submodule update --init`)
+- [ ] Compact folders in grouped mode (`compact_folders` applies to the file tree only)
+- [ ] Pane filters (include / exclude / search, as in the file tree)
+- [ ] A config key / backend override for colocated jj checkouts, which today get the
+      flat working-copy review

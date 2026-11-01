@@ -99,15 +99,15 @@ screen, and the status-bar hints for most panes are partial or truncated.
 - [x] No line-level staging (an IDE's per-line checkboxes). Stage the
       visual-selected lines
 - [x] Stash picker can pop, apply, or drop, but can't preview a stash's diff
-- [ ] No grouped Changes pane (an IDE's Commit tool window): staged / unstaged /
+- [x] No grouped Changes pane (an IDE's Commit tool window): staged / unstaged /
       unversioned / conflicted entries in one tree, each previewed in the diff
-      pane
-- [ ] No checkbox, bulk or group staging, commit, stash, refresh and discard
-      from that pane
-- [ ] Submodules are not entries: show the commits between the two pointers
+      pane. `<leader>C`, `:changes`, `C` on the selector's Local tab
+- [x] No checkbox, bulk or group staging, commit, stash, refresh and discard
+      from that pane. `Space`, `a` / `A` / `U`, `c` / `C`, `t`, `r`, `X`
+- [x] Submodules are not entries: show the commits between the two pointers
       and check the submodule out on discard
-- [ ] Dirty submodules cannot be expanded to their own entries, diffs and
-      operations
+- [x] Dirty submodules cannot be expanded to their own entries, diffs and
+      operations. `l` on a `▶` submodule row
 
 ### Annotate
 

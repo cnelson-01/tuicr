@@ -1415,7 +1415,11 @@ fn tokyo_night_day_syntax_theme() -> syntect::highlighting::Theme {
         .expect("bundled tokyo-night-day.tmTheme must parse")
 }
 
-fn blend(base: Color, accent: Color, accent_percent: u8) -> Color {
+/// Mix `accent_percent` of `accent` into `base`. Only RGB colours blend; a
+/// palette (ANSI) colour on either side yields `accent` unchanged, so derived
+/// colours stay legible on 16-colour themes. Shared with `ui::styles` for
+/// colours derived from the theme rather than stored in it.
+pub(crate) fn blend(base: Color, accent: Color, accent_percent: u8) -> Color {
     debug_assert!(accent_percent <= 100);
     match (base, accent) {
         (Color::Rgb(br, bg, bb), Color::Rgb(ar, ag, ab)) => {

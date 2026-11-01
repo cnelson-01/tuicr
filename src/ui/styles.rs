@@ -1,7 +1,8 @@
 use ratatui::style::{Color, Modifier, Style};
 
 use crate::model::LineOrigin;
-use crate::theme::Theme;
+use crate::theme::{Theme, blend};
+use crate::vcs::ChangeStatus;
 
 pub fn selected_style(theme: &Theme) -> Style {
     Style::default().bg(theme.bg_highlight).fg(theme.fg_primary)
@@ -111,6 +112,38 @@ pub fn file_status_style(theme: &Theme, status: char) -> Style {
         _ => theme.fg_secondary,
     };
     Style::default().fg(color)
+}
+
+/// Glyph and name colour of a Changes-view entry by status. Derived from the
+/// file-status colours so local theme files need no new keys: deletions go
+/// dim rather than red (the row is leaving, not failing), conflicts take the
+/// deletion colour in bold, untracked files sit between deleted and modified.
+pub fn change_status_style(theme: &Theme, status: ChangeStatus) -> Style {
+    match status {
+        ChangeStatus::Added => Style::default().fg(theme.file_added),
+        ChangeStatus::Modified => Style::default().fg(theme.file_modified),
+        ChangeStatus::Deleted => Style::default().fg(theme.fg_dim),
+        ChangeStatus::Renamed | ChangeStatus::Copied | ChangeStatus::TypeChanged => {
+            Style::default().fg(theme.file_renamed)
+        }
+        ChangeStatus::Conflicted => Style::default()
+            .fg(theme.diff_del)
+            .add_modifier(Modifier::BOLD),
+        ChangeStatus::Untracked => untracked_style(theme),
+    }
+}
+
+/// The `S` glyph of a submodule entry in the Changes view: the colour of the
+/// tree's folder icons, since a submodule is a directory that is an entry.
+pub fn submodule_glyph_style(theme: &Theme) -> Style {
+    Style::default().fg(theme.diff_hunk_header)
+}
+
+/// Untracked (`?`) entries in the Changes view: halfway between the deleted
+/// and modified colours (orange on the default theme). Palettes without RGB
+/// colours get the modified colour, which `blend` falls back to.
+pub fn untracked_style(theme: &Theme) -> Style {
+    Style::default().fg(blend(theme.file_deleted, theme.file_modified, 50))
 }
 
 /// Override only the marker foreground, preserving the caller's legacy style.
@@ -255,6 +288,41 @@ pub fn graph_track_style(_theme: &Theme, color_index: usize) -> Style {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn change_status_colours_derive_from_the_file_status_palette() {
+        let theme = Theme::dark();
+        assert_eq!(
+            change_status_style(&theme, ChangeStatus::Added).fg,
+            Some(theme.file_added)
+        );
+        assert_eq!(
+            change_status_style(&theme, ChangeStatus::Deleted).fg,
+            Some(theme.fg_dim)
+        );
+        assert_eq!(
+            change_status_style(&theme, ChangeStatus::TypeChanged).fg,
+            Some(theme.file_renamed)
+        );
+        let conflict = change_status_style(&theme, ChangeStatus::Conflicted);
+        assert_eq!(conflict.fg, Some(theme.diff_del));
+        assert!(conflict.add_modifier.contains(Modifier::BOLD));
+        // Untracked is its own shade, distinct from both parents on an RGB
+        // palette...
+        let untracked = untracked_style(&theme).fg.unwrap();
+        assert_ne!(untracked, theme.file_deleted);
+        assert_ne!(untracked, theme.file_modified);
+        assert_eq!(untracked, Color::Rgb(247, 150, 90));
+        // ...and the modified colour on an ANSI one.
+        let mut ansi = Theme::dark();
+        ansi.file_deleted = Color::Red;
+        ansi.file_modified = Color::Yellow;
+        assert_eq!(untracked_style(&ansi).fg, Some(Color::Yellow));
+        assert_eq!(
+            submodule_glyph_style(&theme).fg,
+            Some(theme.diff_hunk_header)
+        );
+    }
 
     #[test]
     fn remote_branches_never_share_the_local_branch_colour() {

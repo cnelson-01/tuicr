@@ -82,7 +82,7 @@ const fn e(
 }
 
 use Run::{Command as Cmd, Keys, Prompt};
-use Scope::{Branches, Diff, Global, Log, Merge, Stashes, Tree};
+use Scope::{Branches, Changes, Diff, Global, Log, Merge, Stashes, Tree};
 
 #[rustfmt::skip]
 pub const ENTRIES: &[Entry] = &[
@@ -192,6 +192,25 @@ pub const ENTRIES: &[Entry] = &[
     e(Stashes, "Local changes", "a", "Apply the stash, keeping it", Cmd("stashes")),
     e(Stashes, "Local changes", "d", "Drop the stash", Cmd("stashes")),
     e(Stashes, "Local changes", "v", "Show the stash's diff", Cmd("stashes")),
+    // ── Changes view ─────────────────────────────────────────────────────
+    e(Global, "Changes", "<leader>C", "Changes view (commit tool window)", Keys("<leader>C")),
+    e(Global, "Changes", ":changes", "Toggle the Changes view", Cmd("changes")),
+    e(Global, "Changes", ":set changes / :set nochanges", "Open / close the Changes view", Cmd("set changes")),
+    e(Log, "Changes", "C", "Open the Changes view from the selector", Keys("C")),
+    e(Changes, "Changes", "j / k", "Move; the diff previews the entry", Keys("j")),
+    e(Changes, "Changes", "Space / Enter", "Stage or unstage the entry (or the whole group)", Keys("<Space>")),
+    e(Changes, "Changes", "s / u", "Stage / unstage the entry", Keys("s")),
+    e(Changes, "Changes", "a", "Stage every tracked change", Keys("a")),
+    e(Changes, "Changes", "A", "Stage everything, unversioned files too", Keys("A")),
+    e(Changes, "Changes", "U", "Unstage everything", Keys("U")),
+    e(Changes, "Changes", "X", "Discard the entry or group (asks first)", Keys("X")),
+    e(Changes, "Changes", "c / C", "Commit / amend from the view", Keys("c")),
+    e(Changes, "Changes", "t", "Stash the working tree", Keys("t")),
+    e(Changes, "Changes", "r", "Refresh the view", Keys("r")),
+    e(Changes, "Changes", "f", "Flat list / group by directory", Keys("f")),
+    e(Changes, "Changes", "l / h", "Expand / collapse a group, folder, or submodule", Keys("l")),
+    e(Changes, "Changes", "o / O", "Expand / collapse everything", Keys("o")),
+    e(Changes, "Changes", "e", "Open the entry in $EDITOR", Keys("e")),
     // ── Log ──────────────────────────────────────────────────────────────
     e(Global, "Log", ":commits", "Choose commits to review", Cmd("commits")),
     e(Global, "Log", ") / (", "Next / previous commit in the review", Keys(")")),
@@ -468,5 +487,57 @@ mod tests {
                 assert!(!parse_keys(k, ';').is_empty(), "{}", entry.desc);
             }
         }
+    }
+
+    #[test]
+    fn catalog_has_changes_scope_entries() {
+        let pane_keys = [
+            "j / k",
+            "Space / Enter",
+            "s / u",
+            "a",
+            "A",
+            "U",
+            "X",
+            "c / C",
+            "t",
+            "r",
+            "f",
+            "l / h",
+            "o / O",
+            "e",
+        ];
+        for keys in pane_keys {
+            assert!(
+                ENTRIES
+                    .iter()
+                    .any(|e| e.scope == Scope::Changes && e.group == "Changes" && e.keys == keys),
+                "missing Changes-scope row for {keys}"
+            );
+        }
+        let changes_rows = ENTRIES.iter().filter(|e| e.scope == Scope::Changes).count();
+        assert_eq!(changes_rows, pane_keys.len());
+        // The openers live where the user is when pressing them.
+        assert!(ENTRIES.iter().any(|e| e.scope == Scope::Global
+            && e.keys == "<leader>C"
+            && matches!(e.run, Keys("<leader>C"))));
+        assert!(
+            ENTRIES
+                .iter()
+                .any(|e| e.scope == Scope::Log && e.keys == "C" && matches!(e.run, Keys("C")))
+        );
+        assert_eq!(
+            command_description("changes"),
+            Some("Toggle the Changes view")
+        );
+        assert!(command_description("set changes").is_some());
+        // Which-key for `<leader>` lists the view.
+        let next = continuations(Prefix::Leader);
+        assert!(
+            next.iter()
+                .any(|(k, desc)| k == "C" && desc.contains("Changes view")),
+            "{next:?}"
+        );
+        assert_eq!(Scope::Changes.label(), "changes");
     }
 }

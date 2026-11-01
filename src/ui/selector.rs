@@ -583,6 +583,7 @@ fn render_target_selector_footer(frame: &mut Frame, app: &App, area: Rect) {
                         hint("j/k move"),
                         hint("space range"),
                         hint("\u{21b5} load"),
+                        hint("C changes"),
                         hint("/ filter"),
                         hint("c checkout"),
                         hint("n branch"),
@@ -1083,6 +1084,25 @@ mod selector_render_snapshot_tests {
         assert!(
             footer.contains("r all PRs"),
             "expected footer toggle hint, got: {footer:?}"
+        );
+    }
+
+    #[test]
+    fn selector_footer_advertises_c_changes_on_the_local_tab() {
+        let mut app = make_app(vec![commit(0), commit(1)]);
+        let buffer = draw(&mut app);
+        let footer = row_text(&buffer, buffer.area.height - 1);
+        assert!(
+            footer.contains("C changes"),
+            "expected the Changes view hint on the Local tab, got: {footer:?}"
+        );
+
+        app.target_tab = crate::app::TargetTab::PullRequests;
+        let buffer = draw(&mut app);
+        let footer = row_text(&buffer, buffer.area.height - 1);
+        assert!(
+            !footer.contains("C changes"),
+            "the hint belongs to the Local tab only, got: {footer:?}"
         );
     }
 
