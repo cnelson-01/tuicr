@@ -221,9 +221,15 @@ impl App {
         {
             return false;
         }
+        // Nobody pressed a key for this: keep the diff focused, or the
+        // Changes pane when `C` on the startup selector just opened it.
+        let keep_changes = self.changes_focused();
         self.enable_log_pane();
-        // Nobody pressed a key for this: keep the diff focused.
-        self.focused_panel = FocusedPanel::Diff;
+        self.focused_panel = if keep_changes {
+            FocusedPanel::FileList
+        } else {
+            FocusedPanel::Diff
+        };
         true
     }
 

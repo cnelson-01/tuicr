@@ -826,6 +826,8 @@ fn map_commit_select_mode_with_q_quits(key: KeyEvent, q_quits: bool) -> Action {
         (KeyCode::BackTab, _) => Action::TargetSelectorTabPrev,
         (KeyCode::Char('/'), _) => Action::BeginTargetFilter,
         (KeyCode::Char('r'), KeyModifiers::NONE) => Action::TogglePrReviewRequestedFilter,
+        // `C` on the Local tab opens the Changes view (the commit tool window).
+        (KeyCode::Char('C'), _) => Action::OpenChangesView,
         // Sessions-tab only (`dd` deletes the saved review); the other tabs
         // ignore it in their dispatch. That tab reads `a` (abort above) as
         // "show empty reviews".
@@ -859,6 +861,49 @@ pub fn map_log_pane_mode(key: KeyEvent, leader_key: char, q_quits: bool) -> Acti
         (KeyCode::Char('y'), KeyModifiers::NONE) => Action::SelectorCopyHash,
         (KeyCode::Char('i'), KeyModifiers::NONE) => Action::SelectorInteractiveRebase,
         (KeyCode::Char('/'), _) => Action::BeginTargetFilter,
+        // Same key as the fullscreen selector: the palette's Log-scope row
+        // replays it here too.
+        (KeyCode::Char('C'), _) => Action::OpenChangesView,
+        (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
+        _ => map_normal_mode_with_q_quits(key, leader_key, q_quits),
+    }
+}
+
+/// Key map while the Changes pane (`<leader>C`) holds focus in
+/// `InputMode::Normal`.
+///
+/// The pane claims its own keys and falls through to `map_normal_mode` for
+/// everything else, like `map_file_tree_mode_with_q_quits`, so `:`, `?`,
+/// `Ctrl-p`, `Tab`, counts and paging keep their meanings. The overrides of
+/// normal-mode keys while the pane is focused: `c` / `C` (comment →
+/// commit / amend), `A` (edit comment → stage all), `a`, `h` / `l` (pan →
+/// collapse / expand), `r` (reviewed → refresh), `U` (unstage hunk →
+/// unstage all), `X` (discard hunk → discard entry / group), `f`, `t`,
+/// `e` (editor on the previewed entry) and `Esc` (focus the diff).
+pub fn map_changes_pane_mode(key: KeyEvent, leader_key: char, q_quits: bool) -> Action {
+    // The leader key wins: `;C` (close the pane) must not be swallowed by
+    // the amend binding.
+    if key.code == KeyCode::Char(leader_key) && key.modifiers == KeyModifiers::NONE {
+        return map_normal_mode_with_q_quits(key, leader_key, q_quits);
+    }
+    match (key.code, key.modifiers) {
+        (KeyCode::Char(' '), KeyModifiers::NONE) | (KeyCode::Enter, KeyModifiers::NONE) => {
+            Action::ChangesToggleStage
+        }
+        (KeyCode::Char('s'), KeyModifiers::NONE) => Action::StageFile,
+        (KeyCode::Char('u'), KeyModifiers::NONE) => Action::UnstageFile,
+        (KeyCode::Char('a'), KeyModifiers::NONE) => Action::ChangesStageAllTracked,
+        (KeyCode::Char('A'), _) => Action::ChangesStageAll,
+        (KeyCode::Char('U'), _) => Action::ChangesUnstageAll,
+        (KeyCode::Char('X'), _) => Action::ChangesDiscard,
+        (KeyCode::Char('c'), KeyModifiers::NONE) => Action::ChangesCommit,
+        (KeyCode::Char('C'), _) => Action::ChangesAmend,
+        (KeyCode::Char('t'), KeyModifiers::NONE) => Action::ChangesStash,
+        (KeyCode::Char('r'), KeyModifiers::NONE) => Action::ChangesRefresh,
+        (KeyCode::Char('f'), KeyModifiers::NONE) => Action::ChangesToggleGrouping,
+        (KeyCode::Char('l') | KeyCode::Right, KeyModifiers::NONE) => Action::ChangesExpand,
+        (KeyCode::Char('h') | KeyCode::Left, KeyModifiers::NONE) => Action::ChangesCollapse,
+        (KeyCode::Char('e'), KeyModifiers::NONE) => Action::EditFile,
         (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
         _ => map_normal_mode_with_q_quits(key, leader_key, q_quits),
     }

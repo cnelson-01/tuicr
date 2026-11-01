@@ -13,6 +13,7 @@ use crate::output::{copy_text_to_clipboard, export_to_clipboard, generate_export
 use crate::text_edit::{
     delete_char_before, delete_word_before, next_char_boundary, prev_char_boundary,
 };
+use crate::vcs::ChangeBulkOp;
 
 /// Columns scrolled per horizontal mouse wheel tick. Matches the default
 /// step for keyboard arrow scrolling so the two input methods feel
@@ -65,6 +66,9 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     CommandSpec::new(&["set log"], CommandKind::SetLogVisible(true)),
     CommandSpec::new(&["set nolog"], CommandKind::SetLogVisible(false)),
     CommandSpec::new(&["log", "set log!"], CommandKind::ToggleLog),
+    CommandSpec::new(&["set changes"], CommandKind::SetChangesVisible(true)),
+    CommandSpec::new(&["set nochanges"], CommandKind::SetChangesVisible(false)),
+    CommandSpec::new(&["changes", "set changes!"], CommandKind::ToggleChanges),
     CommandSpec::new(&["zen"], CommandKind::ToggleZen),
     CommandSpec::new(&["palette", "actions"], CommandKind::Palette),
     CommandSpec::new(
@@ -217,6 +221,10 @@ enum CommandKind {
     ToggleCommits,
     SetLogVisible(bool),
     ToggleLog,
+    /// `:set changes` / `:set nochanges`.
+    SetChangesVisible(bool),
+    /// `:changes` / `:set changes!`.
+    ToggleChanges,
     ToggleZen,
     Palette,
     PushPreview(bool),
@@ -337,6 +345,9 @@ pub fn handle_mouse_event(app: &mut App, event: MouseEvent) {
                 }
                 InputMode::CommitSelect | InputMode::Normal if over_commit_list => {
                     wheel_commit_list(app, scroll_up);
+                }
+                InputMode::Normal if over_file_list && app.changes_active() => {
+                    handle_changes_pane_action(app, action)
                 }
                 InputMode::Normal if over_file_list => handle_file_list_action(app, action),
                 InputMode::Normal
@@ -478,6 +489,21 @@ fn wheel_commit_list(app: &mut App, scroll_up: bool) {
 }
 
 fn handle_left_click(app: &mut App, pos: Position) {
+    // The Changes pane owns the tree's column while it is active; rows are
+    // resolved from its own list offset, and the column inside the pane
+    // tells the expander and checkbox cells apart.
+    if app.changes_active()
+        && let Some(inner) = app.file_list_inner_area
+        && inner.contains(pos)
+        && let Some(idx) = app.changes_row_at_screen_row(pos.y)
+    {
+        app.focused_panel = FocusedPanel::FileList;
+        let col = usize::from(pos.x.saturating_sub(inner.x))
+            + app.changes.as_ref().map_or(0, |view| view.scroll_x);
+        app.changes_click(idx, col);
+        return;
+    }
+
     if app.file_list_inner_area.is_some_and(|r| r.contains(pos))
         && let Some(idx) = app.file_list_idx_at_screen_row(pos.y)
     {
@@ -1186,6 +1212,16 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
             app.toggle_log_pane();
             CommandAfterDispatch::ExitCommandMode
         }
+        CommandKind::SetChangesVisible(visible) => {
+            app.set_changes_visible(visible);
+            land_in_changes_view(app);
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::ToggleChanges => {
+            app.toggle_changes_view();
+            land_in_changes_view(app);
+            CommandAfterDispatch::ExitCommandMode
+        }
         CommandKind::ToggleZen => {
             app.toggle_zen();
             CommandAfterDispatch::ExitCommandMode
@@ -1396,6 +1432,15 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
             set_remote_comments_visibility(app, visibility);
             CommandAfterDispatch::ExitCommandMode
         }
+    }
+}
+
+/// `:changes` typed on the fullscreen selector must land the user in the
+/// pane, not back on the selector: `ExitCommandMode` restores
+/// `command_return_mode`, so that is what gets rewritten.
+fn land_in_changes_view(app: &mut App) {
+    if app.changes_active() && app.command_return_mode == InputMode::CommitSelect {
+        app.command_return_mode = InputMode::Normal;
     }
 }
 
@@ -2018,6 +2063,8 @@ fn handle_local_target_action(app: &mut App, action: Action) {
         Action::SelectorCopyHash => app.copy_cursor_commit_hash(),
         Action::SelectorInteractiveRebase => app.open_rebase_editor_at_cursor(),
         Action::BeginTargetFilter => app.begin_commit_filter(),
+        // `C`: straight into the Changes view, the IDE's first screen.
+        Action::OpenChangesView => app.open_changes_view(),
         _ => {}
     }
 }
@@ -2296,12 +2343,52 @@ fn handle_log_pane_action(app: &mut App, action: Action) {
         Action::SelectorTag => app.start_tag_prompt(),
         Action::SelectorCopyHash => app.copy_cursor_commit_hash(),
         Action::SelectorInteractiveRebase => app.open_rebase_editor_at_cursor(),
+        Action::OpenChangesView => app.open_changes_view(),
         // Esc clears an active filter first; a second Esc leaves the pane.
         Action::ExitMode => {
             if !app.clear_commit_filter() {
                 app.focused_panel = FocusedPanel::Diff;
             }
         }
+        _ => handle_shared_normal_action(app, action),
+    }
+}
+
+/// Handle actions while the Changes pane (`<leader>C`) holds focus. The
+/// pane sits in the file tree's column, so `dispatch_action` routes
+/// `FocusedPanel::FileList` here whenever `App::changes_active()`.
+pub fn handle_changes_pane_action(app: &mut App, action: Action) {
+    match action {
+        Action::CursorDown(n) => app.changes_move(n as isize),
+        Action::CursorUp(n) => app.changes_move(-(n as isize)),
+        Action::GoToTop => app.changes_select_first(),
+        Action::GoToBottom => app.changes_select_last(),
+        Action::ScrollLeft(n) => app.changes_scroll_left(n),
+        Action::ScrollRight(n) => app.changes_scroll_right(n),
+        Action::MouseScrollDown(n) => app.changes_viewport_scroll(n as isize),
+        Action::MouseScrollUp(n) => app.changes_viewport_scroll(-(n as isize)),
+        Action::ChangesToggleStage | Action::SelectFile | Action::ToggleExpand => {
+            app.changes_toggle_stage_at_cursor()
+        }
+        Action::StageFile => app.changes_stage_at_cursor(),
+        Action::UnstageFile => app.changes_unstage_at_cursor(),
+        Action::ChangesStageAllTracked => app.changes_bulk(ChangeBulkOp::StageTracked),
+        Action::ChangesStageAll => app.changes_bulk(ChangeBulkOp::StageAll),
+        Action::ChangesUnstageAll => app.changes_bulk(ChangeBulkOp::UnstageAll),
+        Action::ChangesDiscard => app.changes_request_discard_at_cursor(),
+        Action::ChangesCommit => app.changes_start_commit_composer(false),
+        Action::ChangesAmend => app.changes_start_commit_composer(true),
+        Action::ChangesStash => app.stash_push_current(None),
+        Action::ChangesRefresh => app.changes_refresh(),
+        Action::ChangesToggleGrouping => app.changes_toggle_grouping(),
+        Action::ChangesExpand => app.changes_expand_at_cursor(),
+        Action::ChangesCollapse => app.changes_collapse_at_cursor(),
+        Action::ExpandAll => app.changes_expand_all(),
+        Action::CollapseAll => app.changes_collapse_all(),
+        Action::EditFile => app.changes_edit_previewed(),
+        // The pane is a tool window: Esc hands focus to the diff and the
+        // pane stays, unlike the tree, which hides itself.
+        Action::ExitMode => app.focused_panel = FocusedPanel::Diff,
         _ => handle_shared_normal_action(app, action),
     }
 }
@@ -2662,6 +2749,10 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
         Action::PageUp => app.page_up(app.diff_state.viewport_height),
         Action::GoToTop => app.jump_to_file(0),
         Action::GoToBottom => app.jump_to_bottom(),
+        // With the Changes view open the diff holds one entry, so `}` / `{`
+        // walk the pane's entries instead.
+        Action::NextFile if app.changes_active() => app.changes_move_entry(1),
+        Action::PrevFile if app.changes_active() => app.changes_move_entry(-1),
         Action::NextFile => app.next_file(),
         Action::PrevFile => app.prev_file(),
         Action::NextHunk => app.next_hunk(),

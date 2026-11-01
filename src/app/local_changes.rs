@@ -267,8 +267,39 @@ impl App {
         scope
     }
 
+    /// With the Changes view open, the diff previews one entry of the tree;
+    /// hunk and line operations on an untracked, submodule, embedded-repo
+    /// or conflicted preview have no git counterpart, so they are refused
+    /// before any prompt. `None` means the operation may go ahead.
+    fn changes_hunk_op_refusal(&self) -> Option<&'static str> {
+        if !self.changes_active() {
+            return None;
+        }
+        let (key, entry) = self.changes_previewed_entry()?;
+        match &entry.kind {
+            ChangeEntryKind::Submodule(_) | ChangeEntryKind::EmbeddedRepo => {
+                Some("Submodules stage whole: press s in the Changes pane")
+            }
+            ChangeEntryKind::File => {
+                if key.group == ChangeGroup::Conflicted || entry.status == ChangeStatus::Conflicted
+                {
+                    Some("Resolve conflicts with :merge")
+                } else if key.group == ChangeGroup::Untracked
+                    || entry.status == ChangeStatus::Untracked
+                {
+                    Some("Untracked files stage whole: press s in the Changes pane")
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
     /// `s`: stage the focused file.
     pub fn stage_file_at_cursor(&mut self) {
+        if self.changes_active() {
+            return self.changes_stage_previewed();
+        }
         let Some(_) = self.require_local_scope("Staging") else {
             return;
         };
@@ -284,6 +315,9 @@ impl App {
 
     /// `u`: unstage the focused file.
     pub fn unstage_file_at_cursor(&mut self) {
+        if self.changes_active() {
+            return self.changes_unstage_previewed();
+        }
         let Some(_) = self.require_local_scope("Unstaging") else {
             return;
         };
@@ -307,6 +341,10 @@ impl App {
 
     /// `S`: stage the hunk under the cursor.
     pub fn stage_hunk_at_cursor(&mut self) {
+        if let Some(refusal) = self.changes_hunk_op_refusal() {
+            self.set_warning(refusal);
+            return;
+        }
         let Some(scope) = self.require_local_scope("Staging a hunk") else {
             return;
         };
@@ -329,6 +367,10 @@ impl App {
     /// `U`: unstage the hunk under the cursor (staged view only, since a
     /// hunk's line numbers only mean something in the diff it came from).
     pub fn unstage_hunk_at_cursor(&mut self) {
+        if let Some(refusal) = self.changes_hunk_op_refusal() {
+            self.set_warning(refusal);
+            return;
+        }
         let Some(scope) = self.require_local_scope("Unstaging a hunk") else {
             return;
         };
@@ -415,6 +457,11 @@ impl App {
     /// just the selected lines. Hunks are applied bottom-up so the ones
     /// above keep the coordinates they are looked up by.
     pub fn stage_selected_lines(&mut self, unstage: bool) {
+        if let Some(refusal) = self.changes_hunk_op_refusal() {
+            self.exit_visual_mode();
+            self.set_warning(refusal);
+            return;
+        }
         let verb = if unstage { "Unstaging" } else { "Staging" };
         let Some(scope) = self.require_local_scope(&format!("{verb} lines")) else {
             return;
@@ -470,6 +517,10 @@ impl App {
 
     /// `X`: ask before discarding the hunk under the cursor.
     pub fn request_discard_hunk(&mut self) {
+        if let Some(refusal) = self.changes_hunk_op_refusal() {
+            self.set_warning(refusal);
+            return;
+        }
         let Some(scope) = self.require_local_scope("Discarding a hunk") else {
             return;
         };
@@ -488,6 +539,9 @@ impl App {
 
     /// `:discard`: ask before throwing away every change to the focused file.
     pub fn request_discard_file(&mut self) {
+        if self.changes_active() {
+            return self.changes_request_discard_previewed();
+        }
         let Some(_) = self.require_local_scope("Discarding a file") else {
             return;
         };
@@ -557,7 +611,10 @@ impl App {
     /// Reload the review after the index or working tree changed. The diff
     /// may have emptied out (everything staged away from the unstaged view,
     /// or discarded), which `reload_diff_files` reports as `NoChanges`.
-    fn after_local_change(&mut self, message: String) {
+    /// With the Changes view open, `reload_diff_files` refreshes the tree
+    /// instead, log rows included.
+    pub(in crate::app) fn after_local_change(&mut self, message: String) {
+        let changes_view = self.changes_active();
         match self.reload_diff_files() {
             Ok(_) => {}
             Err(TuicrError::NoChanges) => {
@@ -572,7 +629,9 @@ impl App {
                 return;
             }
         }
-        self.refresh_log_rows_keep_cursor();
+        if !changes_view {
+            self.refresh_log_rows_keep_cursor();
+        }
         self.set_message(message);
     }
 

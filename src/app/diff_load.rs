@@ -481,7 +481,10 @@ impl App {
         !after_path.is_empty()
     }
 
-    fn filter_paths_by_pathspec(paths: Vec<PathBuf>, pathspec: &str) -> Vec<PathBuf> {
+    pub(in crate::app) fn filter_paths_by_pathspec(
+        paths: Vec<PathBuf>,
+        pathspec: &str,
+    ) -> Vec<PathBuf> {
         let pathspec = pathspec.trim_end_matches('/');
         paths
             .into_iter()
@@ -1235,7 +1238,7 @@ impl App {
             );
             match outcome {
                 Ok(fetched) => reporter.answer(
-                    normalize_diff_watch_result(Ok(fetched.diff_files)),
+                    normalize_diff_watch_result(fetched.diff_files),
                     fetched.commits,
                     fetched.change_status,
                     fetched.change_set,
@@ -1249,6 +1252,10 @@ impl App {
     /// cross the thread boundary, then runs the same
     /// `changed_diff_files_for_source` gate the main thread uses. `current`
     /// is the fingerprint of what was on screen when the fetch was spawned.
+    ///
+    /// Only a backend that cannot be opened fails the whole tick. The diff
+    /// half is carried as its own `Result` so that, with the Changes view
+    /// open, a diff error never costs the tree half read just before it.
     fn diff_watch_fetch(
         vcs_open_options: VcsOpenOptions,
         request: &DiffWatchReloadRequest,
@@ -1262,19 +1269,39 @@ impl App {
             vcs_open_options.diff_whitespace_mode,
         )?;
         let root_path = &vcs.info().root_path;
-        let fetch_source = Self::narrowed_fetch_source(
-            &request.diff_source,
-            review_commits,
-            request.commit_selection_range,
-        );
-        let files = Self::changed_diff_files_for_source(
-            vcs.as_ref(),
-            root_path,
-            &fetch_source,
-            highlighter,
-            path_filter,
-            current,
-        )?;
+        // The Changes view: the grouped tree first, then the previewed
+        // entry's diff from that same read. A tree that cannot be read is
+        // dropped silently like the commit list below; the tree on screen
+        // just stays as it is until the next tick.
+        let change_set = matches!(request.diff_source, DiffSource::Changes(_))
+            .then(|| vcs.get_change_set().ok())
+            .flatten();
+        let files = match &request.diff_source {
+            DiffSource::Changes(None) => Ok(None),
+            DiffSource::Changes(Some(key)) => Self::changed_changes_entry_diff(
+                vcs.as_ref(),
+                root_path,
+                key,
+                change_set.as_ref(),
+                highlighter,
+                current,
+            ),
+            _ => {
+                let fetch_source = Self::narrowed_fetch_source(
+                    &request.diff_source,
+                    review_commits,
+                    request.commit_selection_range,
+                );
+                Self::changed_diff_files_for_source(
+                    vcs.as_ref(),
+                    root_path,
+                    &fetch_source,
+                    highlighter,
+                    path_filter,
+                    current,
+                )
+            }
+        };
         // Runs on the worker, alongside the diff fetch, so the event loop never
         // pays for it.
         //
@@ -1306,8 +1333,46 @@ impl App {
             diff_files: files,
             commits,
             change_status,
-            change_set: None,
+            change_set,
         })
+    }
+
+    /// The diff half of a Changes-view tick: the previewed entry, located in
+    /// the set this tick already read (or the submodule's own set for an
+    /// entry inside one), probed with the plain highlighter first exactly
+    /// like `changed_diff_files_for_source`. An entry that is no longer in
+    /// the set reads as `NoChanges`, which the caller folds into "nothing
+    /// new"; the tree half is what moves the selection in that case.
+    fn changed_changes_entry_diff(
+        vcs: &dyn VcsBackend,
+        root_path: &Path,
+        key: &ChangeDiffKey,
+        top_set: Option<&ChangeSet>,
+        highlighter: &SyntaxHighlighter,
+        current: u64,
+    ) -> Result<Option<Vec<DiffFile>>> {
+        let owned;
+        let set = match (&key.submodule, top_set) {
+            (Some(sub), _) => {
+                owned = vcs.get_submodule_change_set(sub)?;
+                &owned
+            }
+            (None, Some(set)) => set,
+            (None, None) => {
+                owned = vcs.get_change_set()?;
+                &owned
+            }
+        };
+        let probe =
+            Self::changes_entry_diff_from_set(vcs, root_path, key, set, probe_highlighter())?;
+        if diff_files_fingerprint(&probe) == current {
+            return Ok(None);
+        }
+        let fetched = Self::changes_entry_diff_from_set(vcs, root_path, key, set, highlighter)?;
+        if diff_files_fingerprint(&fetched) == current {
+            return Ok(None);
+        }
+        Ok(Some(fetched))
     }
 
     /// Pumps a pending diff-watch result and applies or discards it. Returns
@@ -1341,15 +1406,28 @@ impl App {
             result,
             commits,
             change_status,
-            change_set: _,
+            change_set,
         } = event;
+
+        // The Changes view's tree half lands first, on purpose: the stale
+        // check below compares the whole diff source, key included, so a
+        // cursor move since the spawn (or an entry the fresh tree moves to
+        // another group) discards only the diff half, never the tree.
+        let mut tree_changed = false;
+        if let (DiffSource::Changes(_), DiffSource::Changes(_), Some(set)) =
+            (&request.diff_source, &self.diff_source, change_set)
+            && self.input_mode == InputMode::Normal
+        {
+            tree_changed = self.changes_apply_watched_set(set);
+        }
+
         if diff_watch_result_is_stale(
             &request,
             &self.diff_source,
             self.commit_selection_range,
             self.input_mode,
         ) {
-            return false;
+            return tree_changed;
         }
 
         let commit_pane_changed = self.apply_fetched_commits(commits, change_status);
@@ -1377,7 +1455,7 @@ impl App {
             }
         };
 
-        commit_pane_changed || diff_changed
+        tree_changed || commit_pane_changed || diff_changed
     }
 
     /// Installs a landed watch diff. Returns `true` when it changed the screen.
@@ -1388,6 +1466,11 @@ impl App {
     /// expanded gaps and print a second "Reloaded" message with nothing new to
     /// show.
     fn apply_watched_diff(&mut self, diff_files: Vec<DiffFile>) -> bool {
+        // A Changes-view preview is installed in place; `apply_diff_files`
+        // would re-sort, re-register (invalidating the review) and jump.
+        if self.changes_active() {
+            return self.changes_apply_watched_diff(diff_files);
+        }
         if diff_files_fingerprint(&diff_files) == diff_files_fingerprint(&self.diff_files) {
             return false;
         }
@@ -1685,12 +1768,14 @@ impl Drop for DiffWatchReporter {
 /// What one diff-watch worker run produced. The two halves are independent:
 /// a tick can find new commits while the diff is unchanged, or the reverse.
 struct DiffWatchFetched {
-    diff_files: Option<Vec<DiffFile>>,
+    /// The diff half, with its own error: with the Changes view open a diff
+    /// that cannot be read must not drop the tree read in the same tick.
+    diff_files: Result<Option<Vec<DiffFile>>>,
     commits: Option<Vec<CommitInfo>>,
     change_status: Option<VcsChangeStatus>,
-    /// The grouped change set for an open Changes view. Always `None` until
-    /// the view's fetch is wired in; the field exists so the event shape is
-    /// settled.
+    /// The grouped change set re-read for an open Changes view
+    /// (`DiffSource::Changes`); `None` for every other source, or when the
+    /// backend could not say.
     change_set: Option<ChangeSet>,
 }
 
@@ -1785,7 +1870,7 @@ fn file_fingerprint(file: &DiffFile) -> u64 {
 /// sorted by directory and a freshly fetched one is not (see
 /// `sort_files_by_directory`).
 /// Commit messages are synthetic and never returned by a VCS diff fetch.
-fn diff_files_fingerprint(files: &[DiffFile]) -> u64 {
+pub(in crate::app) fn diff_files_fingerprint(files: &[DiffFile]) -> u64 {
     let mut per_file: Vec<u64> = files
         .iter()
         .filter(|file| !file.is_commit_message)

@@ -17,10 +17,14 @@ use std::path::{Path, PathBuf};
 
 use ratatui::widgets::ListState;
 
-use super::{App, DiffSource, FocusedPanel};
+use super::diff_load::diff_files_fingerprint;
+use super::{App, ConfirmAction, DiffSource, DiscardTarget, FocusedPanel, InputMode};
+use crate::error::TuicrError;
 use crate::model::DiffFile;
+use crate::model::review::SessionDiffSource;
+use crate::vcs::traits::VcsType;
 use crate::vcs::{
-    ChangeBulkOp, ChangeDiffKey, ChangeEntry, ChangeEntryKind, ChangeGroup, ChangeSet,
+    ChangeBulkOp, ChangeDiffKey, ChangeEntry, ChangeEntryKind, ChangeGroup, ChangeSet, ChangeStatus,
 };
 
 /// A submodule the user expanded: its own change set, or why it failed.
@@ -393,58 +397,1373 @@ impl App {
         (idx < view.rows.len()).then_some(idx)
     }
 
-    // ---- Part B replaces every body below -------------------------------
+    // ---- Opening and closing ---------------------------------------------
 
     /// `<leader>C`: hidden → open and focus; open → focus (and re-read);
     /// focused → close.
     pub fn toggle_changes_view(&mut self) {
-        self.set_warning("Changes view: not implemented yet");
+        if !self.changes_active() {
+            self.open_changes_view();
+        } else if self.focused_panel != FocusedPanel::FileList || !self.show_file_list {
+            self.focus_changes_view();
+        } else {
+            self.close_changes_view();
+        }
     }
+
     /// `:changes` toggles; `:set changes` / `:set nochanges` set.
-    pub fn set_changes_visible(&mut self, _visible: bool) {
-        self.set_warning("Changes view: not implemented yet");
+    pub fn set_changes_visible(&mut self, visible: bool) {
+        match (visible, self.changes_active()) {
+            (true, false) => self.open_changes_view(),
+            (true, true) => self.focus_changes_view(),
+            (false, true) => self.close_changes_view(),
+            (false, false) => self.set_message("The Changes view is not open"),
+        }
     }
+
+    /// The view is open but something else has focus: show and focus the
+    /// pane and re-read the change set, so the tree is honest even without
+    /// the diff watch.
+    fn focus_changes_view(&mut self) {
+        self.show_file_list = true;
+        self.focused_panel = FocusedPanel::FileList;
+        self.refresh_changes_view(None);
+    }
+
     /// Opens the view (always `InputMode::Normal`), or the degraded flat
     /// working-tree review on hg / jj.
     pub fn open_changes_view(&mut self) {
-        self.set_warning("Changes view: not implemented yet");
+        if matches!(self.diff_source, DiffSource::PullRequest(_)) {
+            self.set_warning(
+                "The Changes view works on the local checkout; leave the PR review first (:commits)",
+            );
+            return;
+        }
+        if self.is_pristine_mode || self.vcs_info.vcs_type == VcsType::File {
+            self.set_warning("The Changes view needs a repository checkout");
+            return;
+        }
+        if self.vcs_info.vcs_type != VcsType::Git {
+            self.open_flat_working_copy_review();
+            return;
+        }
+        let set = match self.vcs.get_change_set() {
+            Ok(set) => self.filter_change_set(set, None),
+            Err(TuicrError::UnsupportedOperation(reason)) => {
+                self.set_warning(format!("Changes view unavailable: {reason}"));
+                return;
+            }
+            Err(e) => {
+                self.set_error(format!("Changes view unavailable: {e}"));
+                return;
+            }
+        };
+        self.ensure_working_tree_session(SessionDiffSource::StagedAndUnstaged);
+        self.leave_commit_review();
+
+        // Grouping and collapsed sets survive a close-by-loading-another-review
+        // (`changes_active()` false while `changes` is still `Some`); fetched
+        // data (expansions, cached diffs) does not.
+        let previous = self.changes.take();
+        let mut view = ChangesView {
+            fingerprint: set.fingerprint(),
+            set,
+            ..Default::default()
+        };
+        if let Some(previous) = previous {
+            view.group_by_directory = previous.group_by_directory;
+            view.collapsed_groups = previous.collapsed_groups;
+            view.collapsed_dirs = previous.collapsed_dirs;
+        }
+        view.rebuild_rows();
+        self.changes = Some(view);
+
+        self.diff_source = DiffSource::Changes(None);
+        self.diff_files.clear();
+        self.diff_state = Default::default();
+        self.file_list_state = Default::default();
+        self.clear_expanded_gaps();
+        self.rebuild_annotations();
+        self.input_mode = InputMode::Normal;
+        self.show_file_list = true;
+        self.focused_panel = FocusedPanel::FileList;
+        match self.changes_first_entry_row() {
+            Some(idx) => self.changes_select(idx),
+            None => self.changes_select_first(),
+        }
+        self.refresh_repo_status();
+        self.set_message("Changes · space stages · c commits · <leader>C closes");
     }
-    pub fn close_changes_view(&mut self) {}
-    /// `r`, `:e`, and every local-change operation: re-read the change set,
-    /// drop cached diffs, keep the selection, re-show its diff.
-    pub fn refresh_changes_view(&mut self, _message: Option<String>) {}
-    pub fn changes_move(&mut self, _delta: isize) {}
-    pub fn changes_select(&mut self, _idx: usize) {}
-    pub fn changes_select_first(&mut self) {}
-    pub fn changes_select_last(&mut self) {}
+
+    /// hg / jj have no index, so the honest fallback is the plain working
+    /// copy as the file tree already shows it.
+    fn open_flat_working_copy_review(&mut self) {
+        let highlighter = self.theme.syntax_highlighter();
+        let fetched = Self::get_working_tree_diff_with_ignore(
+            self.vcs.as_ref(),
+            &self.vcs_info.root_path,
+            highlighter,
+            self.path_filter.as_deref(),
+        );
+        let files = match fetched {
+            Ok(files) => files,
+            Err(TuicrError::NoChanges) => Vec::new(),
+            Err(e) => {
+                self.set_error(format!("Failed to load the working copy: {e}"));
+                return;
+            }
+        };
+        self.ensure_working_tree_session(SessionDiffSource::WorkingTree);
+        self.leave_commit_review();
+        self.diff_source = DiffSource::WorkingTree;
+        self.input_mode = InputMode::Normal;
+        if files.is_empty() {
+            self.clear_review_diff();
+        } else {
+            self.apply_diff_files(files);
+        }
+        self.show_file_list = true;
+        self.focused_panel = FocusedPanel::FileList;
+        let colocated = if self.vcs_info.vcs_type == VcsType::Jujutsu {
+            " (colocated jj included)"
+        } else {
+            ""
+        };
+        self.set_message(format!(
+            "No index on {}: showing the working copy as a flat list{colocated}",
+            self.vcs_info.vcs_type
+        ));
+    }
+
+    /// Closes the view: the left column goes back to the file tree over the
+    /// combined working-tree review (or an empty diff when the tree is
+    /// clean). Focus is left where it was.
+    pub fn close_changes_view(&mut self) {
+        let was_active = self.changes_active();
+        self.changes = None;
+        if !was_active {
+            return;
+        }
+        self.diff_source = DiffSource::StagedAndUnstaged;
+        let highlighter = self.theme.syntax_highlighter();
+        let fetched = Self::get_working_tree_diff_with_ignore(
+            self.vcs.as_ref(),
+            &self.vcs_info.root_path,
+            highlighter,
+            self.path_filter.as_deref(),
+        );
+        match fetched {
+            Ok(files) => {
+                self.apply_diff_files(files);
+            }
+            Err(TuicrError::NoChanges) => self.clear_review_diff(),
+            Err(e) => {
+                self.clear_review_diff();
+                self.set_error(format!("Failed to load the working tree: {e}"));
+                return;
+            }
+        }
+        self.set_message("Changes view closed");
+    }
+
+    /// Keeps the current session when it already belongs to the working
+    /// tree (reviewed marks and comments carry over); otherwise loads or
+    /// creates the `wanted` one.
+    fn ensure_working_tree_session(&mut self, wanted: SessionDiffSource) {
+        if matches!(
+            self.session.diff_source,
+            SessionDiffSource::WorkingTree
+                | SessionDiffSource::Staged
+                | SessionDiffSource::Unstaged
+                | SessionDiffSource::StagedAndUnstaged
+        ) {
+            return;
+        }
+        self.session = Self::load_or_create_session(&self.vcs_info, wanted);
+        if let Err(e) = self.reset_persisted_session_tracking() {
+            self.set_warning(format!("Failed to track the review session: {e}"));
+        }
+    }
+
+    /// The inline commit selector must never appear over the view.
+    fn leave_commit_review(&mut self) {
+        self.review_commits.clear();
+        self.commit_selection_range = None;
+        self.saved_inline_selection = None;
+    }
+
+    /// An empty diff pane, the way `after_local_change` leaves one.
+    fn clear_review_diff(&mut self) {
+        self.diff_files.clear();
+        self.diff_state = Default::default();
+        self.file_list_state = Default::default();
+        self.clear_expanded_gaps();
+        self.rebuild_annotations();
+    }
+
+    /// `.tuicrignore` and the `--file` path filter, then sort. `prefix` is
+    /// the submodule path of an inner set, so ignore rules see
+    /// superproject-relative paths.
+    fn filter_change_set(&self, mut set: ChangeSet, prefix: Option<&Path>) -> ChangeSet {
+        Self::filter_change_set_with(
+            &mut set,
+            &self.vcs_info.root_path,
+            self.path_filter.as_deref(),
+            prefix,
+        );
+        set
+    }
+
+    pub(in crate::app) fn filter_change_set_with(
+        set: &mut ChangeSet,
+        root_path: &Path,
+        path_filter: Option<&str>,
+        prefix: Option<&Path>,
+    ) {
+        let full = |path: &Path| match prefix {
+            Some(prefix) => prefix.join(path),
+            None => path.to_path_buf(),
+        };
+        let candidates: Vec<PathBuf> = set.paths().iter().map(|p| full(p)).collect();
+        let mut kept = crate::tuicrignore::filter_paths(root_path, candidates);
+        if let Some(filter) = path_filter {
+            kept = Self::filter_paths_by_pathspec(kept, filter);
+        }
+        let kept: HashSet<PathBuf> = kept.into_iter().collect();
+        set.retain_paths(|path| kept.contains(&full(path)));
+        set.sort();
+    }
+
+    // ---- Selection and preview -------------------------------------------
+
+    fn changes_view(&self) -> Option<&ChangesView> {
+        self.changes.as_ref().filter(|_| self.changes_active())
+    }
+
+    fn changes_view_mut(&mut self) -> Option<&mut ChangesView> {
+        if !self.changes_active() {
+            return None;
+        }
+        self.changes.as_mut()
+    }
+
+    fn changes_first_entry_row(&self) -> Option<usize> {
+        self.changes_rows()
+            .iter()
+            .position(|row| matches!(row, ChangesRow::Entry { .. }))
+    }
+
+    /// The nearest selectable row to `idx`, looking in the direction of
+    /// travel first so `j` / `k` step over Note rows, then the other way.
+    fn selectable_near(rows: &[ChangesRow], idx: usize, forward: bool) -> Option<usize> {
+        if rows.is_empty() {
+            return None;
+        }
+        let idx = idx.min(rows.len() - 1);
+        let ahead = || (idx..rows.len()).find(|&i| rows[i].selectable());
+        let behind = || (0..=idx).rev().find(|&i| rows[i].selectable());
+        if forward {
+            ahead().or_else(behind)
+        } else {
+            behind().or_else(ahead)
+        }
+    }
+
+    /// The set an entry key addresses: the superproject's, or an expanded
+    /// submodule's.
+    fn changes_set_for(&self, submodule: Option<&Path>) -> Option<&ChangeSet> {
+        let view = self.changes.as_ref()?;
+        match submodule {
+            None => Some(&view.set),
+            Some(sub) => match view.submodules.get(sub) {
+                Some(SubmoduleExpansion::Loaded(inner)) => Some(inner),
+                _ => None,
+            },
+        }
+    }
+
+    /// Moves the cursor to `idx` (clamped, Note rows skipped) and previews
+    /// the entry under it.
+    pub fn changes_select(&mut self, idx: usize) {
+        let Some(view) = self.changes_view_mut() else {
+            return;
+        };
+        let forward = idx >= view.selected_idx();
+        let Some(target) = Self::selectable_near(&view.rows, idx, forward) else {
+            view.select(0);
+            return;
+        };
+        view.select(target);
+        self.changes_follow_selection();
+    }
+
+    /// `j` / `k` with a count: move the cursor by `delta` rows.
+    pub fn changes_move(&mut self, delta: isize) {
+        let Some(view) = self.changes_view() else {
+            return;
+        };
+        if view.rows.is_empty() {
+            return;
+        }
+        let last = view.rows.len() as isize - 1;
+        let target = (view.selected_idx() as isize + delta).clamp(0, last);
+        self.changes_select(target as usize);
+    }
+
+    /// `g`: the first selectable row.
+    pub fn changes_select_first(&mut self) {
+        self.changes_select(0);
+    }
+
+    /// `G`: the last selectable row.
+    pub fn changes_select_last(&mut self) {
+        let Some(view) = self.changes_view() else {
+            return;
+        };
+        let Some(last) = view.rows.len().checked_sub(1) else {
+            return;
+        };
+        self.changes_select(last);
+    }
+
     /// `}` / `{` from the diff: next / previous entry row.
-    pub fn changes_move_entry(&mut self, _delta: isize) {}
-    pub fn changes_toggle_stage_at_cursor(&mut self) {}
-    pub fn changes_stage_at_cursor(&mut self) {}
-    pub fn changes_unstage_at_cursor(&mut self) {}
-    /// `s` / `u` / `:discard` issued from the diff pane: act on the
-    /// previewed entry.
-    pub fn changes_stage_previewed(&mut self) {}
-    pub fn changes_unstage_previewed(&mut self) {}
-    pub fn changes_request_discard_previewed(&mut self) {}
-    pub fn changes_bulk(&mut self, _op: ChangeBulkOp) {}
-    pub fn changes_request_discard_at_cursor(&mut self) {}
-    pub fn changes_expand_at_cursor(&mut self) {}
-    pub fn changes_collapse_at_cursor(&mut self) {}
-    pub fn changes_expand_all(&mut self) {}
-    pub fn changes_collapse_all(&mut self) {}
-    pub fn changes_toggle_grouping(&mut self) {}
-    pub fn changes_scroll_left(&mut self, _cols: usize) {}
-    pub fn changes_scroll_right(&mut self, _cols: usize) {}
-    pub fn changes_viewport_scroll(&mut self, _delta: isize) {}
+    pub fn changes_move_entry(&mut self, delta: isize) {
+        let Some(view) = self.changes_view() else {
+            return;
+        };
+        let current = view.selected_idx();
+        let is_entry = |i: usize| matches!(view.rows[i], ChangesRow::Entry { .. });
+        let target = if delta > 0 {
+            (current + 1..view.rows.len()).find(|&i| is_entry(i))
+        } else {
+            (0..current.min(view.rows.len()))
+                .rev()
+                .find(|&i| is_entry(i))
+        };
+        if let Some(target) = target {
+            self.changes_select(target);
+        }
+    }
+
+    /// The cursor landed on a row: an entry is previewed; any other row
+    /// leaves the diff as it is.
+    fn changes_follow_selection(&mut self) {
+        if let Some((key, entry)) = self.changes_selected_entry() {
+            self.changes_show_entry(key, entry);
+        }
+    }
+
+    /// Previews `entry`: the cached diff when there is one, else a fresh
+    /// read. A read error keeps the diff on screen.
+    fn changes_show_entry(&mut self, key: ChangeDiffKey, entry: ChangeEntry) {
+        let already = matches!(&self.diff_source, DiffSource::Changes(Some(current)) if *current == key)
+            && self
+                .changes
+                .as_ref()
+                .is_some_and(|view| view.selected.as_ref() == Some(&key));
+        if already {
+            return;
+        }
+        let cached = self
+            .changes
+            .as_ref()
+            .and_then(|view| view.diff_cache.get(&key).cloned());
+        let files = match cached {
+            Some(files) => files,
+            None => {
+                let highlighter = self.theme.syntax_highlighter();
+                match self.vcs.get_change_entry_diff(&key, &entry, highlighter) {
+                    Ok(files) => Self::filter_ignored_diff_files(&self.vcs_info.root_path, files),
+                    Err(TuicrError::NoChanges) => Vec::new(),
+                    Err(e) => {
+                        self.set_error(format!(
+                            "Failed to load the diff of {}: {e}",
+                            key.display_path().display()
+                        ));
+                        return;
+                    }
+                }
+            }
+        };
+        self.install_preview(key, files);
+    }
+
+    /// Puts one entry's diff in the pane. Registers the file with the
+    /// session through `ensure_file` (insert-only), never `add_diff_file`:
+    /// the Staged and Unstaged previews of one path hash differently, and
+    /// invalidating would flip `reviewed` on every cursor move. Does not go
+    /// through `apply_diff_files` either, which would `jump_to_file` and
+    /// rewrite `file_list_state`.
+    fn install_preview(&mut self, key: ChangeDiffKey, files: Vec<DiffFile>) {
+        for file in &files {
+            self.session.ensure_file(file);
+        }
+        if let Some(view) = self.changes.as_mut() {
+            view.selected = Some(key.clone());
+            view.diff_cache.insert(key.clone(), files.clone());
+        }
+        self.diff_source = DiffSource::Changes(Some(key));
+        self.diff_files = files;
+        self.clear_expanded_gaps();
+        self.populate_file_line_count_cache();
+        // Cursor to the top of the one-file preview; viewport size and the
+        // wrap setting are the user's, not the preview's.
+        self.diff_state.cursor_line = 0;
+        self.diff_state.scroll_offset = 0;
+        self.diff_state.scroll_x = 0;
+        self.diff_state.current_file_idx = 0;
+        self.rebuild_annotations();
+    }
+
+    /// Nothing to preview (clean tree, or the previewed entry is gone).
+    fn changes_clear_preview(&mut self) {
+        if let Some(view) = self.changes.as_mut() {
+            view.selected = None;
+        }
+        self.diff_source = DiffSource::Changes(None);
+        self.diff_files.clear();
+        self.clear_expanded_gaps();
+        self.diff_state.cursor_line = 0;
+        self.diff_state.scroll_offset = 0;
+        self.diff_state.current_file_idx = 0;
+        self.rebuild_annotations();
+    }
+
+    /// Watch landing: the previewed entry moved to another group. The diff
+    /// half of this tick was read for the old key, so the stale check drops
+    /// it and the next tick fetches the new one; until then the pane shows
+    /// the cached diff when there is one, else nothing.
+    fn changes_repoint_preview(&mut self, key: ChangeDiffKey) {
+        if matches!(&self.diff_source, DiffSource::Changes(Some(current)) if *current == key) {
+            if let Some(view) = self.changes.as_mut() {
+                view.selected = Some(key);
+            }
+            return;
+        }
+        let cached = self
+            .changes
+            .as_ref()
+            .and_then(|view| view.diff_cache.get(&key).cloned());
+        match cached {
+            Some(files) => self.install_preview(key, files),
+            None => {
+                self.changes_clear_preview();
+                if let Some(view) = self.changes.as_mut() {
+                    view.selected = Some(key.clone());
+                }
+                self.diff_source = DiffSource::Changes(Some(key));
+            }
+        }
+    }
+
+    /// Rows were rebuilt under the cursor (collapse, grouping, refresh):
+    /// keep the same row when it still exists (an entry by key, following
+    /// a stage / unstage into its new group; a group or directory by
+    /// identity), else the nearest entry row; then show the previewed entry
+    /// again, or nothing when it is gone.
+    fn changes_reselect(
+        &mut self,
+        prev_row: Option<ChangesRow>,
+        prev_idx: usize,
+        prev_key: Option<ChangeDiffKey>,
+        refetch: bool,
+    ) {
+        let Some(view) = self.changes.as_mut() else {
+            return;
+        };
+        let rows = &view.rows;
+        let idx = match &prev_row {
+            Some(ChangesRow::Entry { key, .. }) => relocate_key(view, key)
+                .and_then(|moved| rows.iter().position(|row| row.entry_key() == Some(&moved))),
+            Some(other) => rows.iter().position(|row| same_row(row, other)),
+            None => None,
+        };
+        let idx = idx.or_else(|| {
+            let n = rows.len();
+            let is_entry = |i: usize| matches!(rows[i], ChangesRow::Entry { .. });
+            (prev_idx.min(n.saturating_sub(1))..n)
+                .find(|&i| is_entry(i))
+                .or_else(|| (0..prev_idx.min(n)).rev().find(|&i| is_entry(i)))
+                .or_else(|| Self::selectable_near(rows, prev_idx, false))
+        });
+        view.select(idx.unwrap_or(0));
+
+        let show = match self.changes_selected_entry() {
+            Some(shown) => Some(shown),
+            None => {
+                let view = self.changes.as_ref().expect("view checked above");
+                prev_key
+                    .as_ref()
+                    .and_then(|key| relocate_key(view, key))
+                    .and_then(|key| entry_for(view, &key).map(|entry| (key, entry)))
+            }
+        };
+        match show {
+            Some((key, entry)) if refetch => self.changes_show_entry(key, entry),
+            Some((key, _)) => self.changes_repoint_preview(key),
+            None => self.changes_clear_preview(),
+        }
+    }
+
+    /// Rows changed shape but the data did not (collapse, expand, grouping).
+    fn changes_rebuild_keep_selection(&mut self) {
+        let Some(view) = self.changes.as_mut() else {
+            return;
+        };
+        let prev_row = view.selected_row().cloned();
+        let prev_idx = view.selected_idx();
+        let prev_key = view.selected.clone();
+        view.rebuild_rows();
+        self.changes_reselect(prev_row, prev_idx, prev_key, true);
+    }
+
+    // ---- Staging ------------------------------------------------------------
+
+    /// Space / Enter: the entry's checkbox, the group's checkbox, a
+    /// directory's fold, or the hint on an uninitialized submodule.
+    pub fn changes_toggle_stage_at_cursor(&mut self) {
+        let Some(row) = self.changes_selected_row().cloned() else {
+            return;
+        };
+        match row {
+            ChangesRow::Entry { key, entry, .. } => match key.group {
+                ChangeGroup::Staged => self.changes_unstage_entry(key, entry),
+                ChangeGroup::Unstaged | ChangeGroup::Untracked => {
+                    self.changes_stage_entry(key, entry)
+                }
+                ChangeGroup::Conflicted => self.changes_open_merge_view(),
+            },
+            ChangesRow::Group {
+                group, submodule, ..
+            } => self.changes_group_checkbox(group, submodule),
+            ChangesRow::Directory { .. } => self.changes_toggle_collapse_at_cursor(),
+            ChangesRow::Uninitialized {
+                path, submodule, ..
+            } => self.changes_uninitialized_hint(&path, submodule.as_deref()),
+            ChangesRow::Note { .. } => {}
+        }
+    }
+
+    /// `s`: stage the entry (a conflicted entry is marked resolved; the
+    /// backend refuses while markers remain); a group row behaves like Space.
+    pub fn changes_stage_at_cursor(&mut self) {
+        let Some(row) = self.changes_selected_row().cloned() else {
+            return;
+        };
+        match row {
+            ChangesRow::Entry { key, entry, .. } => self.changes_stage_rules(key, entry),
+            ChangesRow::Group {
+                group, submodule, ..
+            } => self.changes_group_checkbox(group, submodule),
+            ChangesRow::Directory { .. } => self.changes_toggle_collapse_at_cursor(),
+            ChangesRow::Uninitialized {
+                path, submodule, ..
+            } => self.changes_uninitialized_hint(&path, submodule.as_deref()),
+            ChangesRow::Note { .. } => {}
+        }
+    }
+
+    /// `u`: unstage the entry; a group row behaves like Space.
+    pub fn changes_unstage_at_cursor(&mut self) {
+        let Some(row) = self.changes_selected_row().cloned() else {
+            return;
+        };
+        match row {
+            ChangesRow::Entry { key, entry, .. } => self.changes_unstage_rules(key, entry),
+            ChangesRow::Group {
+                group, submodule, ..
+            } => self.changes_group_checkbox(group, submodule),
+            ChangesRow::Directory { .. } => self.changes_toggle_collapse_at_cursor(),
+            ChangesRow::Uninitialized {
+                path, submodule, ..
+            } => self.changes_uninitialized_hint(&path, submodule.as_deref()),
+            ChangesRow::Note { .. } => {}
+        }
+    }
+
+    /// `s` issued from the diff pane: stage the previewed entry.
+    pub fn changes_stage_previewed(&mut self) {
+        let Some((key, entry)) = self.changes_previewed_entry() else {
+            self.set_warning("Nothing is previewed; move onto an entry in the Changes pane");
+            return;
+        };
+        self.changes_stage_rules(key, entry);
+    }
+
+    /// `u` issued from the diff pane: unstage the previewed entry.
+    pub fn changes_unstage_previewed(&mut self) {
+        let Some((key, entry)) = self.changes_previewed_entry() else {
+            self.set_warning("Nothing is previewed; move onto an entry in the Changes pane");
+            return;
+        };
+        self.changes_unstage_rules(key, entry);
+    }
+
+    /// `:discard` issued from the diff pane: ask about the previewed entry.
+    pub fn changes_request_discard_previewed(&mut self) {
+        let Some((key, entry)) = self.changes_previewed_entry() else {
+            self.set_warning("Nothing is previewed; move onto an entry in the Changes pane");
+            return;
+        };
+        self.changes_request_discard_entry(key, entry);
+    }
+
+    fn changes_stage_rules(&mut self, key: ChangeDiffKey, entry: ChangeEntry) {
+        if key.group == ChangeGroup::Staged {
+            self.set_message(format!(
+                "{} is staged already",
+                key.display_path().display()
+            ));
+            return;
+        }
+        self.changes_stage_entry(key, entry);
+    }
+
+    fn changes_unstage_rules(&mut self, key: ChangeDiffKey, entry: ChangeEntry) {
+        let shown = key.display_path();
+        match key.group {
+            ChangeGroup::Staged => self.changes_unstage_entry(key, entry),
+            ChangeGroup::Conflicted => {
+                self.set_message(format!("Resolve {} first (:merge)", shown.display()))
+            }
+            ChangeGroup::Untracked => {
+                self.set_message(format!("{} is not tracked", shown.display()))
+            }
+            // The same path may be staged as well; unstage that side.
+            ChangeGroup::Unstaged => {
+                let staged = self
+                    .changes_set_for(key.submodule.as_deref())
+                    .and_then(|set| set.find(ChangeGroup::Staged, &key.path).cloned());
+                match staged {
+                    Some(staged) => {
+                        let key = ChangeDiffKey {
+                            group: ChangeGroup::Staged,
+                            ..key
+                        };
+                        self.changes_unstage_entry(key, staged);
+                    }
+                    None => self.set_message(format!("Nothing staged for {}", shown.display())),
+                }
+            }
+        }
+    }
+
+    fn changes_stage_entry(&mut self, key: ChangeDiffKey, entry: ChangeEntry) {
+        let shown = key.display_path();
+        let shown = shown.display();
+        if entry.is_embedded_repo() {
+            self.set_warning(format!(
+                "{shown} is a git repository; add it with git submodule add, or remove its .git"
+            ));
+            return;
+        }
+        // A probe that failed leaves the kind unknown; let the backend decide.
+        if let Some(sm) = entry.submodule()
+            && sm.probe_error.is_none()
+            && !entry.stageable(key.group)
+        {
+            self.set_warning(format!(
+                "{shown} has uncommitted changes inside it; commit there first (l expands it)"
+            ));
+            return;
+        }
+        match self.vcs.stage_change_entry(&key, &entry) {
+            Ok(()) => self.after_local_change(format!("Staged {shown}")),
+            Err(e) => self.set_error(format!("Failed to stage {shown}: {e}")),
+        }
+    }
+
+    fn changes_unstage_entry(&mut self, key: ChangeDiffKey, entry: ChangeEntry) {
+        let shown = key.display_path();
+        let shown = shown.display();
+        if entry.is_embedded_repo() {
+            self.set_warning(format!("{shown} is a git repository; it is not staged"));
+            return;
+        }
+        match self.vcs.unstage_change_entry(&key, &entry) {
+            Ok(()) => self.after_local_change(format!("Unstaged {shown}")),
+            Err(e) => self.set_error(format!("Failed to unstage {shown}: {e}")),
+        }
+    }
+
+    /// The group row's checkbox: stage or unstage everything in it, or open
+    /// the merge view for conflicts. A nested group runs in its submodule.
+    fn changes_group_checkbox(&mut self, group: ChangeGroup, submodule: Option<PathBuf>) {
+        match group.bulk_op() {
+            Some(op) => self.changes_bulk_in(op, submodule),
+            None => self.changes_open_merge_view(),
+        }
+    }
+
+    fn changes_open_merge_view(&mut self) {
+        if let Err(e) = self.open_merge_view(InputMode::Normal) {
+            self.set_error(format!("Failed to open merge view: {e}"));
+        }
+    }
+
+    /// `a` / `A` / `U`: whole-repository bulk operations.
+    pub fn changes_bulk(&mut self, op: ChangeBulkOp) {
+        self.changes_bulk_in(op, None);
+    }
+
+    fn changes_bulk_in(&mut self, op: ChangeBulkOp, submodule: Option<PathBuf>) {
+        match self.vcs.change_bulk_op(op, submodule.as_deref()) {
+            Ok(()) => {
+                let message = match &submodule {
+                    Some(sub) => format!("{} in {}", op.done_message(), sub.display()),
+                    None => op.done_message().to_string(),
+                };
+                self.after_local_change(message);
+            }
+            Err(e) => {
+                let what = match op {
+                    ChangeBulkOp::StageTracked => "Staging tracked changes",
+                    ChangeBulkOp::StageUntracked => "Staging untracked files",
+                    ChangeBulkOp::StageAll => "Staging everything",
+                    ChangeBulkOp::UnstageAll => "Unstaging everything",
+                };
+                self.set_error(format!("{what} failed: {e}"));
+            }
+        }
+    }
+
+    fn changes_uninitialized_hint(&mut self, path: &Path, submodule: Option<&Path>) {
+        let command = match submodule {
+            Some(sub) => format!(
+                "git -C {} submodule update --init -- {}",
+                sub.display(),
+                path.display()
+            ),
+            None => format!("git submodule update --init -- {}", path.display()),
+        };
+        self.set_message(format!("Not checked out · {command}"));
+    }
+
+    // ---- Discard --------------------------------------------------------------
+
+    /// `X`: ask before discarding the entry or the whole group under the
+    /// cursor (the prompts are `DiscardTarget::prompt`).
+    pub fn changes_request_discard_at_cursor(&mut self) {
+        let Some(row) = self.changes_selected_row().cloned() else {
+            return;
+        };
+        match row {
+            ChangesRow::Entry { key, entry, .. } => self.changes_request_discard_entry(key, entry),
+            ChangesRow::Group {
+                group, submodule, ..
+            } => self.changes_request_discard_group(group, submodule),
+            ChangesRow::Directory { .. } | ChangesRow::Uninitialized { .. } => {
+                self.set_message("Move the cursor onto an entry or a group row to discard")
+            }
+            ChangesRow::Note { .. } => {}
+        }
+    }
+
+    fn changes_request_discard_entry(&mut self, key: ChangeDiffKey, entry: ChangeEntry) {
+        let shown = key.display_path();
+        let shown = shown.display();
+        if entry.is_embedded_repo() {
+            self.set_message(format!("{shown} is a git repository; delete it by hand"));
+            return;
+        }
+        if key.group == ChangeGroup::Conflicted || entry.status == ChangeStatus::Conflicted {
+            self.set_message(format!("Resolve {shown} first (:merge)"));
+            return;
+        }
+        if let Some(sm) = entry.submodule()
+            && entry.status == ChangeStatus::Deleted
+            && !sm.registered
+        {
+            self.set_message(format!(
+                "{shown} was removed and is not in .gitmodules; restore it by hand"
+            ));
+            return;
+        }
+        self.pending_discard = Some(DiscardTarget::Entry { key, entry });
+        self.enter_confirm_mode(ConfirmAction::DiscardChanges);
+    }
+
+    fn changes_request_discard_group(&mut self, group: ChangeGroup, submodule: Option<PathBuf>) {
+        if group == ChangeGroup::Conflicted {
+            self.set_message("Resolve conflicts with :merge");
+            return;
+        }
+        let Some(entries) = self
+            .changes_set_for(submodule.as_deref())
+            .map(|set| set.group(group).to_vec())
+        else {
+            return;
+        };
+        if entries.is_empty() {
+            return;
+        }
+        self.pending_discard = Some(DiscardTarget::Group {
+            group,
+            submodule,
+            entries,
+        });
+        self.enter_confirm_mode(ConfirmAction::DiscardChanges);
+    }
+
+    // ---- Expand / collapse ----------------------------------------------------
+
+    /// `l` / `→`: expand the group, directory or dirty submodule under the
+    /// cursor; pan right on anything else.
+    pub fn changes_expand_at_cursor(&mut self) {
+        let Some(row) = self.changes_selected_row().cloned() else {
+            return;
+        };
+        match row {
+            ChangesRow::Group {
+                submodule,
+                group,
+                expanded,
+                ..
+            } => {
+                if !expanded && let Some(view) = self.changes.as_mut() {
+                    view.collapsed_groups.remove(&(submodule, group));
+                    self.changes_rebuild_keep_selection();
+                }
+            }
+            ChangesRow::Directory {
+                submodule,
+                group,
+                path,
+                expanded,
+                ..
+            } => {
+                if !expanded && let Some(view) = self.changes.as_mut() {
+                    view.collapsed_dirs.remove(&(submodule, group, path));
+                    self.changes_rebuild_keep_selection();
+                }
+            }
+            ChangesRow::Entry {
+                key,
+                expanded: Some(false),
+                ..
+            } => self.changes_load_submodule(key.display_path()),
+            ChangesRow::Entry {
+                expanded: Some(true),
+                ..
+            } => {}
+            ChangesRow::Entry { .. } | ChangesRow::Uninitialized { .. } => {
+                self.changes_scroll_right(4)
+            }
+            ChangesRow::Note { .. } => {}
+        }
+    }
+
+    /// Reads a dirty submodule's own change set and nests it under its row.
+    fn changes_load_submodule(&mut self, full: PathBuf) {
+        let expansion = match self.vcs.get_submodule_change_set(&full) {
+            Ok(inner) => SubmoduleExpansion::Loaded(self.filter_change_set(inner, Some(&full))),
+            Err(e) => SubmoduleExpansion::Failed(e.to_string()),
+        };
+        if let Some(view) = self.changes.as_mut() {
+            view.submodules.insert(full, expansion);
+        }
+        self.changes_rebuild_keep_selection();
+    }
+
+    /// `h` / `←`: collapse the row under the cursor (an expanded submodule
+    /// drops its inner set, so `r` does not re-read it), or move to the
+    /// parent row when it is already collapsed; pan left on a panned entry.
+    pub fn changes_collapse_at_cursor(&mut self) {
+        let Some(row) = self.changes_selected_row().cloned() else {
+            return;
+        };
+        let scroll_x = self.changes.as_ref().map_or(0, |view| view.scroll_x);
+        match row {
+            ChangesRow::Group {
+                submodule,
+                group,
+                expanded: true,
+                ..
+            } => {
+                if let Some(view) = self.changes.as_mut() {
+                    view.collapsed_groups.insert((submodule, group));
+                }
+                self.changes_rebuild_keep_selection();
+            }
+            ChangesRow::Directory {
+                submodule,
+                group,
+                path,
+                expanded: true,
+                ..
+            } => {
+                if let Some(view) = self.changes.as_mut() {
+                    view.collapsed_dirs.insert((submodule, group, path));
+                }
+                self.changes_rebuild_keep_selection();
+            }
+            ChangesRow::Entry {
+                key,
+                expanded: Some(true),
+                ..
+            } => {
+                let full = key.display_path();
+                if let Some(view) = self.changes.as_mut() {
+                    view.submodules.remove(&full);
+                    view.diff_cache
+                        .retain(|cached, _| cached.submodule.as_deref() != Some(full.as_path()));
+                }
+                // The preview may have been an inner entry; it is gone now.
+                if matches!(&self.diff_source, DiffSource::Changes(Some(k)) if k.submodule.as_deref() == Some(full.as_path()))
+                {
+                    self.changes_clear_preview();
+                }
+                self.changes_rebuild_keep_selection();
+            }
+            ChangesRow::Entry { expanded: None, .. } if scroll_x > 0 => self.changes_scroll_left(4),
+            _ => self.changes_select_parent(),
+        }
+    }
+
+    /// The nearest selectable row above with a smaller depth.
+    fn changes_select_parent(&mut self) {
+        let Some(view) = self.changes_view() else {
+            return;
+        };
+        let idx = view.selected_idx();
+        let depth = view.rows.get(idx).map_or(0, ChangesRow::depth);
+        let parent = (0..idx.min(view.rows.len()))
+            .rev()
+            .find(|&i| view.rows[i].depth() < depth && view.rows[i].selectable());
+        if let Some(parent) = parent {
+            self.changes_select(parent);
+        }
+    }
+
+    /// Mouse on a group / directory row, or Space on a directory: fold it
+    /// the other way.
+    fn changes_toggle_collapse_at_cursor(&mut self) {
+        let expanded = match self.changes_selected_row() {
+            Some(ChangesRow::Group { expanded, .. })
+            | Some(ChangesRow::Directory { expanded, .. }) => *expanded,
+            Some(ChangesRow::Entry {
+                expanded: Some(expanded),
+                ..
+            }) => *expanded,
+            _ => return,
+        };
+        if expanded {
+            self.changes_collapse_at_cursor();
+        } else {
+            self.changes_expand_at_cursor();
+        }
+    }
+
+    /// `o`: expand every group and directory (submodule expansions untouched).
+    pub fn changes_expand_all(&mut self) {
+        let Some(view) = self.changes_view_mut() else {
+            return;
+        };
+        view.collapsed_groups.clear();
+        view.collapsed_dirs.clear();
+        self.changes_rebuild_keep_selection();
+        self.set_message("All groups expanded");
+    }
+
+    /// `O`: collapse every group and directory on screen.
+    pub fn changes_collapse_all(&mut self) {
+        let Some(view) = self.changes_view_mut() else {
+            return;
+        };
+        let ChangesView {
+            rows,
+            collapsed_groups,
+            collapsed_dirs,
+            ..
+        } = view;
+        for row in rows.iter() {
+            match row {
+                ChangesRow::Group {
+                    submodule, group, ..
+                } => {
+                    collapsed_groups.insert((submodule.clone(), *group));
+                }
+                ChangesRow::Directory {
+                    submodule,
+                    group,
+                    path,
+                    ..
+                } => {
+                    collapsed_dirs.insert((submodule.clone(), *group, path.clone()));
+                }
+                _ => {}
+            }
+        }
+        self.changes_rebuild_keep_selection();
+        self.set_message("All groups collapsed");
+    }
+
+    /// `f`: flat list ↔ group by directory.
+    pub fn changes_toggle_grouping(&mut self) {
+        let Some(view) = self.changes_view_mut() else {
+            return;
+        };
+        view.group_by_directory = !view.group_by_directory;
+        let grouped = view.group_by_directory;
+        self.changes_rebuild_keep_selection();
+        self.set_message(if grouped {
+            "Changes grouped by directory"
+        } else {
+            "Changes as a flat list"
+        });
+    }
+
+    // ---- Scrolling and mouse --------------------------------------------------
+
+    /// `←` / `h` on a panned entry: pan the rows back left.
+    pub fn changes_scroll_left(&mut self, cols: usize) {
+        if let Some(view) = self.changes_view_mut() {
+            view.scroll_x = view.scroll_x.saturating_sub(cols);
+        }
+    }
+
+    /// `→` / `l` on an entry that cannot expand: pan the rows right, as far
+    /// as the widest row (measured by the renderer) allows.
+    pub fn changes_scroll_right(&mut self, cols: usize) {
+        if let Some(view) = self.changes_view_mut() {
+            let max = view.max_content_width.saturating_sub(view.viewport_width);
+            view.scroll_x = view.scroll_x.saturating_add(cols).min(max);
+        }
+    }
+
+    /// Wheel: move the viewport, keeping the selection inside it (mirrors
+    /// `file_list_viewport_scroll_*`).
+    pub fn changes_viewport_scroll(&mut self, delta: isize) {
+        let Some(view) = self.changes_view_mut() else {
+            return;
+        };
+        let viewport = view.viewport_height.max(1);
+        let max_offset = view.rows.len().saturating_sub(viewport);
+        let offset = view.list.offset();
+        let new_offset = if delta >= 0 {
+            offset.saturating_add(delta as usize).min(max_offset)
+        } else {
+            offset.saturating_sub(delta.unsigned_abs())
+        };
+        *view.list.offset_mut() = new_offset;
+        let selected = view.selected_idx();
+        let last_visible = (new_offset + viewport).saturating_sub(1);
+        let target = if selected < new_offset {
+            Some(new_offset)
+        } else if selected > last_visible {
+            Some(last_visible)
+        } else {
+            None
+        };
+        if let Some(target) = target {
+            self.changes_select(target);
+        }
+    }
+
     /// Mouse: select `idx`; `col` is the column inside the pane (after
     /// adding `scroll_x`) so the expander / checkbox cells can be told apart.
-    pub fn changes_click(&mut self, _idx: usize, _col: usize) {}
-    /// Diff watch landing: install a fresher change set. `true` when the
-    /// screen changed. Not called until the watch forwards a change set
-    /// (`poll_diff_watch_reload_events` drops it for now).
-    #[allow(dead_code)]
-    pub(in crate::app) fn changes_apply_watched_set(&mut self, _set: ChangeSet) -> bool {
-        false
+    pub fn changes_click(&mut self, idx: usize, col: usize) {
+        let Some(row) = self.changes_rows().get(idx).cloned() else {
+            return;
+        };
+        if !row.selectable() {
+            return;
+        }
+        self.changes_select(idx);
+        match &row {
+            ChangesRow::Group { .. } | ChangesRow::Directory { .. } => {
+                self.changes_toggle_collapse_at_cursor()
+            }
+            ChangesRow::Entry {
+                expanded: Some(_), ..
+            } if row.expander_cell() == Some(col) => self.changes_toggle_collapse_at_cursor(),
+            ChangesRow::Entry { .. } if col < row.glyph_cell() => {
+                self.changes_toggle_stage_at_cursor()
+            }
+            _ => {}
+        }
     }
+
+    // ---- Refresh and the diff watch -------------------------------------------
+
+    /// `r`, `:e`, and every local-change operation: re-read the change set,
+    /// drop cached diffs, keep the selection, re-show its diff.
+    pub fn refresh_changes_view(&mut self, message: Option<String>) {
+        if self.refresh_changes_view_inner()
+            && let Some(message) = message
+        {
+            self.set_message(message);
+        }
+    }
+
+    /// `r`: refresh and say what the tree holds.
+    pub fn changes_refresh(&mut self) {
+        if !self.refresh_changes_view_inner() {
+            return;
+        }
+        let Some(view) = self.changes_view() else {
+            return;
+        };
+        let set = &view.set;
+        let summary = format!(
+            "Refreshed · {} staged · {} unstaged · {} unversioned",
+            set.staged.len(),
+            set.unstaged.len(),
+            set.untracked.len()
+        );
+        self.set_message(summary);
+    }
+
+    /// `true` when the set was re-read and installed.
+    fn refresh_changes_view_inner(&mut self) -> bool {
+        if !self.changes_active() {
+            return false;
+        }
+        let set = match self.vcs.get_change_set() {
+            Ok(set) => self.filter_change_set(set, None),
+            Err(e) => {
+                self.set_error(format!("Failed to read the change set: {e}"));
+                return false;
+            }
+        };
+        // Expanded submodules: re-read the ones that are still dirty, drop
+        // the rest and every failed expansion.
+        let expanded: Vec<PathBuf> = self
+            .changes
+            .as_ref()
+            .map(|view| {
+                let mut paths: Vec<PathBuf> = view
+                    .submodules
+                    .iter()
+                    .filter(|(_, expansion)| matches!(expansion, SubmoduleExpansion::Loaded(_)))
+                    .map(|(path, _)| path.clone())
+                    .collect();
+                paths.sort_by_key(|path| path.components().count());
+                paths
+            })
+            .unwrap_or_default();
+        let mut submodules: HashMap<PathBuf, SubmoduleExpansion> = HashMap::new();
+        for full in expanded {
+            if !expandable_in(&set, &submodules, &full) {
+                continue;
+            }
+            let expansion = match self.vcs.get_submodule_change_set(&full) {
+                Ok(inner) => SubmoduleExpansion::Loaded(self.filter_change_set(inner, Some(&full))),
+                Err(e) => SubmoduleExpansion::Failed(e.to_string()),
+            };
+            submodules.insert(full, expansion);
+        }
+
+        let Some(view) = self.changes.as_mut() else {
+            return false;
+        };
+        let prev_row = view.selected_row().cloned();
+        let prev_idx = view.selected_idx();
+        // Cleared so the reselect fetches afresh instead of short-circuiting
+        // on "already shown".
+        let prev_key = view.selected.take();
+        view.diff_cache.clear();
+        view.fingerprint = set.fingerprint();
+        view.set = set;
+        view.submodules = submodules;
+        view.rebuild_rows();
+        self.changes_reselect(prev_row, prev_idx, prev_key, true);
+        self.refresh_log_rows_keep_cursor();
+        self.refresh_repo_status();
+        true
+    }
+
+    /// Diff watch landing: install a fresher change set. `true` when the
+    /// screen changed. The diff half of the same tick follows separately;
+    /// nothing is re-read here.
+    pub(in crate::app) fn changes_apply_watched_set(&mut self, set: ChangeSet) -> bool {
+        if !self.changes_active() {
+            return false;
+        }
+        let set = self.filter_change_set(set, None);
+        let fingerprint = set.fingerprint();
+        let Some(view) = self.changes.as_mut() else {
+            return false;
+        };
+        if view.fingerprint == fingerprint {
+            return false;
+        }
+        let prev_row = view.selected_row().cloned();
+        let prev_idx = view.selected_idx();
+        let prev_key = view.selected.clone();
+        // Keep the expansions whose submodule is still dirty; their inner
+        // sets are re-read by `r` or the next operation.
+        let keep: Vec<PathBuf> = view
+            .submodules
+            .keys()
+            .filter(|path| expandable_in(&set, &view.submodules, path))
+            .cloned()
+            .collect();
+        view.submodules.retain(|path, _| keep.contains(path));
+        view.fingerprint = fingerprint;
+        view.set = set;
+        view.rebuild_rows();
+        self.changes_reselect(prev_row, prev_idx, prev_key, false);
+        self.refresh_log_rows_keep_cursor();
+        true
+    }
+
+    /// Diff watch landing for the previewed entry: install it without
+    /// moving the cursor. `true` when the screen changed.
+    pub(in crate::app) fn changes_apply_watched_diff(&mut self, files: Vec<DiffFile>) -> bool {
+        let DiffSource::Changes(Some(key)) = &self.diff_source else {
+            return false;
+        };
+        let key = key.clone();
+        if diff_files_fingerprint(&files) == diff_files_fingerprint(&self.diff_files) {
+            return false;
+        }
+        let cursor = self.diff_state.cursor_line;
+        let offset = self.diff_state.scroll_offset;
+        self.install_preview(key, files);
+        self.diff_state.cursor_line = cursor.min(self.total_lines().saturating_sub(1));
+        self.diff_state.scroll_offset = offset.min(self.max_scroll_offset());
+        self.ensure_cursor_visible();
+        self.update_current_file_from_cursor();
+        true
+    }
+
+    // ---- Editor and commit ----------------------------------------------------
+
+    /// `e` / `:edit` in the pane: `$EDITOR` on the previewed entry.
+    pub fn changes_edit_previewed(&mut self) {
+        if self.diff_files.is_empty() {
+            self.set_warning("Select an entry in the Changes pane to open it in the editor");
+            return;
+        }
+        self.queue_editor_for_file_idx(0, None);
+    }
+
+    /// `c` / `C`: the comment box becomes the commit message editor. The
+    /// commit is the superproject's even with the cursor inside an expanded
+    /// submodule, and the prompt says so.
+    pub fn changes_start_commit_composer(&mut self, amend: bool) {
+        let inside = match self.changes_selected_row() {
+            Some(ChangesRow::Entry { key, .. }) => key.submodule.clone(),
+            Some(ChangesRow::Group { submodule, .. })
+            | Some(ChangesRow::Directory { submodule, .. })
+            | Some(ChangesRow::Uninitialized { submodule, .. }) => submodule.clone(),
+            _ => None,
+        };
+        self.start_commit_composer(amend);
+        if self.input_mode == InputMode::Comment
+            && let Some(sub) = inside
+        {
+            let what = if amend { "Amend" } else { "Commit" };
+            self.set_message(format!(
+                "{what} the superproject, not {}: type the message, then Enter / Ctrl-s to commit, Esc to cancel",
+                sub.display()
+            ));
+        }
+    }
+}
+
+/// Rows with the same identity, ignoring counts and fold state.
+fn same_row(a: &ChangesRow, b: &ChangesRow) -> bool {
+    match (a, b) {
+        (
+            ChangesRow::Group {
+                submodule: sa,
+                group: ga,
+                ..
+            },
+            ChangesRow::Group {
+                submodule: sb,
+                group: gb,
+                ..
+            },
+        ) => sa == sb && ga == gb,
+        (
+            ChangesRow::Directory {
+                submodule: sa,
+                group: ga,
+                path: pa,
+                ..
+            },
+            ChangesRow::Directory {
+                submodule: sb,
+                group: gb,
+                path: pb,
+                ..
+            },
+        ) => sa == sb && ga == gb && pa == pb,
+        (ChangesRow::Entry { key: ka, .. }, ChangesRow::Entry { key: kb, .. }) => ka == kb,
+        (
+            ChangesRow::Uninitialized {
+                submodule: sa,
+                path: pa,
+                ..
+            },
+            ChangesRow::Uninitialized {
+                submodule: sb,
+                path: pb,
+                ..
+            },
+        ) => sa == sb && pa == pb,
+        _ => false,
+    }
+}
+
+/// Where `key`'s entry is now: the same group, or the group a stage /
+/// unstage moved it to. `None` when it is gone (or its submodule is no
+/// longer expanded).
+fn relocate_key(view: &ChangesView, key: &ChangeDiffKey) -> Option<ChangeDiffKey> {
+    let set = match &key.submodule {
+        None => &view.set,
+        Some(sub) => match view.submodules.get(sub) {
+            Some(SubmoduleExpansion::Loaded(inner)) => inner,
+            _ => return None,
+        },
+    };
+    let group = set.group_of(&key.path, key.group)?;
+    Some(ChangeDiffKey {
+        group,
+        path: key.path.clone(),
+        submodule: key.submodule.clone(),
+    })
+}
+
+fn entry_for(view: &ChangesView, key: &ChangeDiffKey) -> Option<ChangeEntry> {
+    let set = match &key.submodule {
+        None => &view.set,
+        Some(sub) => match view.submodules.get(sub) {
+            Some(SubmoduleExpansion::Loaded(inner)) => inner,
+            _ => return None,
+        },
+    };
+    set.find(key.group, &key.path).cloned()
+}
+
+/// Whether `full` (superproject-relative) still names a dirty submodule
+/// entry: in `top`, or in the loaded set of the nearest expanded ancestor.
+fn expandable_in(
+    top: &ChangeSet,
+    submodules: &HashMap<PathBuf, SubmoduleExpansion>,
+    full: &Path,
+) -> bool {
+    let mut owner: Option<(&Path, &ChangeSet)> = None;
+    for (path, expansion) in submodules {
+        if let SubmoduleExpansion::Loaded(inner) = expansion
+            && path.as_path() != full
+            && full.starts_with(path)
+            && owner.is_none_or(|(best, _)| path.components().count() > best.components().count())
+        {
+            owner = Some((path.as_path(), inner));
+        }
+    }
+    let (set, relative) = match owner {
+        Some((path, inner)) => (inner, full.strip_prefix(path).unwrap_or(full)),
+        None => (top, full),
+    };
+    [ChangeGroup::Staged, ChangeGroup::Unstaged]
+        .iter()
+        .any(|group| {
+            set.find(*group, relative)
+                .is_some_and(ChangeEntry::expandable)
+        })
 }

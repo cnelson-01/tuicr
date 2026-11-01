@@ -118,6 +118,8 @@ impl App {
     /// Invalid focus states are reported through the status bar instead.
     pub fn queue_editor_for_focused_item(&mut self) {
         match self.focused_panel {
+            // The Changes pane previews one entry; that is the file to open.
+            FocusedPanel::FileList if self.changes_active() => self.changes_edit_previewed(),
             FocusedPanel::FileList => match self.get_selected_tree_item() {
                 Some(FileTreeItem::File { file_idx, .. }) => {
                     self.queue_editor_for_file_idx(file_idx, None)
@@ -154,7 +156,7 @@ impl App {
         }
     }
 
-    fn queue_editor_for_file_idx(&mut self, file_idx: usize, line: Option<u32>) {
+    pub(in crate::app) fn queue_editor_for_file_idx(&mut self, file_idx: usize, line: Option<u32>) {
         let Some(file) = self.diff_files.get(file_idx) else {
             self.set_warning("No file selected");
             return;
