@@ -32,6 +32,7 @@ impl App {
             _ => {}
         }
         match self.focused_panel {
+            FocusedPanel::FileList if self.changes_active() => Scope::Changes,
             FocusedPanel::FileList => Scope::Tree,
             FocusedPanel::CommitSelector if self.log_pane.is_some() => Scope::Log,
             _ => Scope::Diff,
@@ -151,6 +152,13 @@ impl App {
                     self.enable_log_pane();
                 }
                 self.focused_panel = FocusedPanel::CommitSelector;
+            }
+            Scope::Changes => {
+                if !self.changes_active() {
+                    self.open_changes_view();
+                }
+                self.show_file_list = true;
+                self.focused_panel = FocusedPanel::FileList;
             }
             Scope::Global | Scope::Branches | Scope::Stashes | Scope::Merge => {}
         }

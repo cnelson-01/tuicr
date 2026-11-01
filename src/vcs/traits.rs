@@ -3,9 +3,12 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::error::Result;
+use crate::error::{Result, TuicrError};
 use crate::model::{DiffFile, DiffLine, FileStatus};
 use crate::syntax::SyntaxHighlighter;
+use crate::vcs::changes::{
+    ChangeBulkOp, ChangeDiffKey, ChangeEntry, ChangeEntryKind, ChangeGroup, ChangeSet, ChangeStatus,
+};
 
 /// Extensions whose whitespace is ignored by the built-in auto table.
 pub(crate) const AUTO_IGNORE_WHITESPACE_EXTENSIONS: &[&str] =
@@ -516,6 +519,121 @@ pub trait VcsBackend: Send {
     fn list_changed_paths(&self, _kind: ChangeKind) -> Result<Vec<PathBuf>> {
         Err(crate::error::TuicrError::UnsupportedOperation(
             "Listing changed paths not supported for this VCS".into(),
+        ))
+    }
+
+    /// One status pass over the repository for the Changes view: staged,
+    /// unstaged, untracked and conflicted entries, submodules as entries, and
+    /// the submodules that are not checked out. Reads no file contents.
+    fn get_change_set(&self) -> Result<ChangeSet> {
+        Err(TuicrError::UnsupportedOperation(
+            "The Changes view needs a Git repository".into(),
+        ))
+    }
+
+    /// [`VcsBackend::get_change_set`] of the repository checked out at
+    /// `submodule` (repo-relative path), with paths relative to it.
+    fn get_submodule_change_set(&self, _submodule: &Path) -> Result<ChangeSet> {
+        Err(TuicrError::UnsupportedOperation(
+            "Submodules are not supported for this VCS".into(),
+        ))
+    }
+
+    /// The diff of one entry: HEAD → index for `Staged`, index → working
+    /// tree for `Unstaged`, the whole file as added for `Untracked`, the
+    /// working-tree content as context for `Conflicted`. Submodule entries
+    /// get a synthesized `Subproject commit` hunk listing the commits
+    /// between. Entries inside a submodule come back with their paths
+    /// prefixed by the submodule path. `Err(NoChanges)` when the entry has
+    /// nothing to show. `entry` is the row the caller holds, so the backend
+    /// does not re-derive the kind from status; it only confirms the gitlink
+    /// bit cheaply (index mode) before running a gitlink command.
+    fn get_change_entry_diff(
+        &self,
+        _key: &ChangeDiffKey,
+        _entry: &ChangeEntry,
+        _highlighter: &SyntaxHighlighter,
+    ) -> Result<Vec<DiffFile>> {
+        Err(TuicrError::UnsupportedOperation(
+            "Per-entry diffs are not supported for this VCS".into(),
+        ))
+    }
+
+    /// Stage one entry in its own repository. The default covers plain
+    /// files of the top-level repository through [`VcsBackend::stage_file`],
+    /// both paths of a rename / copy included.
+    fn stage_change_entry(&self, key: &ChangeDiffKey, entry: &ChangeEntry) -> Result<()> {
+        if key.submodule.is_some() || !matches!(entry.kind, ChangeEntryKind::File) {
+            return Err(TuicrError::UnsupportedOperation(
+                "Staging submodules is not supported for this VCS".into(),
+            ));
+        }
+        for path in entry.pathspecs() {
+            self.stage_file(path)?;
+        }
+        Ok(())
+    }
+
+    fn unstage_change_entry(&self, key: &ChangeDiffKey, entry: &ChangeEntry) -> Result<()> {
+        if key.submodule.is_some() || !matches!(entry.kind, ChangeEntryKind::File) {
+            return Err(TuicrError::UnsupportedOperation(
+                "Unstaging submodules is not supported for this VCS".into(),
+            ));
+        }
+        for path in entry.pathspecs() {
+            self.unstage_file(path)?;
+        }
+        Ok(())
+    }
+
+    /// Throw the entry's change away. For a submodule pointer this also
+    /// checks the submodule out at the commit the pointer goes back to.
+    fn discard_change_entry(&self, key: &ChangeDiffKey, entry: &ChangeEntry) -> Result<()> {
+        if key.submodule.is_some() || !matches!(entry.kind, ChangeEntryKind::File) {
+            return Err(TuicrError::UnsupportedOperation(
+                "Discarding submodules is not supported for this VCS".into(),
+            ));
+        }
+        self.discard_file(&entry.path)
+    }
+
+    /// `X` on a group row: every entry of the group, in its repository.
+    /// Returns the number of entries skipped (dirty-only submodules,
+    /// embedded repos, conflicts) so the app can say so.
+    fn discard_change_group(
+        &self,
+        group: ChangeGroup,
+        entries: &[ChangeEntry],
+        submodule: Option<&Path>,
+    ) -> Result<usize> {
+        let mut skipped = 0;
+        for entry in entries {
+            if entry.is_embedded_repo()
+                || entry.status == ChangeStatus::Conflicted
+                || entry.submodule().is_some_and(|sm| {
+                    sm.dirty()
+                        && !sm.pointer_moved(group)
+                        && !matches!(entry.status, ChangeStatus::Added | ChangeStatus::Deleted)
+                })
+            {
+                skipped += 1;
+                continue;
+            }
+            let key = ChangeDiffKey {
+                group,
+                path: entry.path.clone(),
+                submodule: submodule.map(Path::to_path_buf),
+            };
+            self.discard_change_entry(&key, entry)?;
+        }
+        Ok(skipped)
+    }
+
+    /// `a` / `A` / `U` in the Changes pane, and a group row's checkbox.
+    /// `submodule` scopes the operation to a nested group's repository.
+    fn change_bulk_op(&self, _op: ChangeBulkOp, _submodule: Option<&Path>) -> Result<()> {
+        Err(TuicrError::UnsupportedOperation(
+            "Bulk staging is not supported for this VCS".into(),
         ))
     }
 

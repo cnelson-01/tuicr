@@ -233,6 +233,18 @@ impl ReviewSession {
         self.add_file(file.display_path().clone(), file.status, file.content_hash)
     }
 
+    /// Registers `file` without touching reviewed state or hunk marks. The
+    /// Changes view previews one *side* of a path at a time, and the Staged
+    /// and Unstaged previews of the same path have different content
+    /// hashes, so `add_diff_file`'s invalidation would flip `reviewed` and
+    /// prune hunk marks on every cursor move.
+    pub fn ensure_file(&mut self, file: &DiffFile) {
+        let path = file.display_path().clone();
+        self.files
+            .entry(path.clone())
+            .or_insert_with(|| FileReview::new(path, file.status, file.content_hash));
+    }
+
     pub fn get_file_mut(&mut self, path: &PathBuf) -> Option<&mut FileReview> {
         self.files.get_mut(path)
     }

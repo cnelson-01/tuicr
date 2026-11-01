@@ -232,6 +232,32 @@ pub enum Action {
     /// Discard the hunk under the cursor after confirmation (`X`).
     DiscardHunk,
 
+    // Changes view (`<leader>C`, `:changes`, `C` in the selector)
+    /// Open the Changes view from the selector's Local tab (`C`).
+    OpenChangesView,
+    /// Space / Enter in the pane: stage or unstage the entry or the group.
+    ChangesToggleStage,
+    /// `a`: stage every tracked change.
+    ChangesStageAllTracked,
+    /// `A`: stage everything, unversioned files included.
+    ChangesStageAll,
+    /// `U`: unstage everything.
+    ChangesUnstageAll,
+    /// `X`: discard the entry or group after confirmation.
+    ChangesDiscard,
+    /// `c` / `C`: commit / amend through the composer.
+    ChangesCommit,
+    ChangesAmend,
+    /// `t`: stash the working tree.
+    ChangesStash,
+    /// `r`: re-read the change set.
+    ChangesRefresh,
+    /// `f`: flat list ↔ group by directory.
+    ChangesToggleGrouping,
+    /// `l` / `h`: expand / collapse the row (pan when not expandable).
+    ChangesExpand,
+    ChangesCollapse,
+
     // Stash picker
     StashPickerDown,
     StashPickerUp,

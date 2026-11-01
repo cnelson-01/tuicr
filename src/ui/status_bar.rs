@@ -280,6 +280,13 @@ fn header_source_chunk(app: &App) -> Option<String> {
                 Some(format!("staged + unstaged + {} commits", commits.len()))
             }
         }
+        DiffSource::Changes(key) => Some(with_head_commit(
+            &match key {
+                Some(k) => format!("changes \u{00b7} {}", k.group.short_label()),
+                None => "changes".to_string(),
+            },
+            app,
+        )),
         DiffSource::PullRequest(pr) => {
             let slug = pr.key.repository.display_name();
             let trimmed_title = if pr.title.chars().count() > 60 {

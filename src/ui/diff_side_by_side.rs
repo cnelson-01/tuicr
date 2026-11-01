@@ -1048,6 +1048,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                     | DiffSource::StagedUnstagedAndCommits(_)
                     | DiffSource::CommitRange(_)
                     | DiffSource::PullRequest(_)
+                    | DiffSource::Changes(_)
             )
             && let Some(last_hunk) = file.hunks.last()
         {

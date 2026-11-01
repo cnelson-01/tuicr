@@ -382,6 +382,7 @@ impl App {
                 | DiffSource::StagedUnstagedAndCommits(_)
                 | DiffSource::CommitRange(_)
                 | DiffSource::PullRequest(_)
+                | DiffSource::Changes(_)
         )
     }
 

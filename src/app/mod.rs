@@ -713,6 +713,7 @@ pub enum InputMode {
 
 pub use blame::{BLAME_WIDTH, BlameState, overlay_label};
 pub use branches::BranchPicker;
+pub use changes::{ChangesRow, ChangesView, SubmoduleExpansion, build_changes_rows};
 pub use console::ConsoleView;
 pub use find::{FIND_MAX_HITS, FindHit, FindState};
 pub use git_ops::{GitThen, PendingGit, RepoStatus};
@@ -828,6 +829,10 @@ pub enum DiffSource {
     StagedAndUnstaged,
     CommitRange(Vec<String>),
     StagedUnstagedAndCommits(Vec<String>),
+    /// The Changes view: the diff pane previews one entry of the grouped
+    /// working-tree tree. `None` while no entry is selected (clean tree or
+    /// the cursor on a group row).
+    Changes(Option<crate::vcs::ChangeDiffKey>),
     /// Remote PR review. Carries identity + base/head SHAs needed for
     /// context expansion and status bar labels.
     ///
@@ -851,6 +856,7 @@ impl DiffSource {
                 | Self::Unstaged
                 | Self::StagedAndUnstaged
                 | Self::StagedUnstagedAndCommits(_)
+                | Self::Changes(_)
         )
     }
 }
@@ -1199,6 +1205,10 @@ pub enum DiffWatchReloadEvent {
         /// carry. `None` means the backend could not say, and the rows are
         /// left exactly as they are.
         change_status: Option<VcsChangeStatus>,
+        /// The grouped change set re-read during the same tick while the
+        /// Changes view is open (`DiffSource::Changes`). `None` otherwise or
+        /// when the backend could not say.
+        change_set: Option<crate::vcs::ChangeSet>,
     },
 }
 
@@ -1793,6 +1803,9 @@ pub struct App {
     pub pending_discard: Option<DiscardTarget>,
     /// Stash picker modal state; `Some` while `input_mode == StashPicker`.
     pub stash_picker: Option<StashPicker>,
+    /// Changes view state (`<leader>C`, `:changes`); `Some` while open.
+    /// Only *active* while `diff_source` is `DiffSource::Changes(_)`.
+    pub changes: Option<ChangesView>,
     /// Last find-in-files search and its hits (`:find`).
     pub find: FindState,
     /// Blame gutter state (`:blame`).
@@ -2230,6 +2243,7 @@ impl AppStartupOptions<'_> {
 mod annotations;
 mod blame;
 mod branches;
+pub mod changes;
 mod coloring;
 mod comment_vim;
 mod comments;

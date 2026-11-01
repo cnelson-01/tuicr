@@ -216,6 +216,7 @@ fn review_scope_label(diff_source: &DiffSource) -> String {
         DiffSource::StagedUnstagedAndCommits(_) => {
             "selected commit range + staged/unstaged changes".to_string()
         }
+        DiffSource::Changes(_) => "local changes".to_string(),
         DiffSource::PullRequest(pr) => format!(
             "pull request {}#{}",
             pr.key.repository.display_name(),
@@ -254,6 +255,7 @@ fn scope_banner(diff_source: &DiffSource) -> Option<String> {
             "Reviewing staged + unstaged + commits: {}",
             short_ids(commits)
         )),
+        DiffSource::Changes(_) => Some("Reviewing local changes".to_string()),
     }
 }
 

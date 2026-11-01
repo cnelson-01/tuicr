@@ -11,6 +11,7 @@
 //! are Git-backed and contain a `.git` directory. If jj detection fails, Git
 //! is tried next, then Mercurial.
 
+pub mod changes;
 pub mod conflict;
 pub(crate) mod diff_parser;
 pub mod file;
@@ -22,6 +23,10 @@ pub mod pristine;
 pub(crate) mod traits;
 pub(crate) mod whitespace;
 
+pub use changes::{
+    ChangeBulkOp, ChangeDiffKey, ChangeEntry, ChangeEntryKind, ChangeGroup, ChangeSet,
+    ChangeStatus, SubmoduleChange,
+};
 pub use conflict::{
     ConflictBlock, ConflictFile, ConflictResolution, ConflictSegment, apply_resolutions,
     parse_conflict_file,

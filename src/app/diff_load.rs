@@ -1,4 +1,5 @@
 use super::*;
+use crate::vcs::{ChangeDiffKey, ChangeSet};
 
 impl App {
     pub(in crate::app) fn staged_commit_entry() -> CommitInfo {
@@ -818,10 +819,45 @@ impl App {
             DiffSource::StagedAndUnstaged | DiffSource::WorkingTree => {
                 Self::get_working_tree_diff_with_ignore(vcs, root_path, highlighter, path_filter)
             }
+            DiffSource::Changes(Some(key)) => {
+                Self::changes_entry_diff(vcs, root_path, key, highlighter)
+            }
+            DiffSource::Changes(None) => Err(TuicrError::NoChanges),
             DiffSource::PullRequest(_) => Err(TuicrError::UnsupportedOperation(
                 "Use :reload from the command line in PR mode".to_string(),
             )),
         }
+    }
+
+    /// One entry's preview, re-reading the (sub)repository's change set to
+    /// find the row. Used by reload paths that have no row in hand; the
+    /// pane itself calls `get_change_entry_diff` with the row it holds.
+    pub(in crate::app) fn changes_entry_diff(
+        vcs: &dyn VcsBackend,
+        root_path: &Path,
+        key: &ChangeDiffKey,
+        highlighter: &SyntaxHighlighter,
+    ) -> Result<Vec<DiffFile>> {
+        let set = match &key.submodule {
+            None => vcs.get_change_set()?,
+            Some(sub) => vcs.get_submodule_change_set(sub)?,
+        };
+        Self::changes_entry_diff_from_set(vcs, root_path, key, &set, highlighter)
+    }
+
+    pub(in crate::app) fn changes_entry_diff_from_set(
+        vcs: &dyn VcsBackend,
+        root_path: &Path,
+        key: &ChangeDiffKey,
+        set: &ChangeSet,
+        highlighter: &SyntaxHighlighter,
+    ) -> Result<Vec<DiffFile>> {
+        let entry = set
+            .find(key.group, &key.path)
+            .ok_or(TuicrError::NoChanges)?;
+        let files = vcs.get_change_entry_diff(key, entry, highlighter)?;
+        let files = Self::filter_ignored_diff_files(root_path, files);
+        Self::require_non_empty_diff_files(files)
     }
 
     /// Applies fetched diff files: session bookkeeping, tree/gap reset, and
@@ -836,7 +872,7 @@ impl App {
     /// worker fetches off-thread, so it has no such guarantee. Callers
     /// reached from a background result must check relevance first, which
     /// `poll_diff_watch_changes` does via `diff_watch_result_is_stale`.
-    fn apply_diff_files(&mut self, diff_files: Vec<DiffFile>) -> (usize, usize) {
+    pub(in crate::app) fn apply_diff_files(&mut self, diff_files: Vec<DiffFile>) -> (usize, usize) {
         let current_path = self.current_file_path().cloned();
         let prev_file_idx = self.diff_state.current_file_idx;
         let prev_cursor_line = self.diff_state.cursor_line;
@@ -914,6 +950,10 @@ impl App {
     /// Reloads diff files from disk. Returns `(file_count, invalidated_count)` where
     /// `invalidated_count` is the number of previously reviewed files whose content changed.
     pub fn reload_diff_files(&mut self) -> Result<(usize, usize)> {
+        if self.changes_active() {
+            self.refresh_changes_view(None);
+            return Ok((self.diff_files.len(), 0));
+        }
         let diff_files = self.fetch_diff_files()?;
         let full_reload = !Self::is_strict_commit_selection(
             self.commit_selection_range,
@@ -1198,8 +1238,9 @@ impl App {
                     normalize_diff_watch_result(Ok(fetched.diff_files)),
                     fetched.commits,
                     fetched.change_status,
+                    fetched.change_set,
                 ),
-                Err(e) => reporter.answer(normalize_diff_watch_result(Err(e)), None, None),
+                Err(e) => reporter.answer(normalize_diff_watch_result(Err(e)), None, None, None),
             }
         });
     }
@@ -1265,6 +1306,7 @@ impl App {
             diff_files: files,
             commits,
             change_status,
+            change_set: None,
         })
     }
 
@@ -1299,6 +1341,7 @@ impl App {
             result,
             commits,
             change_status,
+            change_set: _,
         } = event;
         if diff_watch_result_is_stale(
             &request,
@@ -1369,6 +1412,9 @@ impl App {
         fetched: Option<Vec<CommitInfo>>,
         change_status: Option<VcsChangeStatus>,
     ) -> bool {
+        if self.changes_active() {
+            return false;
+        }
         let fetched = fetched.filter(|_| Self::pane_tracks_history(&self.diff_source));
         let change_status =
             change_status.filter(|_| Self::pane_tracks_working_tree(&self.diff_source));
@@ -1397,14 +1443,16 @@ impl App {
     fn pane_tracks_history(source: &DiffSource) -> bool {
         !matches!(
             source,
-            DiffSource::CommitRange(_) | DiffSource::StagedUnstagedAndCommits(_)
+            DiffSource::CommitRange(_)
+                | DiffSource::StagedUnstagedAndCommits(_)
+                | DiffSource::Changes(_)
         )
     }
 
     /// Whether the pane carries "Staged changes" and "Unstaged changes" rows.
     /// A commit range never does, so a dirty tree must not add them.
     fn pane_tracks_working_tree(source: &DiffSource) -> bool {
-        !matches!(source, DiffSource::CommitRange(_))
+        !matches!(source, DiffSource::CommitRange(_) | DiffSource::Changes(_))
     }
 
     /// The pane as it would look with `fetched` merged in, or `None` when
@@ -1593,8 +1641,9 @@ impl DiffWatchReporter {
         result: std::result::Result<Option<Vec<DiffFile>>, String>,
         commits: Option<Vec<CommitInfo>>,
         change_status: Option<VcsChangeStatus>,
+        change_set: Option<ChangeSet>,
     ) {
-        self.send(result, commits, change_status);
+        self.send(result, commits, change_status, change_set);
     }
 
     fn send(
@@ -1602,6 +1651,7 @@ impl DiffWatchReporter {
         result: std::result::Result<Option<Vec<DiffFile>>, String>,
         commits: Option<Vec<CommitInfo>>,
         change_status: Option<VcsChangeStatus>,
+        change_set: Option<ChangeSet>,
     ) {
         let Some(request) = self.request.take() else {
             return;
@@ -1612,6 +1662,7 @@ impl DiffWatchReporter {
             result,
             commits,
             change_status,
+            change_set,
         });
     }
 }
@@ -1626,6 +1677,7 @@ impl Drop for DiffWatchReporter {
             Err("diff watch worker stopped without finishing".to_string()),
             None,
             None,
+            None,
         );
     }
 }
@@ -1636,6 +1688,10 @@ struct DiffWatchFetched {
     diff_files: Option<Vec<DiffFile>>,
     commits: Option<Vec<CommitInfo>>,
     change_status: Option<VcsChangeStatus>,
+    /// The grouped change set for an open Changes view. Always `None` until
+    /// the view's fetch is wired in; the field exists so the event shape is
+    /// settled.
+    change_set: Option<ChangeSet>,
 }
 
 /// Where a commit selection lands in a rebuilt commit pane, if it lands at

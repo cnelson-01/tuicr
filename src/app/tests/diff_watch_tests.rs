@@ -478,6 +478,7 @@ fn should_not_disturb_view_on_unchanged_result() {
             request: working_tree_request(),
             result: Ok(None),
             change_status: None,
+            change_set: None,
             commits: None,
         },
     );
@@ -506,6 +507,7 @@ fn should_apply_and_report_a_changed_result() {
             request: working_tree_request(),
             result: Ok(Some(vec![make_diff_file("a.rs", 2)])),
             change_status: None,
+            change_set: None,
             commits: None,
         },
     );
@@ -546,6 +548,7 @@ fn should_unmark_a_reviewed_file_when_a_watch_tick_changes_it() {
             request: working_tree_request(),
             result: Ok(Some(vec![make_diff_file("a.rs", 2)])),
             change_status: None,
+            change_set: None,
             commits: None,
         },
     );
@@ -582,6 +585,7 @@ fn should_keep_a_reviewed_file_marked_when_a_watch_tick_changes_a_different_file
                 make_diff_file("b.rs", 2),
             ])),
             change_status: None,
+            change_set: None,
             commits: None,
         },
     );
@@ -629,6 +633,7 @@ fn should_unmark_only_the_edited_hunk_when_a_watch_tick_changes_it() {
             request: working_tree_request(),
             result: Ok(Some(vec![after])),
             change_status: None,
+            change_set: None,
             commits: None,
         },
     );
@@ -685,6 +690,7 @@ fn should_not_restore_a_cleared_reviewed_mark_when_the_session_watcher_runs_afte
             request: working_tree_request(),
             result: Ok(Some(vec![make_diff_file("a.rs", 2)])),
             change_status: None,
+            change_set: None,
             commits: None,
         },
     );
@@ -734,6 +740,7 @@ fn should_discard_result_that_matches_what_is_already_on_screen() {
             // raced a `:e` reports.
             result: Ok(Some(vec![file_a, file_b])),
             change_status: None,
+            change_set: None,
             commits: None,
         },
     );
@@ -770,6 +777,7 @@ fn should_discard_result_when_diff_source_changed_since_spawn() {
             request: working_tree_request(),
             result: Ok(Some(vec![make_diff_file("a.rs", 2)])),
             change_status: None,
+            change_set: None,
             commits: None,
         },
     );
@@ -798,6 +806,7 @@ fn should_discard_result_when_commit_selection_changed_since_spawn() {
             request,
             result: Ok(Some(vec![make_diff_file("a.rs", 2)])),
             change_status: None,
+            change_set: None,
             commits: None,
         },
     );
@@ -819,6 +828,7 @@ fn should_discard_result_delivered_outside_normal_mode() {
             request: working_tree_request(),
             result: Ok(Some(vec![make_diff_file("a.rs", 2)])),
             change_status: None,
+            change_set: None,
             commits: None,
         },
     );
@@ -839,6 +849,7 @@ fn should_warn_once_on_repeated_identical_failure() {
             request: working_tree_request(),
             result: Err("boom".to_string()),
             change_status: None,
+            change_set: None,
             commits: None,
         },
     );
@@ -858,6 +869,7 @@ fn should_warn_once_on_repeated_identical_failure() {
             request: working_tree_request(),
             result: Err("boom".to_string()),
             change_status: None,
+            change_set: None,
             commits: None,
         },
     );
@@ -871,6 +883,7 @@ fn should_warn_once_on_repeated_identical_failure() {
             request: working_tree_request(),
             result: Err("boom".to_string()),
             change_status: None,
+            change_set: None,
             commits: None,
         },
     );
@@ -884,6 +897,7 @@ fn should_warn_once_on_repeated_identical_failure() {
             request: working_tree_request(),
             result: Ok(Some(vec![make_diff_file("a.rs", 2)])),
             change_status: None,
+            change_set: None,
             commits: None,
         },
     );
@@ -1094,6 +1108,7 @@ fn should_install_fresh_commits_from_a_watch_result_when_nothing_is_narrowed() {
             request,
             result: Ok(None),
             change_status: None,
+            change_set: None,
             commits: Some(vec![
                 watch_commit("c3"),
                 watch_commit("c2"),
@@ -1134,6 +1149,7 @@ fn should_refresh_the_commit_pane_and_move_a_narrowing_with_it() {
             request,
             result: Ok(None),
             change_status: None,
+            change_set: None,
             commits: Some(vec![
                 watch_commit("c3"),
                 watch_commit("c2"),
@@ -1180,6 +1196,7 @@ fn should_leave_the_commit_pane_alone_when_the_narrowed_commit_is_gone() {
             request,
             result: Ok(None),
             change_status: None,
+            change_set: None,
             commits: Some(vec![watch_commit("c2"), watch_commit("c1")]),
         },
     );
@@ -1230,6 +1247,7 @@ fn should_install_fresh_commits_when_only_staged_and_unstaged_are_selected() {
             request,
             result: Ok(None),
             change_status: None,
+            change_set: None,
             commits: Some(vec![watch_commit("c2"), watch_commit("c1")]),
         },
     );
@@ -1277,6 +1295,7 @@ fn should_keep_the_staged_and_unstaged_rows_when_installing_fresh_commits() {
             request,
             result: Ok(None),
             change_status: None,
+            change_set: None,
             commits: Some(vec![watch_commit("c2"), watch_commit("c1")]),
         },
     );
@@ -1331,6 +1350,7 @@ fn should_add_the_staged_row_when_a_file_is_staged_mid_review() {
                 staged: true,
                 unstaged: true,
             }),
+            change_set: None,
         },
     );
 
@@ -1374,6 +1394,7 @@ fn should_drop_the_unstaged_row_when_the_last_unstaged_change_is_staged() {
                 staged: true,
                 unstaged: false,
             }),
+            change_set: None,
         },
     );
 
@@ -1408,6 +1429,7 @@ fn should_keep_the_pane_order_when_a_synthetic_row_appears() {
                 staged: true,
                 unstaged: true,
             }),
+            change_set: None,
         },
     );
 
@@ -1443,6 +1465,7 @@ fn should_leave_the_synthetic_rows_alone_when_no_change_status_arrives() {
             result: Ok(None),
             commits: None,
             change_status: None,
+            change_set: None,
         },
     );
 
@@ -1484,6 +1507,7 @@ fn should_drop_the_cached_selection_diffs_when_the_pane_shifts() {
                 watch_commit("c1"),
             ]),
             change_status: None,
+            change_set: None,
         },
     );
 
@@ -1525,6 +1549,7 @@ fn should_not_redraw_when_a_second_tick_reports_the_same_change_status() {
             result: Ok(None),
             commits: None,
             change_status: status,
+            change_set: None,
         },
     );
 
@@ -1537,6 +1562,7 @@ fn should_not_redraw_when_a_second_tick_reports_the_same_change_status() {
             result: Ok(None),
             commits: None,
             change_status: status,
+            change_set: None,
         },
     );
 
@@ -1572,6 +1598,7 @@ fn should_apply_fresh_commits_and_a_new_synthetic_row_from_one_tick() {
                 staged: true,
                 unstaged: true,
             }),
+            change_set: None,
         },
     );
 
@@ -1609,6 +1636,7 @@ fn should_keep_the_cursor_inside_a_pane_that_shrank() {
             request,
             result: Ok(None),
             change_status: None,
+            change_set: None,
             commits: Some(vec![watch_commit("c1")]),
         },
     );
@@ -1642,6 +1670,7 @@ fn should_keep_the_selection_inside_a_pane_that_shrank() {
             request,
             result: Ok(None),
             change_status: None,
+            change_set: None,
             commits: Some(vec![watch_commit("c1")]),
         },
     );
@@ -1683,6 +1712,7 @@ fn should_report_no_change_when_the_fetched_commits_match_the_pane() {
             request,
             result: Ok(None),
             change_status: None,
+            change_set: None,
             commits: Some(vec![watch_commit("c2"), watch_commit("c1")]),
         },
     );
@@ -1718,6 +1748,7 @@ fn should_not_empty_the_pane_when_the_fetch_returns_no_commits() {
             request,
             result: Ok(None),
             change_status: None,
+            change_set: None,
             commits: Some(Vec::new()),
         },
     );
@@ -1751,6 +1782,7 @@ fn should_widen_a_whole_pane_selection_when_commits_arrive() {
             request,
             result: Ok(None),
             change_status: None,
+            change_set: None,
             commits: Some(vec![
                 watch_commit("c3"),
                 watch_commit("c2"),
@@ -1793,6 +1825,7 @@ fn should_follow_the_same_commit_when_rows_shift_beneath_the_cursor() {
             request,
             result: Ok(None),
             change_status: None,
+            change_set: None,
             commits: Some(vec![
                 watch_commit("c3"),
                 watch_commit("c2"),
@@ -1831,6 +1864,7 @@ fn should_keep_a_commit_range_pane_when_a_watch_result_carries_commits() {
             request,
             result: Ok(None),
             change_status: None,
+            change_set: None,
             commits: Some(range[..10].to_vec()),
         },
     );
@@ -1867,6 +1901,7 @@ fn should_refresh_only_the_synthetic_rows_of_a_range_with_working_tree_pane() {
                 staged: true,
                 unstaged: true,
             }),
+            change_set: None,
             commits: Some(vec![watch_commit("c3"), watch_commit("c2")]),
         },
     );
@@ -1906,6 +1941,7 @@ fn should_not_add_working_tree_rows_to_a_commit_range_pane() {
                 staged: true,
                 unstaged: true,
             }),
+            change_set: None,
             commits: None,
         },
     );

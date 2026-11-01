@@ -943,6 +943,7 @@ fn should_preserve_commit_message_when_watched_diff_changes() {
         result: Ok(Some(vec![changed.clone()])),
         commits: None,
         change_status: None,
+        change_set: None,
     })
     .unwrap();
     app.diff_watch_reload = Some(DiffWatchReload { request, rx });

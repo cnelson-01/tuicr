@@ -702,6 +702,7 @@ impl App {
             commit_composer: None,
             pending_discard: None,
             stash_picker: None,
+            changes: None,
             find: FindState::default(),
             blame: BlameState::default(),
             remote_op: None,

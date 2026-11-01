@@ -11,7 +11,9 @@ use std::path::PathBuf;
 
 use super::{App, ConfirmAction, DiffSource, FileTreeItem, FocusedPanel, InputMode};
 use crate::error::TuicrError;
-use crate::vcs::{HunkScope, StashEntry};
+use crate::vcs::{
+    ChangeDiffKey, ChangeEntry, ChangeEntryKind, ChangeGroup, ChangeStatus, HunkScope, StashEntry,
+};
 
 /// What a pending "Discard?" confirmation will throw away.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,6 +27,23 @@ pub enum DiscardTarget {
     File {
         path: PathBuf,
     },
+    /// One row of the Changes view (a file, a submodule, or an entry inside
+    /// an expanded submodule).
+    Entry {
+        key: ChangeDiffKey,
+        entry: ChangeEntry,
+    },
+    /// A whole group of the Changes view (`X` on a group row).
+    Group {
+        group: ChangeGroup,
+        submodule: Option<PathBuf>,
+        entries: Vec<ChangeEntry>,
+    },
+}
+
+/// The first seven characters of an object id, for prompts.
+fn short7(id: &str) -> &str {
+    &id[..7.min(id.len())]
 }
 
 impl DiscardTarget {
@@ -41,6 +60,146 @@ impl DiscardTarget {
                 "Discard all changes to {}? This cannot be undone.",
                 path.display()
             ),
+            Self::Entry { key, entry } => Self::entry_prompt(key, entry),
+            Self::Group { group, entries, .. } => {
+                let n = entries.len();
+                match group {
+                    ChangeGroup::Staged => format!(
+                        "Discard all {n} staged entries? Index and working tree go back to HEAD. This cannot be undone."
+                    ),
+                    ChangeGroup::Unstaged => format!(
+                        "Discard all {n} unstaged entries? Working tree goes back to the index. This cannot be undone."
+                    ),
+                    ChangeGroup::Untracked => format!(
+                        "Delete all {n} untracked files? Embedded repositories are kept. This cannot be undone."
+                    ),
+                    ChangeGroup::Conflicted => "Resolve conflicts with :merge".to_string(),
+                }
+            }
+        }
+    }
+
+    /// Extra lines under the question (`render_confirm_dialog_with_detail`
+    /// when non-empty): the submodule pointer move and what happens to the
+    /// files inside it. Empty for hunks, files and groups.
+    pub fn detail(&self) -> Vec<String> {
+        let Self::Entry { key, entry } = self else {
+            return Vec::new();
+        };
+        let ChangeEntryKind::Submodule(sm) = &entry.kind else {
+            return Vec::new();
+        };
+        let path = key.display_path();
+        let mut lines = Vec::new();
+        match entry.status {
+            ChangeStatus::Added | ChangeStatus::Deleted => {}
+            _ if sm.pointer_moved(key.group) => {
+                let (old, new) = sm.sides(key.group);
+                let (old, new) = (old.unwrap_or(""), new.unwrap_or(""));
+                lines.push(match key.group {
+                    ChangeGroup::Staged => {
+                        format!("pointer {} → {}", short7(new), short7(old))
+                    }
+                    _ => format!("checkout {} → {}", short7(new), short7(old)),
+                });
+                lines.push(if sm.dirty() {
+                    format!(
+                        "modified and untracked files inside {} are thrown away",
+                        path.display()
+                    )
+                } else {
+                    format!(
+                        "modified and untracked files inside {} are kept",
+                        path.display()
+                    )
+                });
+            }
+            _ => {
+                if sm.modified_content {
+                    lines.push("modified content".to_string());
+                }
+                if sm.untracked_content {
+                    lines.push("untracked content".to_string());
+                }
+            }
+        }
+        lines
+    }
+
+    /// The question for one Changes-view entry (§1.6 of the design: one
+    /// sentence per entry kind and status, always naming the path).
+    fn entry_prompt(key: &ChangeDiffKey, entry: &ChangeEntry) -> String {
+        let path = key.display_path();
+        let path = path.display();
+        match &entry.kind {
+            ChangeEntryKind::File => match entry.status {
+                ChangeStatus::Untracked => {
+                    format!("Delete the untracked file {path}? This cannot be undone.")
+                }
+                ChangeStatus::Added if key.group == ChangeGroup::Staged => format!(
+                    "Delete the new file {path}? It exists only in the index and the working tree. This cannot be undone."
+                ),
+                ChangeStatus::Renamed | ChangeStatus::Copied => {
+                    let old = entry
+                        .old_path
+                        .as_ref()
+                        .map(|old| match &key.submodule {
+                            Some(sub) => sub.join(old),
+                            None => old.clone(),
+                        })
+                        .unwrap_or_default();
+                    let old = old.display();
+                    if entry.status == ChangeStatus::Renamed {
+                        format!(
+                            "Undo the rename {old} → {path}? {path} is deleted and {old} restored from HEAD. This cannot be undone."
+                        )
+                    } else {
+                        format!(
+                            "Undo the copy {old} → {path}? {path} is deleted. This cannot be undone."
+                        )
+                    }
+                }
+                _ => format!(
+                    "Discard all changes to {path}? Index and working tree go back to HEAD. This cannot be undone."
+                ),
+            },
+            ChangeEntryKind::Submodule(sm) => match entry.status {
+                ChangeStatus::Added => {
+                    format!("Unstage the new submodule {path}? Its directory is kept.")
+                }
+                ChangeStatus::Deleted => {
+                    let target = match key.group {
+                        ChangeGroup::Staged => sm.head_id.as_deref(),
+                        _ => sm.index_id.as_deref(),
+                    }
+                    .unwrap_or("");
+                    format!(
+                        "Restore submodule {path} at {}? It is cloned or checked out again. This cannot be undone.",
+                        short7(target)
+                    )
+                }
+                _ if sm.pointer_moved(key.group) => {
+                    let (old, _) = sm.sides(key.group);
+                    let old = short7(old.unwrap_or(""));
+                    match key.group {
+                        ChangeGroup::Staged => format!(
+                            "Reset submodule {path} to {old} and check it out there? This cannot be undone."
+                        ),
+                        _ => format!(
+                            "Check submodule {path} out at {old} (the commit recorded in the index)? This cannot be undone."
+                        ),
+                    }
+                }
+                _ if sm.dirty() => format!(
+                    "Throw away the modified and untracked files inside {path}? This cannot be undone."
+                ),
+                _ => format!(
+                    "Discard all changes to {path}? Index and working tree go back to HEAD. This cannot be undone."
+                ),
+            },
+            ChangeEntryKind::EmbeddedRepo => {
+                format!("{path} is a git repository; delete it by hand")
+            }
         }
     }
 }
@@ -68,10 +227,12 @@ impl App {
     /// Which git diff the review on screen was built from, for hunk
     /// operations. `None` for commit ranges and PRs.
     pub fn hunk_scope(&self) -> Option<HunkScope> {
-        match self.diff_source {
+        match &self.diff_source {
             DiffSource::WorkingTree | DiffSource::StagedAndUnstaged => Some(HunkScope::WorkingTree),
             DiffSource::Unstaged => Some(HunkScope::Unstaged),
             DiffSource::Staged => Some(HunkScope::Staged),
+            DiffSource::Changes(Some(key)) => Some(key.group.hunk_scope()),
+            DiffSource::Changes(None) => Some(HunkScope::WorkingTree),
             _ => None,
         }
     }
@@ -358,6 +519,29 @@ impl App {
                 .vcs
                 .discard_file(path)
                 .map(|()| format!("Discarded changes to {}", path.display())),
+            DiscardTarget::Entry { key, entry } => self
+                .vcs
+                .discard_change_entry(key, entry)
+                .map(|()| format!("Discarded {}", key.display_path().display())),
+            DiscardTarget::Group {
+                group,
+                submodule,
+                entries,
+            } => self
+                .vcs
+                .discard_change_group(*group, entries, submodule.as_deref())
+                .map(|skipped| match skipped {
+                    0 => format!(
+                        "Discarded {} {} entries",
+                        entries.len(),
+                        group.short_label()
+                    ),
+                    n => format!(
+                        "Discarded {} {} entries, {n} skipped",
+                        entries.len() - n,
+                        group.short_label()
+                    ),
+                }),
         };
         match result {
             Ok(message) => self.after_local_change(message),

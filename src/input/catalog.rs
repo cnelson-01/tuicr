@@ -24,6 +24,8 @@ pub enum Scope {
     Stashes,
     /// Inside the merge conflict view.
     Merge,
+    /// The Changes view pane.
+    Changes,
 }
 
 impl Scope {
@@ -36,6 +38,7 @@ impl Scope {
             Scope::Branches => "branches",
             Scope::Stashes => "stashes",
             Scope::Merge => "merge",
+            Scope::Changes => "changes",
         }
     }
 }
