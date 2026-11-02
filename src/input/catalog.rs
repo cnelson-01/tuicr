@@ -109,6 +109,7 @@ pub const ENTRIES: &[Entry] = &[
     e(Diff, "Navigate", "Enter", "Expand / collapse hidden context", Keys("<CR>")),
     e(Diff, "Navigate", "Shift-Enter", "Expand / collapse all hidden context", Keys("<S-CR>")),
     e(Diff, "Search", "/", "Search the diff", Keys("/")),
+    e(Diff, "Search", "f", "Find in files", Keys("f")),
     e(Diff, "Search", "n / N", "Next / previous match", Keys("n")),
     e(Diff, "Search", "Esc", "Clear search highlighting", Keys("<Esc>")),
     // ── Diff view ────────────────────────────────────────────────────────
@@ -266,7 +267,7 @@ pub const ENTRIES: &[Entry] = &[
     e(Global, "Remote", ":push --tags", "Push every tag", Cmd("push --tags")),
     e(Global, "Help", ":console", "Git console: the commands tuicr ran", Cmd("console")),
     // ── Search ───────────────────────────────────────────────────────────
-    e(Global, "Find", "<leader>F", "Find in files", Keys("<leader>F")),
+    e(Global, "Find", "<leader>F", "Find in files (from any pane)", Keys("<leader>F")),
     // ── Merge view ───────────────────────────────────────────────────────
     e(Merge, "Merge", "o / t / b", "Take ours / theirs / both", Cmd("merge")),
     e(Merge, "Merge", "u", "Unresolve the conflict", Cmd("merge")),

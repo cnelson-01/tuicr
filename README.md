@@ -325,6 +325,7 @@ and its keys, or `?` for the full reference.
 | `[` / `]` | Previous / next hunk |
 | `m` / `M` | Next / previous comment |
 | `/` | Search the diff by case-insensitive regex, or search the file tree/help by text — whichever is focused/open |
+| `f` | Find in files: the command line opens with `find ` (also `;F` from any pane) |
 | `n` / `N` | Next / previous search match (wraps); matches stay highlighted — `Esc` clears |
 | `i` / `e` (file tree) | Filter files in / out by regex; narrows the tree **and** the diff |
 | `I` / `E` (file tree) | Clear the include / exclude filter |

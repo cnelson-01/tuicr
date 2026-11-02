@@ -67,6 +67,8 @@ pub enum Action {
     // Mode changes
     EnterCommandMode,
     EnterSearchMode,
+    /// Open the command line pre-filled with `find ` (`f`, `<leader>F`).
+    FindInFiles,
     ExitMode,
     ToggleHelp,
 
@@ -433,6 +435,7 @@ fn map_normal_mode_with_q_quits(key: KeyEvent, leader_key: char, q_quits: bool) 
         // Mode changes (use _ for shifted characters like : and ?)
         (KeyCode::Char(':'), _) => Action::EnterCommandMode,
         (KeyCode::Char('/'), _) => Action::EnterSearchMode,
+        (KeyCode::Char('f'), KeyModifiers::NONE) => Action::FindInFiles,
         (KeyCode::Char('?'), _) => Action::ToggleHelp,
         (KeyCode::Esc, KeyModifiers::NONE) => Action::ClearSearchHighlight,
 
@@ -1118,6 +1121,27 @@ mod tests {
         assert_eq!(
             map_normal_mode(key(KeyCode::Char('/')), DEFAULT_LEADER_KEY),
             Action::EnterSearchMode
+        );
+    }
+
+    #[test]
+    fn f_opens_find_in_files_outside_the_log_pane() {
+        assert_eq!(
+            map_normal_mode(key(KeyCode::Char('f')), DEFAULT_LEADER_KEY),
+            Action::FindInFiles
+        );
+        assert_eq!(
+            map_file_tree_mode(key(KeyCode::Char('f')), DEFAULT_LEADER_KEY),
+            Action::FindInFiles
+        );
+        assert_eq!(
+            map_changes_pane_mode(key(KeyCode::Char('f')), DEFAULT_LEADER_KEY, false),
+            Action::FindInFiles
+        );
+        // The log pane keeps `f` for fixup.
+        assert_eq!(
+            map_log_pane_mode(key(KeyCode::Char('f')), DEFAULT_LEADER_KEY, false),
+            Action::SelectorFixup
         );
     }
 

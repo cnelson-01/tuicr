@@ -39,6 +39,7 @@ width, and always ends with `^p actions`.
 | `/` | Search within diff (case-insensitive regex); matches on diff content are highlighted and the status bar shows the `[current/total]` position (headers, comments, and PR info are searchable but not highlighted) |
 | `n` / `N` | Next / previous search match (wraps around) |
 | `Esc` | Clear search-match highlighting; the pattern is kept so `n` / `N` still work |
+| `f` | Find in files: opens the command line with `find ` (also in the file tree and changes window; the log pane keeps `f` for fixup) |
 | `Enter` | Expand or collapse hidden context between hunks |
 | `zt` | Scroll cursor to top of screen |
 | `zz` | Center cursor on screen |
@@ -173,7 +174,7 @@ considers files that pass the active filters.
 | `<leader>t` | Go to the changes window (working tree status, in the file tree's place): opens it focused, focuses it, or hides it when it already has focus. `:changes` / `:status` do the same; `:set changes` / `:set nochanges` set visibility |
 | `<leader>+` / `<leader>-` | Grow / shrink the log pane (also `:set logheight N`) |
 | `<leader>b` | Open the branch picker (also `:branches`) |
-| `<leader>F` | Find in files: opens the command line with `find ` |
+| `<leader>F` | Find in files: opens the command line with `find ` from any pane (`f` does the same in the diff, file tree and changes window) |
 | `<leader>a` | Toggle the blame gutter (also `:blame`, `:set blame!`) |
 | `<leader>A` | Load the commit that last changed the cursor line as the review (also `:blame-commit`); works with the gutter off |
 | `<leader><` / `<leader>>` | Move the side-by-side divider left / right (also `<leader>,` / `<leader>.`, `:set split N`, or drag the `│`) |
@@ -423,7 +424,7 @@ the filter again.
 
 ## Find in files
 
-`:find <text>` (or `<leader>F`, which pre-fills the command line) searches the working tree
+`:find <text>` (or `f` / `<leader>F`, which pre-fill the command line) searches the working tree
 with `rg`, falling back to `git grep` when ripgrep is not installed. The text is matched
 literally, case-insensitively unless it contains an uppercase letter. Hits replace the diff:
 

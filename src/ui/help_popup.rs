@@ -438,7 +438,7 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 "  :find <text>",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw(" Search the working tree (rg, or git grep); <leader>F prompts"),
+            Span::raw(" Search the working tree (rg, or git grep); f or <leader>F prompts"),
         ]),
         Line::from(vec![
             Span::styled(

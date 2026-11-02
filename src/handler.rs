@@ -2719,6 +2719,7 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
             }
         }
         Action::QuitHint => app.set_message(QUIT_HINT_MESSAGE),
+        Action::FindInFiles => app.start_find_prompt(),
         Action::ExitMode => {
             app.show_file_list = false;
             app.focused_panel = FocusedPanel::Diff;
