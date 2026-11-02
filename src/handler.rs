@@ -116,6 +116,12 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     CommandSpec::new(&["stash"], CommandKind::StashPush),
     CommandSpec::new(&["stash pop"], CommandKind::StashPop),
     CommandSpec::new(&["stashes", "stash list"], CommandKind::StashPicker),
+    CommandSpec::new(
+        &["changes", "status", "set changes!"],
+        CommandKind::ToggleChanges,
+    ),
+    CommandSpec::new(&["set changes"], CommandKind::SetChangesVisible(true)),
+    CommandSpec::new(&["set nochanges"], CommandKind::SetChangesVisible(false)),
     CommandSpec::new(&["find", "grep"], CommandKind::FindResults),
     CommandSpec::new(
         &["blame", "set blame!", "annotate"],
@@ -242,6 +248,9 @@ enum CommandKind {
     StashPush,
     StashPop,
     StashPicker,
+    /// `:changes` / `:status`: show, focus, or hide the changes window.
+    ToggleChanges,
+    SetChangesVisible(bool),
     FindResults,
     ToggleBlame,
     SetBlame(bool),
@@ -320,6 +329,9 @@ pub fn handle_mouse_event(app: &mut App, event: MouseEvent) {
             let over_diff = app.diff_area.is_some_and(|r| r.contains(pos));
             let over_commit_list = app.commit_list_inner_area.is_some_and(|r| r.contains(pos));
             let over_log = app.log_pane_inner_area().is_some_and(|r| r.contains(pos));
+            let over_changes = app
+                .changes_pane_inner_area()
+                .is_some_and(|r| r.contains(pos));
             match app.input_mode {
                 InputMode::Help | InputMode::MessageDetails => handle_help_action(app, action),
                 InputMode::Summary => handle_summary_action(app, action),
@@ -332,6 +344,7 @@ pub fn handle_mouse_event(app: &mut App, event: MouseEvent) {
                     }
                 }
                 InputMode::Normal if over_log => handle_log_pane_action(app, action),
+                InputMode::Normal if over_changes => handle_changes_pane_action(app, action),
                 InputMode::ThemePicker => {
                     app.move_theme_picker_selection(if scroll_up { -1 } else { 1 });
                 }
@@ -370,7 +383,7 @@ pub fn handle_mouse_event(app: &mut App, event: MouseEvent) {
             // Set focus based on the outer panel area (includes the
             // border) so clicks on dead space still move focus.
             if app.file_list_area.is_some_and(|r| r.contains(pos)) {
-                app.focused_panel = FocusedPanel::FileList;
+                app.focused_panel = app.left_panel();
             } else if app.diff_area.is_some_and(|r| r.contains(pos)) {
                 app.focused_panel = FocusedPanel::Diff;
             }
@@ -478,6 +491,16 @@ fn wheel_commit_list(app: &mut App, scroll_up: bool) {
 }
 
 fn handle_left_click(app: &mut App, pos: Position) {
+    if let Some(area) = app.changes_pane_inner_area()
+        && area.contains(pos)
+    {
+        app.focused_panel = FocusedPanel::Changes;
+        if let Some(row) = app.changes_row_at_screen_row(pos.y) {
+            app.changes_click_row(row);
+        }
+        return;
+    }
+
     if app.file_list_inner_area.is_some_and(|r| r.contains(pos))
         && let Some(idx) = app.file_list_idx_at_screen_row(pos.y)
     {
@@ -1312,6 +1335,16 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
             } else {
                 CommandAfterDispatch::ExitCommandMode
             }
+        }
+        CommandKind::ToggleChanges => {
+            app.exit_command_mode();
+            app.toggle_changes_pane();
+            CommandAfterDispatch::KeepMode
+        }
+        CommandKind::SetChangesVisible(visible) => {
+            app.exit_command_mode();
+            app.set_changes_pane_visible(visible);
+            CommandAfterDispatch::KeepMode
         }
         CommandKind::ToggleBlame => {
             app.toggle_blame();
@@ -2483,6 +2516,40 @@ pub fn handle_file_list_action(app: &mut App, action: Action) {
     }
 }
 
+/// The changes window: movement, folding, staging, discard and commit. The
+/// shared normal-mode actions (`:`, `?`, Tab, the leader) still apply.
+pub fn handle_changes_pane_action(app: &mut App, action: Action) {
+    match action {
+        Action::CursorDown(n) | Action::MouseScrollDown(n) => app.changes_move_down(n),
+        Action::CursorUp(n) | Action::MouseScrollUp(n) => app.changes_move_up(n),
+        Action::GoToTop => app.changes_go_top(),
+        Action::GoToBottom => app.changes_go_bottom(),
+        Action::HalfPageDown => app.changes_page(true, true),
+        Action::HalfPageUp => app.changes_page(false, true),
+        Action::PageDown => app.changes_page(true, false),
+        Action::PageUp => app.changes_page(false, false),
+        Action::SelectFile | Action::SelectFileFull | Action::ToggleExpand => app.changes_open(),
+        Action::ChangesToggleStage => app.changes_toggle_stage(),
+        Action::StageFile => app.changes_stage(),
+        Action::UnstageFile => app.changes_unstage(),
+        Action::ChangesStageAll => app.changes_stage_all(),
+        Action::ChangesUnstageAll => app.changes_unstage_all(),
+        Action::ChangesDiscard => app.changes_request_discard(),
+        Action::ChangesCommit => app.changes_commit(false),
+        Action::ChangesAmend => app.changes_commit(true),
+        Action::ChangesRefresh => {
+            app.refresh_changes_pane();
+            app.set_message("Changes: status re-read");
+        }
+        Action::ChangesCollapse => app.changes_collapse(),
+        Action::ChangesExpand => app.changes_expand(),
+        Action::ExpandAll => app.changes_expand_all(),
+        Action::CollapseAll => app.changes_collapse_all(),
+        Action::ExitMode => app.focused_panel = FocusedPanel::Diff,
+        _ => handle_shared_normal_action(app, action),
+    }
+}
+
 /// Handle input while a file-tree prompt (`i` include, `e` exclude, `/`
 /// search) is open. Mirrors `handle_pr_filter_action` for the target selector.
 fn handle_file_tree_prompt_action(app: &mut App, action: Action) {
@@ -2672,17 +2739,20 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
         Action::ToggleHunkReviewed => app.toggle_hunk_reviewed(),
         Action::ToggleFocus => {
             let has_selector = app.has_commit_pane();
-            let has_comments = app.has_comment_navigator_items();
+            // The changes window takes the tree's slot and has no comment
+            // navigator under it.
+            let has_comments = app.has_comment_navigator_items() && !app.changes_pane_active();
+            let left = app.left_panel();
             // Cycle: FileList -> Diff -> CommitSelector -> Comments -> FileList,
             // skipping panels that aren't present.
             app.focused_panel = match (app.focused_panel, has_selector, has_comments) {
-                (FocusedPanel::FileList, _, _) => FocusedPanel::Diff,
+                (FocusedPanel::FileList | FocusedPanel::Changes, _, _) => FocusedPanel::Diff,
                 (FocusedPanel::Diff, true, _) => FocusedPanel::CommitSelector,
                 (FocusedPanel::Diff, false, true) => FocusedPanel::Comments,
-                (FocusedPanel::Diff, false, false) => FocusedPanel::FileList,
+                (FocusedPanel::Diff, false, false) => left,
                 (FocusedPanel::CommitSelector, _, true) => FocusedPanel::Comments,
-                (FocusedPanel::CommitSelector, _, false) => FocusedPanel::FileList,
-                (FocusedPanel::Comments, _, _) => FocusedPanel::FileList,
+                (FocusedPanel::CommitSelector, _, false) => left,
+                (FocusedPanel::Comments, _, _) => left,
             };
             if matches!(
                 app.focused_panel,
@@ -2693,14 +2763,19 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
         }
         Action::ToggleFocusReverse => {
             let has_selector = app.has_commit_pane();
-            let has_comments = app.has_comment_navigator_items();
+            let has_comments = app.has_comment_navigator_items() && !app.changes_pane_active();
+            let left = app.left_panel();
             app.focused_panel = match (app.focused_panel, has_selector, has_comments) {
-                (FocusedPanel::FileList, _, true) => FocusedPanel::Comments,
-                (FocusedPanel::FileList, true, false) => FocusedPanel::CommitSelector,
-                (FocusedPanel::FileList, false, false) => FocusedPanel::Diff,
+                (FocusedPanel::FileList | FocusedPanel::Changes, _, true) => FocusedPanel::Comments,
+                (FocusedPanel::FileList | FocusedPanel::Changes, true, false) => {
+                    FocusedPanel::CommitSelector
+                }
+                (FocusedPanel::FileList | FocusedPanel::Changes, false, false) => {
+                    FocusedPanel::Diff
+                }
                 (FocusedPanel::Comments, true, _) => FocusedPanel::CommitSelector,
                 (FocusedPanel::Comments, false, _) => FocusedPanel::Diff,
-                (FocusedPanel::Diff, _, _) => FocusedPanel::FileList,
+                (FocusedPanel::Diff, _, _) => left,
                 (FocusedPanel::CommitSelector, _, _) => FocusedPanel::Diff,
             };
             if matches!(

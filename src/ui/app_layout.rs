@@ -5,6 +5,7 @@ use ratatui::{
 };
 
 use crate::app::{App, ConfirmAction, DiscardTarget, InputMode};
+use crate::ui::changes_pane::render_changes_pane;
 use crate::ui::comment_navigator::render_comment_navigator;
 use crate::ui::diff_view::render_diff_view;
 use crate::ui::file_list::render_file_list;
@@ -219,7 +220,15 @@ fn render_main_content(frame: &mut Frame, app: &mut App, area: Rect) {
             .split(content_area);
 
         let comment_items = app.build_comment_navigator_items();
-        if !comment_items.is_empty()
+        if app.changes_pane_active() {
+            // The changes window takes the whole column; the tree and the
+            // comment navigator come back when it closes.
+            app.file_list_area = Some(chunks[0]);
+            app.file_list_inner_area = None;
+            app.comment_navigator_area = None;
+            app.comment_navigator_inner_area = None;
+            render_changes_pane(frame, app, chunks[0]);
+        } else if !comment_items.is_empty()
             && chunks[0].height >= FILE_LIST_MIN_HEIGHT + COMMENT_NAVIGATOR_MIN_HEIGHT
         {
             let available_comment_height = chunks[0].height.saturating_sub(FILE_LIST_MIN_HEIGHT);

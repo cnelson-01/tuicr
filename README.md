@@ -342,6 +342,7 @@ and its keys, or `?` for the full reference.
 | `;<` / `;>`, `;[` / `;]` | Move the side-by-side divider, resize the file tree (or drag them) |
 | `;z` | Zen mode: diff only |
 | `;g` / `;b` | Log pane (commit graph) / branch picker |
+| `;t` | Changes window: working tree status with staging, discard and commit (submodules nested) |
 | `Ctrl-l` | Redraw the whole screen |
 | `?` | Toggle full help |
 

@@ -10,8 +10,8 @@ use crate::vcs::traits::VcsType;
 
 /// A VCS whose history is endless: page `offset..offset+limit` always exists,
 /// so the overflow row can be exercised.
-struct EndlessVcs {
-    info: VcsInfo,
+pub(super) struct EndlessVcs {
+    pub(super) info: VcsInfo,
 }
 
 impl VcsBackend for EndlessVcs {

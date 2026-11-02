@@ -280,6 +280,11 @@ fn header_source_chunk(app: &App) -> Option<String> {
                 Some(format!("staged + unstaged + {} commits", commits.len()))
             }
         }
+        DiffSource::Submodule(sub) => Some(format!(
+            "{} \u{00b7} {}",
+            sub.path.display(),
+            if sub.staged { "staged" } else { "unstaged" }
+        )),
         DiffSource::PullRequest(pr) => {
             let slug = pr.key.repository.display_name();
             let trimmed_title = if pr.title.chars().count() > 60 {
@@ -531,6 +536,19 @@ fn mode_hints(app: &App) -> Vec<Hint> {
             hint("/ filter"),
             hint("esc diff"),
             actions(),
+        ],
+        InputMode::Normal if app.focused_panel == FocusedPanel::Changes => vec![
+            hint("j/k move"),
+            hint("\u{2423} stage/unstage"),
+            hint("\u{21b5} open"),
+            hint("a/A all"),
+            hint("X discard"),
+            hint("c commit"),
+            hint("h/l fold"),
+            hint("r refresh"),
+            hint("esc diff"),
+            actions(),
+            pinned("? help"),
         ],
         InputMode::Normal if app.focused_panel == FocusedPanel::FileList => vec![
             hint("j/k move"),

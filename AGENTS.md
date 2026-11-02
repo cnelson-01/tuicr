@@ -29,6 +29,7 @@ src/
 │   ├── remote.rs        # `:fetch` / `:pull` / `:push` on a worker thread, with summaries and post-op refresh
 │   ├── history.rs       # Log-cursor commit actions: revert, reword, drop, fixup, reset/undo, tag, copy hash
 │   ├── local_changes.rs # Stage/unstage file+hunk, discard (confirmed), commit/amend via the composer, stash picker
+│   ├── changes_pane.rs  # Changes window (`<leader>t`): working tree status rows, folds, stage/unstage/discard/commit per worktree (submodules nested)
 │   ├── find.rs          # Find in files (`:find`): rg / git grep runner, results state, jump-or-edit
 │   ├── blame.rs         # Blame gutter (`:blame`, lazy per-file cache keyed by content hash), `:history`, `<leader>A`
 │   ├── layout.rs        # Side-by-side split %, file tree width %, splitter drag, zen mode, half-screen pans, ignore-whitespace
@@ -61,6 +62,7 @@ src/
 │   │   ├── libgit2.rs   # libgit2-backed implementation used for normal Git repos by default
 │   │   ├── repository.rs # CommitInfo, get_recent_commits()
 │   │   ├── diff.rs      # get_working_tree_diff(), get_commit_range_diff()
+│   │   ├── status.rs    # `git status --porcelain=v2` → StatusEntry rows, submodule walk, per-worktree stage/unstage/discard/commit
 │   │   └── context.rs   # fetch_context_lines() for gap expansion
 │   ├── hg/              # Mercurial backend (always compiled)
 │   │   └── mod.rs       # HgBackend: uses hg CLI, parses with diff_parser::Hg
@@ -146,6 +148,7 @@ src/
     ├── palette.rs       # Command palette modal + which-key popup (both from the action catalog)
     ├── rebase_editor.rs # Interactive rebase editor modal
     ├── console.rs       # Git console view (`:console`)
+    ├── changes_pane.rs  # Changes window renderer (groups, checkboxes, submodule state, nested rows)
     └── styles.rs        # Color constants and style helper functions
 ```
 

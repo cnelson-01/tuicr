@@ -5,10 +5,11 @@ mod libgit2;
 pub(crate) mod raw;
 pub mod repository;
 pub mod staging;
+mod status;
 
 use crate::vcs::traits::{
     BlameLine, BranchInfo, CommitQuery, HunkScope, LinePick, RebaseAction, RebaseStep, ResetMode,
-    StashEntry,
+    StashEntry, StatusEntry,
 };
 use chrono::{DateTime, TimeZone, Utc};
 use std::collections::HashMap;
@@ -215,7 +216,7 @@ pub(super) fn remote_url(repo_root: &Path, name: &str) -> Result<String> {
     run_git_command(repo_root, &["remote", "get-url", "--", name])
 }
 
-fn run_git_command(workdir: &Path, args: &[&str]) -> Result<String> {
+pub(super) fn run_git_command(workdir: &Path, args: &[&str]) -> Result<String> {
     // `-c commit.gpgsign=false` is a no-op for the read-only `config`/`init`
     // calls this makes in production, but it keeps the test-only `commit`
     // calls below from prompting contributors with commit signing enabled
@@ -533,18 +534,53 @@ impl VcsBackend for GitBackend {
     }
 
     fn discard_file(&self, path: &Path) -> Result<()> {
-        let root = &self.info().root_path;
-        let path = path.to_string_lossy();
-        let tracked = run_git_command(root, &["ls-files", "--error-unmatch", "--", &path]).is_ok();
-        let in_head = run_git_command(root, &["cat-file", "-e", &format!("HEAD:{path}")]).is_ok();
-        let result = if !tracked {
-            run_git_command(root, &["clean", "-f", "-q", "--", &path])
-        } else if in_head {
-            run_git_command(root, &["checkout", "HEAD", "--", &path])
-        } else {
-            run_git_command(root, &["rm", "-q", "-f", "--", &path])
-        }
-        .map(|_| ());
+        let result = status::discard_path(&self.info().root_path, path);
+        self.refresh_after_cli_op(result)
+    }
+
+    // The changes window: status and the per-worktree operations. Each runs
+    // git inside `root/repo`, so a nested submodule is driven like the root.
+
+    fn working_tree_status(&self) -> Result<Vec<StatusEntry>> {
+        status::working_tree_status(&self.info().root_path)
+    }
+
+    fn stage_in(&self, repo: &Path, paths: &[PathBuf]) -> Result<()> {
+        let result = status::stage_paths(&self.info().root_path.join(repo), paths);
+        self.refresh_after_cli_op(result)
+    }
+
+    fn unstage_in(&self, repo: &Path, paths: &[PathBuf]) -> Result<()> {
+        let result = status::unstage_paths(&self.info().root_path.join(repo), paths);
+        self.refresh_after_cli_op(result)
+    }
+
+    fn stage_all_in(&self, repo: &Path) -> Result<()> {
+        let result = status::stage_all(&self.info().root_path.join(repo));
+        self.refresh_after_cli_op(result)
+    }
+
+    fn unstage_all_in(&self, repo: &Path) -> Result<()> {
+        let result = status::unstage_all(&self.info().root_path.join(repo));
+        self.refresh_after_cli_op(result)
+    }
+
+    fn discard_in(&self, repo: &Path, path: &Path) -> Result<()> {
+        let result = status::discard_path(&self.info().root_path.join(repo), path);
+        self.refresh_after_cli_op(result)
+    }
+
+    fn commit_in(&self, repo: &Path, message: &str, amend: bool) -> Result<String> {
+        let result = status::commit(&self.info().root_path.join(repo), message, amend);
+        self.refresh_after_cli_op(result)
+    }
+
+    fn head_commit_message_in(&self, repo: &Path) -> Result<String> {
+        status::head_commit_message(&self.info().root_path.join(repo))
+    }
+
+    fn submodule_checkout(&self, repo: &Path, path: &Path, to_head: bool) -> Result<()> {
+        let result = status::submodule_checkout(&self.info().root_path.join(repo), path, to_head);
         self.refresh_after_cli_op(result)
     }
 

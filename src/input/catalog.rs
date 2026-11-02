@@ -24,6 +24,8 @@ pub enum Scope {
     Stashes,
     /// Inside the merge conflict view.
     Merge,
+    /// The changes window (working tree status).
+    Changes,
 }
 
 impl Scope {
@@ -36,6 +38,7 @@ impl Scope {
             Scope::Branches => "branches",
             Scope::Stashes => "stashes",
             Scope::Merge => "merge",
+            Scope::Changes => "changes",
         }
     }
 }
@@ -79,7 +82,7 @@ const fn e(
 }
 
 use Run::{Command as Cmd, Keys, Prompt};
-use Scope::{Branches, Diff, Global, Log, Merge, Stashes, Tree};
+use Scope::{Branches, Changes, Diff, Global, Log, Merge, Stashes, Tree};
 
 #[rustfmt::skip]
 pub const ENTRIES: &[Entry] = &[
@@ -133,6 +136,7 @@ pub const ENTRIES: &[Entry] = &[
     e(Global, "Layout", "<leader>z", "Zen mode: diff only (again restores)", Keys("<leader>z")),
     e(Global, "Layout", "<leader>e", "Show / hide the file tree", Keys("<leader>e")),
     e(Global, "Layout", "<leader>g", "Open / focus / hide the log pane", Keys("<leader>g")),
+    e(Global, "Layout", "<leader>t", "Open / focus / hide the changes window", Keys("<leader>t")),
     e(Global, "Layout", "<leader>+", "Taller log pane", Keys("<leader>+")),
     e(Global, "Layout", "<leader>-", "Shorter log pane", Keys("<leader>-")),
     e(Global, "Layout", "<leader>s", "Show / hide the commit selector", Keys("<leader>s")),
@@ -185,6 +189,17 @@ pub const ENTRIES: &[Entry] = &[
     e(Global, "Local changes", ":stash", "Stash the working tree", Cmd("stash")),
     e(Global, "Local changes", ":stash pop", "Restore the newest stash", Cmd("stash pop")),
     e(Global, "Local changes", ":stashes", "Stash picker", Cmd("stashes")),
+    e(Global, "Local changes", ":changes", "Toggle the changes window (working tree status)", Cmd("changes")),
+    e(Changes, "Local changes", "j / k", "Move; the diff follows the file", Keys("j")),
+    e(Changes, "Local changes", "Enter", "Open the file's diff; fold a group or submodule", Keys("<CR>")),
+    e(Changes, "Local changes", "Space", "Stage / unstage the file (the checkbox)", Keys("<Space>")),
+    e(Changes, "Local changes", "s / u", "Stage / unstage the file", Keys("s")),
+    e(Changes, "Local changes", "a / A", "Stage / unstage everything in this worktree", Keys("a")),
+    e(Changes, "Local changes", "X", "Discard the file; a submodule returns to its recorded commit", Keys("X")),
+    e(Changes, "Local changes", "c / C", "Commit / amend this worktree (inside a submodule from its rows)", Keys("c")),
+    e(Changes, "Local changes", "h / l", "Fold / unfold a group or a submodule's files", Keys("h")),
+    e(Changes, "Local changes", "o / O", "Unfold / fold every group", Keys("o")),
+    e(Changes, "Local changes", "r", "Re-read the status", Keys("r")),
     e(Stashes, "Local changes", "Enter", "Pop the stash", Cmd("stashes")),
     e(Stashes, "Local changes", "a", "Apply the stash, keeping it", Cmd("stashes")),
     e(Stashes, "Local changes", "d", "Drop the stash", Cmd("stashes")),

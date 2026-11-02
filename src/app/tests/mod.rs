@@ -1,4 +1,5 @@
 mod change_status_tests;
+mod changes_pane_tests;
 mod comment_navigation_tests;
 mod commit_scoped_comment_tests;
 mod commit_selection_tests;

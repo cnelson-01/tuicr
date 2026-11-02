@@ -433,6 +433,15 @@ impl App {
     /// merge resolution, or a diff-watch tick) keeping the cursor on the
     /// same commit where it still exists.
     pub fn refresh_log_rows_keep_cursor(&mut self) {
+        // Whatever moved the log (a commit, a checkout, a stage) moved the
+        // working tree's status too.
+        self.refresh_changes_pane();
+        self.refresh_log_rows_only();
+    }
+
+    /// `refresh_log_rows_keep_cursor` for callers that re-read the status
+    /// themselves.
+    pub(in crate::app) fn refresh_log_rows_only(&mut self) {
         let Some(pane) = self.log_pane.as_ref() else {
             return;
         };

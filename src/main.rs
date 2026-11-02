@@ -14,18 +14,19 @@ use tuicr::cli::parse_cli_args;
 use tuicr::config::IgnoreWhitespaceConfig;
 use tuicr::editor::{EditorCommand, EditorError, EditorLaunch, EditorSurface, EditorTarget};
 use tuicr::handler::{
-    handle_branch_picker_action, handle_command_action, handle_comment_action,
-    handle_comment_navigator_action, handle_commit_select_action, handle_commit_selector_action,
-    handle_confirm_action, handle_console_action, handle_diff_action, handle_file_list_action,
-    handle_find_results_action, handle_help_action, handle_merge_conflict_action,
-    handle_mouse_event, handle_palette_action, handle_rebase_editor_action, handle_search_action,
-    handle_stash_picker_action, handle_submit_action_picker_action, handle_submit_confirm_action,
+    handle_branch_picker_action, handle_changes_pane_action, handle_command_action,
+    handle_comment_action, handle_comment_navigator_action, handle_commit_select_action,
+    handle_commit_selector_action, handle_confirm_action, handle_console_action,
+    handle_diff_action, handle_file_list_action, handle_find_results_action, handle_help_action,
+    handle_merge_conflict_action, handle_mouse_event, handle_palette_action,
+    handle_rebase_editor_action, handle_search_action, handle_stash_picker_action,
+    handle_submit_action_picker_action, handle_submit_confirm_action,
     handle_submit_resolver_action, handle_summary_action, handle_theme_picker_action,
     handle_visual_action,
 };
 use tuicr::input::catalog::Prefix;
 use tuicr::input::{
-    Action, map_file_tree_mode_with_q_quits, map_file_tree_prompt_mode,
+    Action, map_changes_pane_mode, map_file_tree_mode_with_q_quits, map_file_tree_prompt_mode,
     map_key_to_action_with_q_quits, map_log_pane_mode, map_target_filter_mode,
     map_theme_picker_filter_mode,
 };
@@ -398,6 +399,9 @@ fn main() -> anyhow::Result<()> {
         if let Some(show) = cfg.show_log {
             app.log_pane_wanted = show;
         }
+        if let Some(show) = cfg.show_changes {
+            app.changes_pane_wanted = show;
+        }
         if let Some(rows) = cfg.log_height {
             app.log_pane_height = Some(
                 u16::try_from(rows)
@@ -521,6 +525,8 @@ fn main() -> anyhow::Result<()> {
         needs_redraw |= app.poll_log_preview();
         needs_redraw |= app.poll_commit_filter();
         needs_redraw |= app.poll_log_pane_autoshow();
+        needs_redraw |= app.poll_changes_preview();
+        needs_redraw |= app.poll_changes_pane_autoshow();
         needs_redraw |= app.poll_blame();
         needs_redraw |= app.poll_remote_op();
         needs_redraw |= pr_pending;
@@ -797,6 +803,12 @@ fn main() -> anyhow::Result<()> {
                                 app.toggle_log_pane();
                                 continue;
                             }
+                            // `<leader>t` opens, focuses, or hides the
+                            // changes window (working tree status).
+                            crossterm::event::KeyCode::Char('t') => {
+                                app.toggle_changes_pane();
+                                continue;
+                            }
                             crossterm::event::KeyCode::Char('+' | '=') => {
                                 app.adjust_log_pane_height(1);
                                 continue;
@@ -896,6 +908,10 @@ fn main() -> anyhow::Result<()> {
                         // The log pane claims the selector keys (space,
                         // enter, p/b/s); the rest stay normal-mode bindings.
                         map_log_pane_mode(key, app.leader_key, app.q_quits)
+                    } else if app.input_mode == InputMode::Normal && app.changes_pane_focused() {
+                        // The changes window claims the staging keys; the
+                        // rest stay normal-mode bindings.
+                        map_changes_pane_mode(key, app.leader_key, app.q_quits)
                     } else if app.input_mode == InputMode::ThemePicker
                         && app.theme_picker_filtering()
                     {
@@ -1148,6 +1164,7 @@ fn dispatch_action(app: &mut App, action: Action) {
             FocusedPanel::Comments => handle_comment_navigator_action(app, action),
             FocusedPanel::Diff => handle_diff_action(app, action),
             FocusedPanel::CommitSelector => handle_commit_selector_action(app, action),
+            FocusedPanel::Changes => handle_changes_pane_action(app, action),
         },
     }
 }

@@ -258,7 +258,7 @@ impl App {
             return;
         }
         if self.show_file_list {
-            self.focused_panel = FocusedPanel::FileList;
+            self.focused_panel = self.left_panel();
         }
     }
 

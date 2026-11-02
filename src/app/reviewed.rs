@@ -148,10 +148,41 @@ impl App {
                 };
                 self.queue_editor_for_file_idx(file_idx, line);
             }
+            FocusedPanel::Changes => {
+                self.queue_editor_for_changes_entry();
+            }
             FocusedPanel::Comments | FocusedPanel::CommitSelector => {
                 self.set_warning("Focus a file or diff line to open in editor");
             }
         }
+    }
+
+    /// `e` in the changes window: open the entry's file (inside its
+    /// worktree) at the top.
+    fn queue_editor_for_changes_entry(&mut self) {
+        let Some(entry) = self
+            .changes_pane
+            .as_ref()
+            .and_then(|p| p.cursor_entry())
+            .cloned()
+        else {
+            self.set_warning("Select a file to open in editor");
+            return;
+        };
+        if entry.is_submodule() {
+            self.set_warning("A submodule row has no file to open; open one of its files");
+            return;
+        }
+        let path = self.vcs_info.root_path.join(entry.worktree());
+        if !path.is_file() {
+            self.set_warning(format!("Cannot open {}: not a file", path.display()));
+            return;
+        }
+        self.pending_editor_target = Some(EditorTarget {
+            label: entry.worktree().display().to_string(),
+            path,
+            line: None,
+        });
     }
 
     fn queue_editor_for_file_idx(&mut self, file_idx: usize, line: Option<u32>) {
@@ -200,6 +231,11 @@ impl App {
             return;
         };
 
+        // A submodule review's paths are relative to the submodule.
+        let root = match self.submodule_review_path() {
+            Some(sub) => root.join(sub),
+            None => root,
+        };
         let path = root.join(&reviewed_file.display_path);
         // Deleted files have diff rows, but no worktree file the external
         // editor can open.

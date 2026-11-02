@@ -505,6 +505,67 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(""),
         Line::from(Span::styled(
+            "Changes Window (working tree status)",
+            Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        )),
+        Line::from(""),
+        Line::from(Span::raw(
+            "  Conflicts, staged, unstaged and untracked paths in the file tree's place. Submodules show",
+        )),
+        Line::from(Span::raw(
+            "  their state (\u{2191}N new commits, modified, untracked) with their own changes nested under them.",
+        )),
+        Line::from(vec![
+            Span::styled(
+                "  <leader>t ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Open the window, focus it, or hide it when focused (`:changes` / `:status`)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  j / k     ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Move; the diff follows the file after a short pause. Enter opens it and focuses the diff"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  Space     ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Stage an unstaged / untracked entry, unstage a staged one (`s` / `u` do one or the other)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  a / A     ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Stage / unstage everything in the cursor's worktree (a submodule from its rows)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  X         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Discard the entry (asks first); a submodule row goes back to its recorded commit"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  c / C     ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Commit / amend the cursor's worktree; on a submodule's rows the commit lands inside it"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  h / l o/O ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Fold / unfold a group or a submodule's rows; every group. `r` re-reads the status"),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
             "Log Pane (persistent commit graph)",
             Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
         )),

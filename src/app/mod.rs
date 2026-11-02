@@ -63,6 +63,8 @@ pub const DEFAULT_LOG_PANE_HEIGHT: u16 = 12;
 pub const MIN_LOG_PANE_HEIGHT: u16 = 3;
 /// How long the log cursor must rest before its commit is previewed.
 pub const LOG_PREVIEW_DELAY: std::time::Duration = std::time::Duration::from_millis(150);
+/// How long the changes window's cursor rests before the diff follows it.
+pub const CHANGES_PREVIEW_DELAY: std::time::Duration = std::time::Duration::from_millis(200);
 
 /// Create a forge backend for the given repository.
 /// Routes to the GitHub backend (via `gh`), the GitLab backend (via `glab`),
@@ -248,6 +250,7 @@ pub struct ZenSaved {
     pub show_file_list: bool,
     pub log_pane_open: bool,
     pub show_commit_selector: bool,
+    pub changes_pane_open: bool,
 }
 
 /// A draggable layout boundary.
@@ -713,6 +716,7 @@ pub enum InputMode {
 
 pub use blame::{BLAME_WIDTH, BlameState, overlay_label};
 pub use branches::BranchPicker;
+pub use changes_pane::{ChangesPane, ChangesRow};
 pub use console::ConsoleView;
 pub use find::{FIND_MAX_HITS, FindHit, FindState};
 pub use git_ops::{GitThen, PendingGit, RepoStatus};
@@ -835,6 +839,19 @@ pub enum DiffSource {
     /// variants; keeping it inline would balloon `DiffSource` for every
     /// local-review caller.
     PullRequest(Box<PullRequestDiffSource>),
+    /// Staged or unstaged changes inside a submodule, opened from the
+    /// changes window. The diff is read through a backend opened on the
+    /// submodule (`App::submodule_vcs`), so paths are relative to it.
+    Submodule(Box<SubmoduleDiffSource>),
+}
+
+/// Which submodule, and which side of its index, a `DiffSource::Submodule`
+/// review shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubmoduleDiffSource {
+    /// The submodule's worktree, relative to the repository root.
+    pub path: PathBuf,
+    pub staged: bool,
 }
 
 impl DiffSource {
@@ -845,13 +862,14 @@ impl DiffSource {
     /// and pull-request reviews intentionally return false because editing the
     /// local file does not update the selected review target.
     pub fn includes_worktree_changes(&self) -> bool {
-        matches!(
-            self,
+        match self {
             Self::WorkingTree
-                | Self::Unstaged
-                | Self::StagedAndUnstaged
-                | Self::StagedUnstagedAndCommits(_)
-        )
+            | Self::Unstaged
+            | Self::StagedAndUnstaged
+            | Self::StagedUnstagedAndCommits(_) => true,
+            Self::Submodule(sub) => !sub.staged,
+            _ => false,
+        }
     }
 }
 
@@ -1018,6 +1036,8 @@ pub enum FocusedPanel {
     Comments,
     Diff,
     CommitSelector,
+    /// The changes window, in the file tree's place while it is open.
+    Changes,
 }
 
 /// Selector list state owned by the persistent log pane. The fullscreen
@@ -1793,6 +1813,14 @@ pub struct App {
     pub pending_discard: Option<DiscardTarget>,
     /// Stash picker modal state; `Some` while `input_mode == StashPicker`.
     pub stash_picker: Option<StashPicker>,
+    /// The changes window (`<leader>t`); `None` while it is hidden.
+    pub changes_pane: Option<ChangesPane>,
+    /// Open the changes window as soon as a review is on screen
+    /// (`show_changes = true`); closing the window clears it.
+    pub changes_pane_wanted: bool,
+    /// Backend opened on the submodule a `DiffSource::Submodule` review
+    /// reads through; dropped with the review.
+    pub submodule_vcs: Option<Box<dyn VcsBackend>>,
     /// Last find-in-files search and its hits (`:find`).
     pub find: FindState,
     /// Blame gutter state (`:blame`).
@@ -2230,6 +2258,7 @@ impl AppStartupOptions<'_> {
 mod annotations;
 mod blame;
 mod branches;
+mod changes_pane;
 mod coloring;
 mod comment_vim;
 mod comments;

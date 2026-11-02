@@ -184,6 +184,10 @@ pub struct AppConfig {
     /// as soon as a review is on screen. Defaults to true; toggle at
     /// runtime with `<leader>g` or `:log`.
     pub show_log: Option<bool>,
+    /// Whether the changes window (working tree status beside the diff)
+    /// opens as soon as a review is on screen. Defaults to false; toggle at
+    /// runtime with `<leader>t` or `:changes`.
+    pub show_changes: Option<bool>,
     /// Log pane height in rows, borders included. Defaults to a third of
     /// the window, at most 12; adjust at
     /// runtime with `<leader>+` / `<leader>-` or `:set logheight N`.
@@ -287,6 +291,7 @@ const KNOWN_KEYS: &[&str] = &[
     "pr_comments_visibility",
     "show_commits",
     "show_log",
+    "show_changes",
     "log_height",
     "split",
     "tree_width",
@@ -641,6 +646,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         ),
         show_commits: read_bool(table, "show_commits", &mut warnings),
         show_log: read_bool(table, "show_log", &mut warnings),
+        show_changes: read_bool(table, "show_changes", &mut warnings),
         log_height: read_usize(table, "log_height", &mut warnings),
         split: read_usize(table, "split", &mut warnings),
         tree_width: read_usize(table, "tree_width", &mut warnings),
@@ -1225,6 +1231,14 @@ mod tests {
         let cfg = outcome.config.as_ref().expect("config should parse");
         assert_eq!(cfg.show_log, Some(true));
         assert_eq!(cfg.log_height, Some(20));
+        assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+    }
+
+    #[test]
+    fn should_parse_show_changes() {
+        let outcome = parse_config("show_changes = true\n");
+        let cfg = outcome.config.as_ref().expect("config should parse");
+        assert_eq!(cfg.show_changes, Some(true));
         assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
     }
 

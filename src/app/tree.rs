@@ -95,6 +95,14 @@ impl App {
     }
 
     pub fn toggle_file_list(&mut self) {
+        // With the changes window in the tree's place, `<leader>e` brings
+        // the tree back rather than hiding the column.
+        if self.changes_pane.is_some() {
+            self.disable_changes_pane();
+            self.show_file_list = true;
+            self.set_message("File list: visible \u{00b7} changes window closed");
+            return;
+        }
         self.show_file_list = !self.show_file_list;
         if !self.show_file_list
             && matches!(

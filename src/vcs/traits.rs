@@ -335,6 +335,123 @@ pub struct StashEntry {
     pub message: String,
 }
 
+/// Which list of the changes window a path belongs to. The order is the
+/// display order: what blocks a commit first, then what the next commit
+/// holds, then what it could hold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ChangeArea {
+    /// Unmerged paths of an in-progress merge / rebase / cherry-pick.
+    Conflict,
+    /// HEAD → index: what `:commit` would record.
+    Staged,
+    /// index → working tree, tracked paths only.
+    Unstaged,
+    /// Paths git does not know about (`??`).
+    Untracked,
+}
+
+impl ChangeArea {
+    pub const ALL: [ChangeArea; 4] = [
+        ChangeArea::Conflict,
+        ChangeArea::Staged,
+        ChangeArea::Unstaged,
+        ChangeArea::Untracked,
+    ];
+
+    /// Group heading in the changes window.
+    pub fn label(self) -> &'static str {
+        match self {
+            ChangeArea::Conflict => "Conflicts",
+            ChangeArea::Staged => "Staged",
+            ChangeArea::Unstaged => "Unstaged",
+            ChangeArea::Untracked => "Untracked",
+        }
+    }
+
+    /// Lowercase noun for counts and messages (`2 staged`).
+    pub fn noun(self) -> &'static str {
+        match self {
+            ChangeArea::Conflict => "conflict",
+            ChangeArea::Staged => "staged",
+            ChangeArea::Unstaged => "unstaged",
+            ChangeArea::Untracked => "untracked",
+        }
+    }
+}
+
+/// How a submodule differs from the commit its superproject records, as
+/// `git status` reports it (`S<C><M><U>` in porcelain v2) plus commit
+/// counts between the recorded commit and the submodule's HEAD.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SubmoduleState {
+    /// The submodule's HEAD is not the recorded commit.
+    pub commit_changed: bool,
+    /// Tracked files inside the submodule are modified (worktree or index).
+    pub modified: bool,
+    /// The submodule has untracked files.
+    pub untracked: bool,
+    /// Commits the submodule's checkout has that the recorded commit lacks.
+    pub ahead: usize,
+    /// Commits the recorded commit has that the submodule's checkout lacks.
+    pub behind: usize,
+}
+
+impl SubmoduleState {
+    /// Whether anything inside the submodule's worktree differs, which is
+    /// what the changes window lists nested under the submodule row.
+    pub fn is_dirty(&self) -> bool {
+        self.modified || self.untracked
+    }
+}
+
+/// One row of `git status`, for the changes window.
+///
+/// A path that is both staged and modified again appears twice, once in
+/// each area, as an IDE's commit window shows it. Entries inside a dirty
+/// submodule carry the submodule's path in `repo` and sit right after the
+/// submodule's own `Unstaged` row, at `depth + 1`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatusEntry {
+    /// The worktree this entry lives in, relative to the repository root:
+    /// empty for the root itself, the submodule's path otherwise. Every
+    /// operation on the entry runs git there.
+    pub repo: PathBuf,
+    pub area: ChangeArea,
+    /// Path relative to `repo`. The new path for a rename.
+    pub path: PathBuf,
+    /// The old path of a rename or copy.
+    pub orig_path: Option<PathBuf>,
+    /// Git's status letter (`M`, `A`, `D`, `R`, `C`, `T`, `?`), or the
+    /// two-letter unmerged pair (`UU`, `AA`, `DU`, ...) for a conflict.
+    pub code: String,
+    /// `Some` when the path is a submodule.
+    pub submodule: Option<SubmoduleState>,
+    /// 0 at the root, 1 inside a submodule, 2 inside a nested submodule.
+    pub depth: usize,
+}
+
+impl StatusEntry {
+    pub fn is_submodule(&self) -> bool {
+        self.submodule.is_some()
+    }
+
+    /// The worktree path a submodule entry stands for, relative to the
+    /// root: where its nested entries run git.
+    pub fn worktree(&self) -> PathBuf {
+        self.repo.join(&self.path)
+    }
+
+    /// The status letter shown in the window: `S` for a submodule, the
+    /// first letter of a conflict pair, git's letter otherwise.
+    pub fn glyph(&self) -> char {
+        if self.is_submodule() {
+            'S'
+        } else {
+            self.code.chars().next().unwrap_or('?')
+        }
+    }
+}
+
 /// One row of the branch picker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BranchInfo {
@@ -754,6 +871,77 @@ pub trait VcsBackend: Send {
     fn head_commit_message(&self) -> Result<String> {
         Err(crate::error::TuicrError::UnsupportedOperation(
             "Reading the head commit is not supported for this VCS".into(),
+        ))
+    }
+
+    /// Every changed path in the working tree for the changes window:
+    /// conflicts, staged, unstaged and untracked entries, submodule rows
+    /// with their state, and the entries inside dirty submodules nested
+    /// under them. See [`StatusEntry`].
+    fn working_tree_status(&self) -> Result<Vec<StatusEntry>> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Working tree status not supported for this VCS".into(),
+        ))
+    }
+
+    /// Stage `paths` in the worktree at `repo` (relative to the root: empty
+    /// for the root, a submodule's path otherwise).
+    fn stage_in(&self, _repo: &Path, _paths: &[PathBuf]) -> Result<()> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Staging not supported for this VCS".into(),
+        ))
+    }
+
+    /// Unstage `paths` in the worktree at `repo`.
+    fn unstage_in(&self, _repo: &Path, _paths: &[PathBuf]) -> Result<()> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Unstaging not supported for this VCS".into(),
+        ))
+    }
+
+    /// Stage every change in the worktree at `repo`, untracked files
+    /// included.
+    fn stage_all_in(&self, _repo: &Path) -> Result<()> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Staging not supported for this VCS".into(),
+        ))
+    }
+
+    /// Empty the index of the worktree at `repo` back to HEAD.
+    fn unstage_all_in(&self, _repo: &Path) -> Result<()> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Unstaging not supported for this VCS".into(),
+        ))
+    }
+
+    /// Throw away every change to `path` in the worktree at `repo`: a
+    /// tracked file returns to HEAD, a new file is deleted.
+    fn discard_in(&self, _repo: &Path, _path: &Path) -> Result<()> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Discarding changes not supported for this VCS".into(),
+        ))
+    }
+
+    /// Commit the index of the worktree at `repo`. Returns the short id.
+    fn commit_in(&self, _repo: &Path, _message: &str, _amend: bool) -> Result<String> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Commit not supported for this VCS".into(),
+        ))
+    }
+
+    /// HEAD's full message in the worktree at `repo`, for amending.
+    fn head_commit_message_in(&self, _repo: &Path) -> Result<String> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Commit messages not supported for this VCS".into(),
+        ))
+    }
+
+    /// Put the submodule at `path` (inside the worktree at `repo`) back on
+    /// the commit the superproject records: the index's commit, or HEAD's
+    /// when `to_head` (which also unstages a staged pointer change).
+    fn submodule_checkout(&self, _repo: &Path, _path: &Path, _to_head: bool) -> Result<()> {
+        Err(crate::error::TuicrError::UnsupportedOperation(
+            "Submodules not supported for this VCS".into(),
         ))
     }
 

@@ -99,6 +99,14 @@ screen, and the status-bar hints for most panes are partial or truncated.
 - [x] No line-level staging (an IDE's per-line checkboxes). Stage the
       visual-selected lines
 - [x] Stash picker can pop, apply, or drop, but can't preview a stash's diff
+- [x] No Commit tool window: the staged / unstaged reviews list files only
+      after a diff is loaded, with no view of the whole working tree's
+      status. Add a changes window (`<leader>t`) in the file tree's place:
+      conflicts, staged, unstaged and untracked groups with checkboxes,
+      stage / unstage / discard / commit from the list, the diff following
+      the cursor. Submodules show their state (new commits, modified,
+      untracked) with their own entries nested under them, every operation
+      on a nested row running inside the submodule
 
 ### Annotate
 

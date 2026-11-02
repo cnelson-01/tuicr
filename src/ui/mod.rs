@@ -1,5 +1,6 @@
 pub mod app_layout;
 pub mod branch_picker;
+pub mod changes_pane;
 pub mod comment_navigator;
 pub mod comment_panel;
 pub mod commit_graph;

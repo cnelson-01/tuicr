@@ -353,7 +353,9 @@ impl App {
             })
         } else {
             Box::new(VcsContextProvider {
-                vcs: self.vcs.as_ref(),
+                // A submodule review reads its files through the backend
+                // opened on the submodule, not the superproject's.
+                vcs: self.submodule_review_vcs().unwrap_or(self.vcs.as_ref()),
                 ref_commit: self.ref_commit().map(|s| s.to_string()),
             })
         }

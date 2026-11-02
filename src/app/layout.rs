@@ -124,14 +124,20 @@ impl App {
             if saved.log_pane_open {
                 self.enable_log_pane();
             }
+            if saved.changes_pane_open {
+                self.enable_changes_pane();
+            }
             self.focused_panel = FocusedPanel::Diff;
             self.set_message("Zen mode off");
             return;
         }
+        let changes_pane_open = self.changes_pane.is_some();
+        self.disable_changes_pane();
         self.zen_saved = Some(ZenSaved {
             show_file_list: self.show_file_list,
             log_pane_open: self.log_pane.is_some(),
             show_commit_selector: self.show_commit_selector,
+            changes_pane_open,
         });
         self.show_file_list = false;
         self.show_commit_selector = false;

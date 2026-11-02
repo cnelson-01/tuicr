@@ -232,6 +232,26 @@ pub enum Action {
     /// Discard the hunk under the cursor after confirmation (`X`).
     DiscardHunk,
 
+    // Changes window
+    /// Space: stage an unstaged entry, unstage a staged one; fold a heading.
+    ChangesToggleStage,
+    /// Stage everything in the cursor's worktree (`a`).
+    ChangesStageAll,
+    /// Unstage everything in the cursor's worktree (`A`).
+    ChangesUnstageAll,
+    /// Discard the entry under the cursor after confirmation (`X`).
+    ChangesDiscard,
+    /// Commit the cursor's worktree through the message composer (`c`).
+    ChangesCommit,
+    /// Amend the cursor's worktree's HEAD (`C`).
+    ChangesAmend,
+    /// Re-read the status (`r`).
+    ChangesRefresh,
+    /// Fold the heading / submodule under the cursor, or jump to it (`h`).
+    ChangesCollapse,
+    /// Unfold the heading / submodule under the cursor (`l`).
+    ChangesExpand,
+
     // Stash picker
     StashPickerDown,
     StashPickerUp,
@@ -833,6 +853,33 @@ pub fn map_log_pane_mode(key: KeyEvent, leader_key: char, q_quits: bool) -> Acti
         (KeyCode::Char('y'), KeyModifiers::NONE) => Action::SelectorCopyHash,
         (KeyCode::Char('i'), KeyModifiers::NONE) => Action::SelectorInteractiveRebase,
         (KeyCode::Char('/'), _) => Action::BeginTargetFilter,
+        (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
+        _ => map_normal_mode_with_q_quits(key, leader_key, q_quits),
+    }
+}
+
+/// Key map while the changes window holds focus in `InputMode::Normal`.
+///
+/// The window claims the staging keys (Space, `s` / `u`, `a` / `A`, `X`,
+/// `c` / `C`), folding (`h` / `l`, `o` / `O`) and `r`; everything else falls
+/// through to `map_normal_mode` so `j` / `k`, paging, `:`, `?`, Tab and the
+/// leader keep their meanings.
+pub fn map_changes_pane_mode(key: KeyEvent, leader_key: char, q_quits: bool) -> Action {
+    match (key.code, key.modifiers) {
+        (KeyCode::Char(' '), KeyModifiers::NONE) => Action::ChangesToggleStage,
+        (KeyCode::Enter, KeyModifiers::NONE) => Action::SelectFile,
+        (KeyCode::Char('s'), KeyModifiers::NONE) => Action::StageFile,
+        (KeyCode::Char('u'), KeyModifiers::NONE) => Action::UnstageFile,
+        (KeyCode::Char('a'), KeyModifiers::NONE) => Action::ChangesStageAll,
+        (KeyCode::Char('A'), _) => Action::ChangesUnstageAll,
+        (KeyCode::Char('X'), _) => Action::ChangesDiscard,
+        (KeyCode::Char('c'), KeyModifiers::NONE) => Action::ChangesCommit,
+        (KeyCode::Char('C'), _) => Action::ChangesAmend,
+        (KeyCode::Char('r'), KeyModifiers::NONE) => Action::ChangesRefresh,
+        (KeyCode::Char('h') | KeyCode::Left, KeyModifiers::NONE) => Action::ChangesCollapse,
+        (KeyCode::Char('l') | KeyCode::Right, KeyModifiers::NONE) => Action::ChangesExpand,
+        (KeyCode::Char('o'), KeyModifiers::NONE) => Action::ExpandAll,
+        (KeyCode::Char('O'), _) => Action::CollapseAll,
         (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
         _ => map_normal_mode_with_q_quits(key, leader_key, q_quits),
     }

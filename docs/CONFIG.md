@@ -104,6 +104,7 @@ session_header = true
 | `pr_comments_visibility`   | `unresolved` | Default visibility for PR review comment threads: `unresolved` (default), `all` (resolved/outdated threads shown muted), or `hide`. Seeds each review that starts at the default; `:comments` still switches mid-session and a restored session keeps its saved visibility. |
 | `show_commits`             | `true`       | Whether the inline commit selector pane is visible on startup for multi-commit reviews. Toggle with `<leader>s` or `:set commits!`.                        |
 | `show_log`                 | `true`       | Whether the persistent log pane (commit graph above the diff) opens once a review is on screen. Toggle with `<leader>g` or `:log`.                          |
+| `show_changes`             | `false`      | Whether the changes window (working tree status in the file tree's place) opens once a review is on screen. Toggle with `<leader>t` or `:changes`.         |
 | `log_height`               | window / 3   | Log pane height in rows, borders included. Unset, it takes a third of the window, at most 12 rows. Adjust with `<leader>+` / `<leader>-` or `:set logheight N`. |
 | `show_reviewed`            | `true`       | Whether files already marked reviewed appear in the file tree and the diff. Set `false` to start a session showing only what is left. Toggle with `:set reviewed!`. |
 | `mouse`                    | `true`       | Wheel scrolling, clicks, and drag-to-select.                                                                                                               |

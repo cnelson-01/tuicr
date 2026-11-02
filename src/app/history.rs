@@ -135,6 +135,7 @@ impl App {
             amend: false,
             reword: Some(id.clone()),
             return_mode,
+            repo: std::path::PathBuf::new(),
         });
         let how = if self.is_head_commit(&id) {
             "amends HEAD"

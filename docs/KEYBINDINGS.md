@@ -162,7 +162,7 @@ considers files that pass the active filters.
 
 | Key | Action |
 |-----|--------|
-| `Tab` / `Shift-Tab` | Cycle focus forward / backward between file list, comment navigator, diff, and commit selector |
+| `Tab` / `Shift-Tab` | Cycle focus forward / backward between file list (or the changes window in its place), comment navigator, diff, and commit selector |
 | `<leader>h` | Move focus one panel left (side-by-side: new side → old side → file list) |
 | `<leader>l` | Move focus one panel right (side-by-side: file list → diff → old side → new side) |
 | `<leader>k` | Move focus up (comments to files, or diff/files to commit selector when visible) |
@@ -170,6 +170,7 @@ considers files that pass the active filters.
 | `<leader>e` | Toggle file list visibility |
 | `<leader>s` | Toggle commit selector visibility (also `:set commits!`) |
 | `<leader>g` | Go to the log pane: opens it (focused) when hidden, focuses it when open, hides it when it already has focus. `:log` / `:set log!` toggle visibility only |
+| `<leader>t` | Go to the changes window (working tree status, in the file tree's place): opens it focused, focuses it, or hides it when it already has focus. `:changes` / `:status` do the same; `:set changes` / `:set nochanges` set visibility |
 | `<leader>+` / `<leader>-` | Grow / shrink the log pane (also `:set logheight N`) |
 | `<leader>b` | Open the branch picker (also `:branches`) |
 | `<leader>F` | Find in files: opens the command line with `find ` |
@@ -455,6 +456,43 @@ Hunk operations hand git the hunk's `@@` coordinates and the diff it came from, 
 exactly what is on screen. Untracked files can only be staged or discarded whole. The diff
 reloads after every operation; when the review empties out (everything staged away from the
 unstaged view) the pane goes blank until `:e` or the next change.
+
+## Changes window
+
+`<leader>t` (or `:changes`, `:status`) docks the working tree's status where the file tree
+sits, like an IDE's Commit tool window: **Conflicts**, **Staged**, **Unstaged** and
+**Untracked** groups, each entry with a checkbox (`▣` staged, `▢` not), git's status letter
+and its path. Resting the cursor on an entry loads the review it belongs to (staged or
+unstaged) and puts the diff cursor on the file, so the hunk and line keys (`S`, `U`, `V`
+then `S`) keep working from the diff. `show_changes = true` in `config.toml` opens it at
+startup; `<leader>e` closes it and brings the tree back.
+
+Submodules are rows of their own, marked `S`, with their state after the name: `↑N` commits
+the submodule has beyond the recorded one (`↓N` the other way), `modified` for changed
+tracked files inside it, `untracked` for new files inside it. A dirty submodule's own
+entries hang under its row, indented, with the same checkbox meaning inside that repo, and
+every key on one of those rows runs git inside the submodule. Three levels of nesting are
+walked.
+
+| Key | Action |
+|-----|--------|
+| `j` / `k`, `g` / `G`, `Ctrl-d` / `Ctrl-u` | Move; the diff follows the entry after a short pause |
+| `Enter` | Open the entry's diff and focus it; on a heading or a submodule with nested rows, fold / unfold; on a conflict, open the merge view |
+| `Space` | The checkbox: stage an unstaged or untracked entry, unstage a staged one; fold a heading |
+| `s` / `u` | Stage / unstage the entry (in its own worktree) |
+| `a` / `A` | Stage everything (untracked included) / unstage everything in the cursor's worktree: the root from a root row or heading, a submodule from its rows |
+| `X` | Discard the entry after a `y`/`n` prompt: a tracked file goes back to HEAD, a new or untracked file is deleted, a submodule row checks the submodule out on the commit the superproject records (its new commits stay in its reflog) |
+| `c` / `C` | Commit / amend the cursor's worktree through the message box; from a submodule's rows the commit lands inside the submodule, after which the superproject shows the moved pointer to stage |
+| `h` / `l` | Fold / unfold the heading or submodule under the cursor; `h` on a plain entry jumps to its heading or submodule row |
+| `o` / `O` | Unfold / fold every group |
+| `r` | Re-read the status (it also refreshes after every operation, history change and diff-watch tick) |
+| `e` | Open the entry's file in `$EDITOR` |
+| `Esc` | Return focus to the diff; `<leader>t` again hides the window |
+| Click / wheel | Move the cursor (and open the entry) / scroll |
+
+A nested file's diff is read through a backend opened on the submodule (the header names
+it: `lib/sub · unstaged`); `s` / `u` in that diff stage whole files inside the submodule, and
+hunk staging is not available there.
 
 ## Log pane
 

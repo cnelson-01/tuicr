@@ -821,7 +821,93 @@ impl App {
             DiffSource::PullRequest(_) => Err(TuicrError::UnsupportedOperation(
                 "Use :reload from the command line in PR mode".to_string(),
             )),
+            DiffSource::Submodule(sub) => {
+                let backend = Self::open_submodule_backend(root_path, &sub.path)?;
+                let diff_files = if sub.staged {
+                    backend.get_staged_diff(highlighter)
+                } else {
+                    backend.get_unstaged_diff(highlighter)
+                }?;
+                Ok(Self::filter_ignored_diff_files(
+                    &root_path.join(&sub.path),
+                    diff_files,
+                ))
+            }
         }
+    }
+
+    /// A git backend on the submodule at `root/path`, for the changes
+    /// window's nested rows. Opened fresh each time: a submodule's own
+    /// options (`backend = "cli"`, ignore-whitespace) are not consulted.
+    pub(in crate::app) fn open_submodule_backend(
+        root_path: &Path,
+        path: &Path,
+    ) -> Result<crate::vcs::GitBackend> {
+        let dir = root_path.join(path);
+        if !dir.join(".git").exists() {
+            return Err(TuicrError::VcsCommand(format!(
+                "{} is not an initialized submodule",
+                path.display()
+            )));
+        }
+        crate::vcs::GitBackend::discover_from(
+            &dir,
+            crate::vcs::GitBackendPreference::Libgit2,
+            DiffWhitespaceMode::Normal,
+        )
+    }
+
+    /// Load the staged or unstaged changes inside the submodule at `path`
+    /// as the review, through a backend opened on it. The session lives
+    /// under the submodule's root, so its comments stay with that repo.
+    pub(in crate::app) fn load_submodule_selection(
+        &mut self,
+        path: PathBuf,
+        staged: bool,
+    ) -> Result<()> {
+        let backend = Self::open_submodule_backend(&self.vcs_info.root_path, &path)?;
+        let sub_info = backend.info().clone();
+        let highlighter = self.theme.syntax_highlighter();
+        let diff_files = if staged {
+            backend.get_staged_diff(highlighter)
+        } else {
+            backend.get_unstaged_diff(highlighter)
+        };
+        let diff_files = match diff_files {
+            Ok(diff_files) => {
+                Self::filter_ignored_diff_files(&self.vcs_info.root_path.join(&path), diff_files)
+            }
+            Err(TuicrError::NoChanges) => {
+                let side = if staged { "staged" } else { "unstaged" };
+                self.set_message(format!("No {side} changes in {}", path.display()));
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        };
+
+        let session_source = if staged {
+            SessionDiffSource::Staged
+        } else {
+            SessionDiffSource::Unstaged
+        };
+        self.session = Self::load_or_create_session(&sub_info, session_source);
+        for file in &diff_files {
+            self.session.add_diff_file(file);
+        }
+        self.reset_persisted_session_tracking()?;
+
+        self.diff_files = diff_files;
+        self.diff_source = DiffSource::Submodule(Box::new(SubmoduleDiffSource { path, staged }));
+        self.submodule_vcs = Some(Box::new(backend));
+        self.input_mode = InputMode::Normal;
+        self.diff_state = DiffState::default();
+        self.file_list_state = FileListState::default();
+        self.clear_expanded_gaps();
+        self.sort_files_by_directory(true);
+        self.expand_all_dirs();
+        self.rebuild_annotations();
+
+        Ok(())
     }
 
     /// Applies fetched diff files: session bookkeeping, tree/gap reset, and
@@ -1310,6 +1396,10 @@ impl App {
         }
 
         let commit_pane_changed = self.apply_fetched_commits(commits, change_status);
+        // The status the changes window shows moved with the tree.
+        if self.changes_pane.is_some() && matches!(result, Ok(Some(_))) {
+            self.refresh_changes_pane();
+        }
 
         // Every arm yields rather than returning early, so a tick that changed
         // only the commit pane still reports that a redraw is needed.

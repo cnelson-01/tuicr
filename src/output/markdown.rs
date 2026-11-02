@@ -221,6 +221,11 @@ fn review_scope_label(diff_source: &DiffSource) -> String {
             pr.key.repository.display_name(),
             pr.key.number
         ),
+        DiffSource::Submodule(sub) => format!(
+            "{} changes in submodule {}",
+            if sub.staged { "staged" } else { "unstaged" },
+            sub.path.display()
+        ),
     };
 
     format!("Review Comment (scope: {scope})")
@@ -253,6 +258,11 @@ fn scope_banner(diff_source: &DiffSource) -> Option<String> {
         DiffSource::StagedUnstagedAndCommits(commits) => Some(format!(
             "Reviewing staged + unstaged + commits: {}",
             short_ids(commits)
+        )),
+        DiffSource::Submodule(sub) => Some(format!(
+            "Reviewing {} changes in submodule {}",
+            if sub.staged { "staged" } else { "unstaged" },
+            sub.path.display()
         )),
     }
 }

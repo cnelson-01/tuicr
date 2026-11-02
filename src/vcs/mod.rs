@@ -32,9 +32,9 @@ pub use hg::HgBackend;
 pub use jj::JjBackend;
 pub use pr_noop::PrNoopVcs;
 pub use traits::{
-    BlameLine, ChangeKind, CommitInfo, CommitQuery, DiffWhitespaceMode, HunkScope,
+    BlameLine, ChangeArea, ChangeKind, CommitInfo, CommitQuery, DiffWhitespaceMode, HunkScope,
     MergeConflictInfo, ResetMode, ResolvedRevisionRange, RevisionDiffTarget, StashEntry,
-    VcsBackend, VcsChangeStatus, VcsInfo, WhitespaceAutoPolicy,
+    StatusEntry, SubmoduleState, VcsBackend, VcsChangeStatus, VcsInfo, WhitespaceAutoPolicy,
 };
 
 use std::collections::HashMap;

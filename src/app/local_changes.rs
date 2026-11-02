@@ -7,7 +7,7 @@
 //! just the matching hunk, so the rendered (tab-expanded, highlighted) lines
 //! never have to be turned back into a patch.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::{App, ConfirmAction, DiffSource, FileTreeItem, FocusedPanel, InputMode};
 use crate::error::TuicrError;
@@ -25,6 +25,20 @@ pub enum DiscardTarget {
     File {
         path: PathBuf,
     },
+    /// A changes-window row: `path` inside the worktree at `repo` (empty
+    /// for the root, a submodule's path otherwise).
+    Path {
+        repo: PathBuf,
+        path: PathBuf,
+        untracked: bool,
+    },
+    /// A submodule row: check the submodule out on the commit the
+    /// superproject records (HEAD's when `to_head`, the index's otherwise).
+    Submodule {
+        repo: PathBuf,
+        path: PathBuf,
+        to_head: bool,
+    },
 }
 
 impl DiscardTarget {
@@ -41,6 +55,33 @@ impl DiscardTarget {
                 "Discard all changes to {}? This cannot be undone.",
                 path.display()
             ),
+            Self::Path {
+                repo,
+                path,
+                untracked,
+            } => {
+                let shown = repo.join(path);
+                if *untracked {
+                    format!(
+                        "Delete the untracked {}? This cannot be undone.",
+                        shown.display()
+                    )
+                } else {
+                    format!(
+                        "Discard all changes to {}? This cannot be undone.",
+                        shown.display()
+                    )
+                }
+            }
+            Self::Submodule {
+                repo,
+                path,
+                to_head,
+            } => format!(
+                "Check {} out on the commit {} records? Its new commits stay reachable from its reflog.",
+                repo.join(path).display(),
+                if *to_head { "HEAD" } else { "the index" }
+            ),
         }
     }
 }
@@ -54,6 +95,10 @@ pub struct CommitComposer {
     /// Mode to hand back to when the composer closes (the fullscreen
     /// selector when a reword started there).
     pub return_mode: InputMode,
+    /// The worktree the commit lands in, relative to the root: empty for
+    /// the root, a submodule's path when the changes window started the
+    /// commit from one of its nested rows.
+    pub repo: PathBuf,
 }
 
 /// The stash picker modal (`:stashes`).
@@ -99,15 +144,33 @@ impl App {
     fn require_local_scope(&mut self, verb: &str) -> Option<HunkScope> {
         let scope = self.hunk_scope();
         if scope.is_none() {
-            self.set_error(format!(
-                "{verb} needs a working-tree review (staged / unstaged changes)"
-            ));
+            if self.submodule_review_path().is_some() {
+                self.set_error(format!(
+                    "{verb} by hunk is not available inside a submodule \u{00b7} s / u stage whole files"
+                ));
+            } else {
+                self.set_error(format!(
+                    "{verb} needs a working-tree review (staged / unstaged changes)"
+                ));
+            }
         }
         scope
     }
 
-    /// `s`: stage the focused file.
+    /// `s`: stage the focused file. In a submodule review the file is
+    /// staged inside the submodule.
     pub fn stage_file_at_cursor(&mut self) {
+        if let Some(sub) = self.submodule_review_path() {
+            let Some(path) = self.focused_file_path() else {
+                self.set_warning("Move the cursor onto a file to stage");
+                return;
+            };
+            match self.vcs.stage_in(&sub, std::slice::from_ref(&path)) {
+                Ok(()) => self.after_local_change(format!("Staged {}", sub.join(&path).display())),
+                Err(e) => self.set_error(format!("Failed to stage {}: {e}", path.display())),
+            }
+            return;
+        }
         let Some(_) = self.require_local_scope("Staging") else {
             return;
         };
@@ -121,8 +184,22 @@ impl App {
         }
     }
 
-    /// `u`: unstage the focused file.
+    /// `u`: unstage the focused file. In a submodule review the file is
+    /// unstaged inside the submodule.
     pub fn unstage_file_at_cursor(&mut self) {
+        if let Some(sub) = self.submodule_review_path() {
+            let Some(path) = self.focused_file_path() else {
+                self.set_warning("Move the cursor onto a file to unstage");
+                return;
+            };
+            match self.vcs.unstage_in(&sub, std::slice::from_ref(&path)) {
+                Ok(()) => {
+                    self.after_local_change(format!("Unstaged {}", sub.join(&path).display()))
+                }
+                Err(e) => self.set_error(format!("Failed to unstage {}: {e}", path.display())),
+            }
+            return;
+        }
         let Some(_) = self.require_local_scope("Unstaging") else {
             return;
         };
@@ -358,6 +435,28 @@ impl App {
                 .vcs
                 .discard_file(path)
                 .map(|()| format!("Discarded changes to {}", path.display())),
+            DiscardTarget::Path {
+                repo,
+                path,
+                untracked,
+            } => self.vcs.discard_in(repo, path).map(|()| {
+                let shown = repo.join(path);
+                if *untracked {
+                    format!("Deleted {}", shown.display())
+                } else {
+                    format!("Discarded changes to {}", shown.display())
+                }
+            }),
+            DiscardTarget::Submodule {
+                repo,
+                path,
+                to_head,
+            } => self.vcs.submodule_checkout(repo, path, *to_head).map(|()| {
+                format!(
+                    "{} is back on the recorded commit",
+                    repo.join(path).display()
+                )
+            }),
         };
         match result {
             Ok(message) => self.after_local_change(message),
@@ -373,7 +472,9 @@ impl App {
     /// Reload the review after the index or working tree changed. The diff
     /// may have emptied out (everything staged away from the unstaged view,
     /// or discarded), which `reload_diff_files` reports as `NoChanges`.
-    fn after_local_change(&mut self, message: String) {
+    pub(in crate::app) fn after_local_change(&mut self, message: String) {
+        // The status moved whether or not the diff reload below succeeds.
+        self.refresh_changes_pane();
         match self.reload_diff_files() {
             Ok(_) => {}
             Err(TuicrError::NoChanges) => {
@@ -388,32 +489,58 @@ impl App {
                 return;
             }
         }
-        self.refresh_log_rows_keep_cursor();
+        self.refresh_log_rows_only();
         self.set_message(message);
     }
 
     // Commit
 
     /// `:commit` / `:commit!`: open the comment composer as the commit
-    /// message editor. Amending pre-fills the current HEAD message.
+    /// message editor. Amending pre-fills the current HEAD message. With
+    /// the changes window open the commit goes to the worktree its cursor
+    /// is in; otherwise it needs a working-tree review on screen.
     pub fn start_commit_composer(&mut self, amend: bool) {
-        if self.hunk_scope().is_none() {
+        if self.changes_pane.is_some() {
+            self.changes_commit(amend);
+            return;
+        }
+        if self.hunk_scope().is_none() && self.submodule_review_path().is_none() {
             self.set_error("Commit needs a working-tree review (staged / unstaged changes)");
             return;
         }
+        let repo = self.submodule_review_path().unwrap_or_default();
+        self.start_commit_composer_in(&repo, amend);
+    }
+
+    /// Open the composer for a commit in the worktree at `repo` (empty for
+    /// the root, a submodule's path otherwise).
+    pub(in crate::app) fn start_commit_composer_in(&mut self, repo: &Path, amend: bool) {
         self.enter_review_comment_mode();
         self.commit_composer = Some(CommitComposer {
             amend,
             reword: None,
             return_mode: InputMode::Normal,
+            repo: repo.to_path_buf(),
         });
-        if amend && let Ok(message) = self.vcs.head_commit_message() {
-            self.comment_buffer = message.trim_end().to_string();
-            self.comment_cursor = self.comment_buffer.len();
+        if amend {
+            let message = if repo.as_os_str().is_empty() {
+                self.vcs.head_commit_message()
+            } else {
+                self.vcs.head_commit_message_in(repo)
+            };
+            if let Ok(message) = message {
+                self.comment_buffer = message.trim_end().to_string();
+                self.comment_cursor = self.comment_buffer.len();
+            }
         }
         let what = if amend { "Amend" } else { "Commit" };
+        let where_ = if repo.as_os_str().is_empty() {
+            String::new()
+        } else {
+            format!(" in {}", repo.display())
+        };
         self.set_message(format!(
-            "{what}: type the message, then Enter / Ctrl-s to commit, Esc to cancel"
+            "{what}{where_}: type the message, then Enter / Ctrl-s to commit, Esc to cancel"
         ));
     }
 
@@ -426,20 +553,35 @@ impl App {
         }
         match composer.reword {
             Some(id) => self.reword_commit(&id, &message),
-            None => self.commit_with_message(&message, composer.amend),
+            None => self.commit_with_message_in(&composer.repo, &message, composer.amend),
         }
     }
 
     pub fn commit_with_message(&mut self, message: &str, amend: bool) {
+        self.commit_with_message_in(Path::new(""), message, amend);
+    }
+
+    /// Commit the index of the worktree at `repo` (empty for the root).
+    pub fn commit_with_message_in(&mut self, repo: &Path, message: &str, amend: bool) {
         if message.trim().is_empty() {
             self.set_error("Commit message cannot be empty");
             return;
         }
-        match self.vcs.commit(message, amend) {
+        let result = if repo.as_os_str().is_empty() {
+            self.vcs.commit(message, amend)
+        } else {
+            self.vcs.commit_in(repo, message, amend)
+        };
+        match result {
             Ok(id) => {
                 let verb = if amend { "Amended" } else { "Committed" };
                 let summary = message.lines().next().unwrap_or_default();
-                self.after_local_change(format!("{verb} {id}: {summary}"));
+                let where_ = if repo.as_os_str().is_empty() {
+                    String::new()
+                } else {
+                    format!(" in {}", repo.display())
+                };
+                self.after_local_change(format!("{verb} {id}{where_}: {summary}"));
             }
             Err(e) => {
                 let err = e.to_string();
