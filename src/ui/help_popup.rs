@@ -247,6 +247,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  n/N       ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Next/previous change (next/previous match while a search is highlighted)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  m/M       ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
@@ -258,13 +265,6 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Search within diff (case-insensitive regex)"),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "  n/N       ",
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("Next/prev search match (wraps)"),
         ]),
         Line::from(vec![
             Span::styled(

@@ -997,7 +997,9 @@ fn main() -> anyhow::Result<()> {
                                         Action::NextFile
                                         | Action::PrevFile
                                         | Action::NextHunk
-                                        | Action::PrevHunk => {
+                                        | Action::PrevHunk
+                                        | Action::NextChange
+                                        | Action::PrevChange => {
                                             // Dispatch `count - 1` extra times; the
                                             // last one runs through normal dispatch
                                             // below.

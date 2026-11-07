@@ -32,13 +32,14 @@ width, and always ends with `^p actions`.
 | `Ctrl-f` / `Ctrl-b` | Full page down / up |
 | `g` / `G` | Go to first / last file |
 | `{N}G` | Go to source line N in current file |
-| `{N}{motion}` | Vim-style count prefix — repeats `j` / `k` / `h` / `l` / `{` / `}` / `[` / `]` `N` times |
+| `{N}{motion}` | Vim-style count prefix — repeats `j` / `k` / `h` / `l` / `{` / `}` / `[` / `]` / `n` / `N` `N` times |
 | `{` / `}` | Jump to previous / next file |
 | `[` / `]` | Jump to previous / next hunk |
+| `n` / `N` | Jump to next / previous change (a run of added or deleted lines; context between two edits splits a hunk into two changes). In single-file view it crosses into the next / previous file. While a search is highlighted, `n` / `N` step search matches instead |
 | `m` / `M` | Jump to next / previous comment |
 | `/` | Search within diff (case-insensitive regex); matches on diff content are highlighted and the status bar shows the `[current/total]` position (headers, comments, and PR info are searchable but not highlighted) |
-| `n` / `N` | Next / previous search match (wraps around) |
-| `Esc` | Clear search-match highlighting; the pattern is kept so `n` / `N` still work |
+| `n` / `N` (search highlighted) | Next / previous search match (wraps around) |
+| `Esc` | Clear search-match highlighting; `n` / `N` go back to stepping changes |
 | `f` | Find in files: opens the command line with `find ` (also in the file tree and changes window; the log pane keeps `f` for fixup) |
 | `Enter` | Expand or collapse hidden context between hunks |
 | `zt` | Scroll cursor to top of screen |
@@ -60,8 +61,9 @@ Plain-text searches keep their existing Unicode case folding. The same compiled
 pattern drives navigation and highlighting in both diff layouts; side-by-side
 columns are matched independently. Zero-width matches (such as `^`) are navigable
 but have no characters to highlight. An invalid expression reports an error
-without moving the cursor or replacing the previous valid search; `n` / `N` can
-still repeat that search. File-tree and help `/` searches remain text searches.
+without moving the cursor or replacing the previous valid search; it clears the
+highlighting, so `n` / `N` step changes until the next search. File-tree and
+help `/` searches remain text searches.
 
 ## Reading a diff comfortably
 

@@ -18,6 +18,10 @@ pub enum Action {
     PrevFile,
     NextHunk,
     PrevHunk,
+    /// Next / previous run of added or deleted lines (`n` / `N` in the diff;
+    /// they step search matches instead while a search is highlighted).
+    NextChange,
+    PrevChange,
     NextComment,
     PrevComment,
     PendingZCommand,
@@ -429,8 +433,8 @@ fn map_normal_mode_with_q_quits(key: KeyEvent, leader_key: char, q_quits: bool) 
         (KeyCode::Char('X'), _) => Action::DiscardHunk,
         (KeyCode::Char('Y'), _) => Action::CopyCommentAtCursor,
         (KeyCode::Char('e'), KeyModifiers::NONE) => Action::EditFile,
-        (KeyCode::Char('n'), KeyModifiers::NONE) => Action::SearchNext,
-        (KeyCode::Char('N'), _) => Action::SearchPrev,
+        (KeyCode::Char('n'), KeyModifiers::NONE) => Action::NextChange,
+        (KeyCode::Char('N'), _) => Action::PrevChange,
 
         // Mode changes (use _ for shifted characters like : and ?)
         (KeyCode::Char(':'), _) => Action::EnterCommandMode,
@@ -1324,6 +1328,15 @@ mod tests {
 
         let action = map_normal_mode(key_shift('M'), DEFAULT_LEADER_KEY);
         assert_eq!(action, Action::PrevComment);
+    }
+
+    #[test]
+    fn should_map_n_to_change_navigation_in_normal_mode() {
+        let action = map_normal_mode(key(KeyCode::Char('n')), DEFAULT_LEADER_KEY);
+        assert_eq!(action, Action::NextChange);
+
+        let action = map_normal_mode(key_shift('N'), DEFAULT_LEADER_KEY);
+        assert_eq!(action, Action::PrevChange);
     }
 
     #[test]

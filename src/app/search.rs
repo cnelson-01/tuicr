@@ -274,6 +274,12 @@ impl App {
         self.search_highlight_visible = false;
     }
 
+    /// Whether `n`/`N` in the diff step search matches rather than changes:
+    /// a search ran and `Esc` has not cleared its highlight yet.
+    pub fn diff_search_active(&self) -> bool {
+        self.search_highlight_visible && self.last_search_pattern.is_some()
+    }
+
     pub fn search_match_position(&self) -> Option<(usize, usize)> {
         if !self.search_highlight_visible || self.search_matches.is_empty() {
             return None;

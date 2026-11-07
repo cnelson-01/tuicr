@@ -2486,8 +2486,8 @@ pub fn handle_file_list_action(app: &mut App, action: Action) {
         Action::FileTreeSearch => app.begin_file_tree_prompt(FileTreePrompt::Search),
         // With a tree search active, n/N step file matches. Otherwise they
         // fall through to the diff search so the shared binding still works.
-        Action::SearchNext if app.file_tree_search_active() => app.file_tree_search_next(),
-        Action::SearchPrev if app.file_tree_search_active() => app.file_tree_search_prev(),
+        Action::NextChange if app.file_tree_search_active() => app.file_tree_search_next(),
+        Action::PrevChange if app.file_tree_search_active() => app.file_tree_search_prev(),
         Action::CursorDown(n) => app.file_list_down(n),
         Action::CursorUp(n) => app.file_list_up(n),
         Action::ScrollLeft(n) => app.file_list_state.scroll_left(n),
@@ -2694,6 +2694,10 @@ pub fn handle_diff_action(app: &mut App, action: Action) {
                 }
             }
         }
+        // n/N step changes. While a diff search is highlighted they fall
+        // through to the shared binding and step matches instead.
+        Action::NextChange if !app.diff_search_active() => app.next_change(),
+        Action::PrevChange if !app.diff_search_active() => app.prev_change(),
         _ => handle_shared_normal_action(app, action),
     }
 }
@@ -2813,10 +2817,12 @@ fn handle_shared_normal_action(app: &mut App, action: Action) {
         Action::EditCommentAtEnd if app.comment_vim_enabled => edit_comment_at_cursor(app, true),
         Action::ExportToClipboard => handle_export(app),
         Action::CopyCommentAtCursor => handle_copy_comment_at_cursor(app),
-        Action::SearchNext => {
+        // n/N: the diff pane steps changes unless a search is highlighted
+        // (see `handle_diff_action`); every other pane keeps them for search.
+        Action::NextChange => {
             app.search_next_in_diff();
         }
-        Action::SearchPrev => {
+        Action::PrevChange => {
             app.search_prev_in_diff();
         }
         Action::ClearSearchHighlight => app.clear_search_highlight(),

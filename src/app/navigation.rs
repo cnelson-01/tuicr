@@ -1020,6 +1020,102 @@ impl App {
         self.update_current_file_from_cursor();
     }
 
+    /// Whether a rendered row shows an added or deleted line. A side-by-side
+    /// row pairing a deletion with an addition counts once.
+    fn is_change_row(&self, row: usize) -> bool {
+        matches!(
+            self.line_annotations.get(row),
+            Some(AnnotatedLine::DiffLine { .. } | AnnotatedLine::SideBySideLine { .. })
+        ) && self
+            .diff_line_for_side(row, LineSide::New)
+            .is_some_and(|line| line.origin != LineOrigin::Context)
+    }
+
+    /// Render-line indices where a change starts: the first row of each run
+    /// of added/deleted rows. Context, hunk and file headers, comment rows
+    /// and gaps end a run, so a hunk with context between two edits holds
+    /// two changes.
+    pub(in crate::app) fn change_positions(&self) -> Vec<usize> {
+        let mut starts = Vec::new();
+        let mut in_change = false;
+        for row in 0..self.line_annotations.len() {
+            let changed = self.is_change_row(row);
+            if changed && !in_change {
+                starts.push(row);
+            }
+            in_change = changed;
+        }
+        starts
+    }
+
+    /// `n`: first row of the next change. Every change start below the
+    /// cursor lies past the change the cursor is in, so the rest of that
+    /// change is skipped.
+    pub fn next_change(&mut self) {
+        // A deliberate move, like `]`: clear any in-flight cursor-walk arming.
+        self.primed_walk_next = false;
+        self.primed_walk_prev = false;
+        self.down_released_since_arm = false;
+        self.up_released_since_arm = false;
+        let cursor = self.diff_state.cursor_line;
+        if let Some(&pos) = self.change_positions().iter().find(|&&pos| pos > cursor) {
+            self.move_cursor_to_change(pos);
+            return;
+        }
+        // Single-file view crosses into the next shown file, like `]`.
+        if self.is_single_file_view
+            && let Some(next_idx) = ((self.diff_state.current_file_idx + 1)..self.diff_files.len())
+                .find(|&idx| self.file_idx_passes_filter(idx))
+        {
+            self.jump_to_file(next_idx);
+            if let Some(&first) = self.change_positions().first() {
+                self.move_cursor_to_change(first);
+            }
+            return;
+        }
+        self.set_message("No more changes");
+    }
+
+    /// `N`: first row of the change the cursor is inside, or of the previous
+    /// change when the cursor already sits on a change's first row or between
+    /// changes (vim `[c`).
+    pub fn prev_change(&mut self) {
+        self.primed_walk_next = false;
+        self.primed_walk_prev = false;
+        self.down_released_since_arm = false;
+        self.up_released_since_arm = false;
+        let cursor = self.diff_state.cursor_line;
+        if let Some(&pos) = self
+            .change_positions()
+            .iter()
+            .rev()
+            .find(|&&pos| pos < cursor)
+        {
+            self.move_cursor_to_change(pos);
+            return;
+        }
+        // Symmetric to next_change: fall through to the previous shown
+        // file's last change.
+        if self.is_single_file_view
+            && let Some(prev_idx) = (0..self.diff_state.current_file_idx)
+                .rev()
+                .find(|&idx| self.file_idx_passes_filter(idx))
+        {
+            self.jump_to_file(prev_idx);
+            if let Some(&last) = self.change_positions().last() {
+                self.move_cursor_to_change(last);
+            }
+            return;
+        }
+        self.set_message("No earlier changes");
+    }
+
+    fn move_cursor_to_change(&mut self, row: usize) {
+        self.diff_state.cursor_line = row;
+        self.ensure_cursor_visible();
+        self.update_current_file_from_cursor();
+    }
+
     pub(in crate::app) fn calculate_file_scroll_offset(&self, file_idx: usize) -> usize {
         let mut offset = self.review_comments_render_height();
         for (i, file) in self.diff_files.iter().enumerate() {

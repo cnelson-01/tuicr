@@ -101,7 +101,8 @@ pub const ENTRIES: &[Entry] = &[
     e(Diff, "Navigate", "{N}G", "Go to source line N", Prompt("")),
     e(Diff, "Navigate", ":N / :oN", "Go to new-side / old-side line N", Prompt("")),
     e(Diff, "Navigate", "} / {", "Next / previous file", Keys("}")),
-    e(Diff, "Navigate", "] / [", "Next / previous change (hunk)", Keys("]")),
+    e(Diff, "Navigate", "] / [", "Next / previous hunk", Keys("]")),
+    e(Diff, "Navigate", "n / N", "Next / previous change (next / previous match while a search is highlighted)", Keys("n")),
     e(Diff, "Navigate", "m / M", "Next / previous comment", Keys("m")),
     e(Diff, "Navigate", "zz", "Center the cursor line", Keys("zz")),
     e(Diff, "Navigate", "zt", "Cursor line to the top", Keys("zt")),
@@ -110,7 +111,6 @@ pub const ENTRIES: &[Entry] = &[
     e(Diff, "Navigate", "Shift-Enter", "Expand / collapse all hidden context", Keys("<S-CR>")),
     e(Diff, "Search", "/", "Search the diff", Keys("/")),
     e(Diff, "Search", "f", "Find in files", Keys("f")),
-    e(Diff, "Search", "n / N", "Next / previous match", Keys("n")),
     e(Diff, "Search", "Esc", "Clear search highlighting", Keys("<Esc>")),
     // ── Diff view ────────────────────────────────────────────────────────
     e(Global, "View", ":diff", "Toggle side-by-side / unified", Cmd("diff")),

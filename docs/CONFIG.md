@@ -120,7 +120,7 @@ session_header = true
 | `wrap_style`               | `gutter`     | Where wrapped unified diff rows continue: `gutter` (default) keeps wrapped content after the line-number gutter, leaving continuation rows without a line number or change bar; `flow` wraps from the left edge. |
 | `relative_line_numbers`    | `false`      | Show gutter numbers as rendered-row distances from the cursor; the cursor line keeps its own line number. Toggle with `:set relativenumber!`.              |
 | `cursor_line`              | `true`       | Highlight the current cursor line and visual selection.                                                                                                    |
-| `search_highlight`         | `true`       | Highlight `/` search matches in the diff view. Clear at runtime with `Esc`; `n` / `N` re-enable.                                                           |
+| `search_highlight`         | `true`       | Highlight `/` search matches in the diff view. Clear at runtime with `Esc`; a new `/` search shows them again.                                             |
 | `transparent_background`   | `true`       | Let the terminal background show through panels. `false` paints the theme's `panel_bg`.                                                                    |
 | `scroll_offset`            | `0`          | Minimum lines visible above and below the cursor when scrolling (like Vim's `scrolloff`).                                                                  |
 | `no_update_check`          | `false`      | Skip startup update check when `true`.                                                                                                                     |

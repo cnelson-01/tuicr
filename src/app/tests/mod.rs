@@ -1,3 +1,4 @@
+mod change_navigation_tests;
 mod change_status_tests;
 mod changes_pane_tests;
 mod comment_navigation_tests;
