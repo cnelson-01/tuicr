@@ -723,6 +723,7 @@ pub use git_ops::{GitThen, PendingGit, RepoStatus};
 pub use history::HistoryAction;
 pub use layout::SPLIT_STEP_PCT;
 pub use local_changes::{CommitComposer, DiscardTarget, StashPicker};
+pub use local_edits::{LocalEditMark, LocalEditedFile, LocalEdits};
 pub use palette::Palette;
 pub use rebase_editor::{RebaseEditor, RebaseRow};
 pub use remote::{RemoteOp, RemoteOpAnswer, RemoteOpInFlight};
@@ -1439,6 +1440,9 @@ pub struct App {
     /// Windowed editors that have not exited yet; polled by
     /// `poll_editor_launches`.
     pub(crate) editor_launches: Vec<EditorLaunch>,
+    /// Pre-editor baselines of files opened in `$EDITOR`, for the edited-line
+    /// highlight.
+    pub local_edits: LocalEdits,
 
     pub input_mode: InputMode,
     pub focused_panel: FocusedPanel,
@@ -2276,6 +2280,7 @@ mod history;
 mod init;
 mod layout;
 mod local_changes;
+mod local_edits;
 mod log_pane;
 mod modes;
 mod navigation;

@@ -189,7 +189,8 @@ mode_bg = "#82aaff"
 
 Notes:
 
-- Palette color keys are required, except for the optional `selection_marker`.
+- Palette color keys are required, except for the optional `selection_marker`, `diff_edit`, and `diff_edit_bg`.
+- `diff_edit` (gutter marker) and `diff_edit_bg` (row background) color the lines you changed in `$EDITOR` this session. When omitted, tuicr picks a blue pair suited to `panel_bg`.
 - Color values accept named terminal colors or `#RRGGBB`.
 - `syntax_theme` is optional. When present it must point to a local `.tmTheme` file.
 - Relative `syntax_theme` paths resolve relative to the local theme TOML file. If the local theme TOML file is a symlink and the syntax theme is not beside the symlink, tuicr also looks beside the symlink target.

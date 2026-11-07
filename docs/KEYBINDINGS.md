@@ -221,6 +221,17 @@ screen; reload with `:e` after editing. Adding `--wait` to the editor command op
 windowed editor back into the blocking behaviour. Set the `editor` config key to
 override `$EDITOR`.
 
+Lines you change in the editor are highlighted in the diff, like an IDE's local
+changes: a blue (violet in themes whose additions are already blue) row tint and a
+`▌` in the sign column, with `▴` on the line that follows deleted lines. They are
+measured against the file as it was just before tuicr first opened it in the
+editor this session, so they keep accumulating across edits until `:clearedits`.
+The status bar counts them, e.g. `Opened src/x.rs and reloaded 3 files · 4 lines
+edited`. They show wherever the diff's new side is the working tree; a
+commit-range review shows the commit instead, so `:local` switches it to the same
+commits plus your working tree (and back). Theme keys `diff_edit` and
+`diff_edit_bg` set the colours.
+
 In PR review `e` opens the revision under review, not whatever the checkout
 happens to hold. When the local file *is* that revision you get the real file and
 your edits land in it; otherwise — wrong branch checked out, file added or deleted
@@ -289,6 +300,8 @@ remote-tracking ones. `:compare ma`, `↓`, `↓`, `Enter` picks the second matc
 | `:w` (`:write`) | Save session |
 | `:e` (`:reload`) | Reload diff files |
 | `:edit` | Open focused file in `$EDITOR` |
+| `:local` | Compare the commit-range review with local: the same commits plus the working tree, so `$EDITOR` edits show; again goes back |
+| `:clearedits` | Forget the lines edited in `$EDITOR` this session (drops their highlight) |
 | `:clip` (`:export`) | Copy review to clipboard |
 | `:copy-url` | Copy the open PR URL to clipboard (PR mode) |
 | `:summary` | Show all pending local-draft comments; `j`/`k` select, `dd` deletes, and `Enter` jumps |

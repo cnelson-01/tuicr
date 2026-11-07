@@ -131,6 +131,8 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     CommandSpec::new(&["set noblame"], CommandKind::SetBlame(false)),
     CommandSpec::new(&["history"], CommandKind::FileHistory),
     CommandSpec::new(&["blame-commit"], CommandKind::BlameCommit),
+    CommandSpec::new(&["local"], CommandKind::CompareWithLocal),
+    CommandSpec::new(&["clearedits"], CommandKind::ClearEdits),
     CommandSpec::new(&["set reviewed"], CommandKind::SetShowReviewed(true)),
     CommandSpec::new(&["set noreviewed"], CommandKind::SetShowReviewed(false)),
     CommandSpec::new(
@@ -255,6 +257,10 @@ enum CommandKind {
     ToggleBlame,
     SetBlame(bool),
     FileHistory,
+    /// `:local`: commit range <-> the same commits plus the working tree.
+    CompareWithLocal,
+    /// `:clearedits`: forget the `$EDITOR` baselines behind the edit tint.
+    ClearEdits,
     SetShowReviewed(bool),
     ToggleShowReviewed,
     Diff,
@@ -1358,6 +1364,14 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
             app.exit_command_mode();
             app.show_file_history();
             CommandAfterDispatch::KeepMode
+        }
+        CommandKind::CompareWithLocal => {
+            app.toggle_compare_with_local();
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::ClearEdits => {
+            app.clear_local_edits();
+            CommandAfterDispatch::ExitCommandMode
         }
         CommandKind::FindResults => {
             app.reopen_find_results();

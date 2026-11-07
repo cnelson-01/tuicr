@@ -6,7 +6,8 @@ use ratatui::{
 };
 
 use crate::app::{
-    AnnotatedLine, App, DiffViewMode, ExpandDirection, GAP_EXPAND_BATCH, VisualSelection,
+    AnnotatedLine, App, DiffViewMode, ExpandDirection, GAP_EXPAND_BATCH, LocalEditMark,
+    VisualSelection,
 };
 use crate::model::{Comment, DiffFile, DiffHunk, DiffLine, LineOrigin, LineSide};
 use crate::theme::Theme;
@@ -187,6 +188,29 @@ pub(super) fn unified_line_origin_marker(dl: &DiffLine) -> &'static str {
     match dl.origin {
         LineOrigin::Addition | LineOrigin::Deletion => "▌",
         LineOrigin::Context => " ",
+    }
+}
+
+/// Repaint a new-side row for a line changed in `$EDITOR`, in place: the
+/// one-cell change marker that starts `marker`, and the code spans. Widths
+/// never change, so gutters stay aligned.
+pub(super) fn apply_local_edit_mark(
+    marker: &mut Span<'_>,
+    content: &mut [Span<'_>],
+    mark: LocalEditMark,
+    theme: &Theme,
+) {
+    let (glyph, style) = match mark {
+        LocalEditMark::Edited => ('▌', styles::diff_edit_marker_style(theme)),
+        // The row itself is unchanged: only the marker takes the edit colour.
+        LocalEditMark::RemovedAbove => ('▴', marker.style.fg(theme.diff_edit)),
+    };
+    let rest: String = marker.content.chars().skip(1).collect();
+    *marker = Span::styled(format!("{glyph}{rest}"), style);
+    if mark == LocalEditMark::Edited {
+        for span in content {
+            span.style = styles::diff_edit_span_style(span.style, theme);
+        }
     }
 }
 
@@ -735,6 +759,10 @@ pub(super) fn is_line_highlighted(app: &App, viewport_idx: usize) -> bool {
 pub(super) fn unified_line_bg_style(line: &Line, theme: &Theme) -> Option<Style> {
     let prefix_span = line.spans.get(2)?;
     let default_bg = match prefix_span.style.fg {
+        // An `$EDITOR` marker carries the row's own background: the edit tint
+        // when the line was edited, the add one (or none) when only lines
+        // above it were removed.
+        Some(fg) if fg == theme.diff_edit => prefix_span.style.bg?,
         Some(fg) if fg == theme.diff_add => theme.diff_add_bg,
         Some(fg) if fg == theme.diff_del => theme.diff_del_bg,
         _ => return None,

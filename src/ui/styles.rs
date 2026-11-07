@@ -23,6 +23,24 @@ pub fn diff_context_style(theme: &Theme) -> Style {
     Style::default().fg(theme.diff_context)
 }
 
+/// Gutter marker for a line changed in `$EDITOR` this session.
+pub fn diff_edit_marker_style(theme: &Theme) -> Style {
+    Style::default().fg(theme.diff_edit).bg(theme.diff_edit_bg)
+}
+
+/// A span on a line changed in `$EDITOR`: the add / context background gives
+/// way to `diff_edit_bg`. The foreground (syntax colours) stays, and so does
+/// an emphasis background (intraline, search match).
+pub fn diff_edit_span_style(style: Style, theme: &Theme) -> Style {
+    match style.bg {
+        None | Some(Color::Reset) => style.bg(theme.diff_edit_bg),
+        Some(bg) if bg == theme.diff_add_bg || bg == theme.syntax_add_bg => {
+            style.bg(theme.diff_edit_bg)
+        }
+        Some(_) => style,
+    }
+}
+
 /// Live background a syntax-highlighted diff span should show for a line of
 /// the given origin. `DiffLine.highlighted_spans` bakes in whatever
 /// `syntax_add_bg`/`syntax_del_bg` was active when the diff was loaded (or

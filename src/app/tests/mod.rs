@@ -16,6 +16,7 @@ mod find_source_line_tests;
 mod find_tests;
 mod git_ops_tests;
 mod layout_tests;
+mod local_edits_tests;
 mod locked_comment_tests;
 mod log_pane_tests;
 mod palette_tests;

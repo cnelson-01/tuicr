@@ -167,6 +167,8 @@ pub const ENTRIES: &[Entry] = &[
     e(Diff, "Review", "V then s", "Suggest a change for the selected lines", Keys("V")),
     e(Diff, "Edit", "e", "Open the file in $EDITOR at this line", Keys("e")),
     e(Global, "Edit", ":e", "Reload the diff", Cmd("e")),
+    e(Global, "Edit", ":local", "Compare the commit range with local (working tree); again goes back", Cmd("local")),
+    e(Global, "Edit", ":clearedits", "Forget lines edited in $EDITOR (drops their edit tint)", Cmd("clearedits")),
     // ── File tree ────────────────────────────────────────────────────────
     e(Tree, "Files", "Enter", "Open the file / toggle a folder", Keys("<CR>")),
     e(Tree, "Files", "Space", "Toggle a folder", Keys("<Space>")),

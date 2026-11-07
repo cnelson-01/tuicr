@@ -1631,7 +1631,7 @@ impl App {
     /// Load a commit-range review from ids ordered oldest-to-newest, together
     /// with the commit rows that produced them. Installs the matching persisted
     /// session and resets the commit selector and navigation state.
-    fn load_commit_range_selection(
+    pub(in crate::app) fn load_commit_range_selection(
         &mut self,
         selected_ids: Vec<String>,
         selected_commits: Vec<CommitInfo>,

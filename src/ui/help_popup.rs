@@ -1010,6 +1010,9 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
             ),
             Span::raw("Open focused file in editor config / $EDITOR"),
         ]),
+        Line::from(Span::raw(
+            "  Lines you change there get the edit tint (blue) and \u{258c}; \u{25b4} marks deletions.",
+        )),
         Line::from(vec![
             Span::styled(
                 "  v/V       ",
@@ -1123,6 +1126,20 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Open focused file in editor config / $EDITOR"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :local    ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Compare a commit range with your working tree; again goes back"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :clearedits",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  Forget lines edited in $EDITOR (drops the edit tint)"),
         ]),
         Line::from(vec![
             Span::styled(

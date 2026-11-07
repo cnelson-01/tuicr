@@ -337,6 +337,8 @@ and its keys, or `?` for the full reference.
 | `e` | Open focused file in `$EDITOR` (in PR review: the PR's revision, as a read-only copy when the checkout differs) |
 | `y` | Copy review to clipboard |
 | `:edit` | Open focused file in `$EDITOR` |
+| `:local` | Compare a commit-range review with your working tree (again goes back); lines edited in `$EDITOR` are tinted blue |
+| `:clearedits` | Forget the lines edited in `$EDITOR` (drops the tint) |
 | `:submit` | Push review to GitHub, GitLab, Gitea, Bitbucket, Azure DevOps, or Gerrit |
 | `:theme` | Open a live-preview theme picker (`/` to filter); `:theme <name>` applies directly. Session-only; set `theme` in `config.toml` to keep it |
 | `Tab` in `:` prompt | Complete or cycle commands |

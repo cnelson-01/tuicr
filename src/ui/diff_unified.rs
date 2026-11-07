@@ -10,15 +10,16 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{
-    App, DiffSource, ExpandDirection, FocusedPanel, GAP_EXPAND_BATCH, GapId, InputMode, WrapStyle,
+    App, DiffSource, ExpandDirection, FocusedPanel, GAP_EXPAND_BATCH, GapId, InputMode,
+    LocalEditMark, WrapStyle,
 };
 use crate::forge::remote_comments::PrCommentsVisibility;
 use crate::model::{FileStatus, LineOrigin, LineRange, LineSide};
 use crate::theme::Theme;
 use crate::ui::comment_panel;
 use crate::ui::diff_view::{
-    apply_horizontal_scroll, comment_box_visible, comment_type_presentation, cursor_indicator,
-    cursor_indicator_spaced, diff_stat_title, hunk_header_text_and_style,
+    apply_horizontal_scroll, apply_local_edit_mark, comment_box_visible, comment_type_presentation,
+    cursor_indicator, cursor_indicator_spaced, diff_stat_title, hunk_header_text_and_style,
     paint_cursor_line_highlight, paint_unified_diff_rows_with, paint_visual_selection_overlay,
     populate_row_to_annotation, push_comment_bar, render_expander_line, render_hidden_lines,
     scroll_comment_input_into_view, skip_comment_box, unified_line_bg_style,
@@ -734,6 +735,30 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                 search_style,
                             ));
                         }
+
+                        // Lines changed in `$EDITOR` this session: the sign
+                        // column takes the edit marker, and an edited row (a
+                        // context one too) is tinted to the right edge.
+                        let edit_mark = match diff_line.origin {
+                            LineOrigin::Deletion => None,
+                            _ => app.local_edit_mark(file_idx, diff_line.new_lineno),
+                        };
+                        let eol_marker = match edit_mark {
+                            Some(mark) => {
+                                let (marker, content) = line_spans[content_start - 1..]
+                                    .split_first_mut()
+                                    .expect("sign span precedes content");
+                                apply_local_edit_mark(marker, content, mark, &app.theme);
+                                match mark {
+                                    LocalEditMark::Edited => Some(Span::styled(
+                                        String::new(),
+                                        styles::diff_edit_span_style(style, &app.theme),
+                                    )),
+                                    LocalEditMark::RemovedAbove => eol_marker,
+                                }
+                            }
+                            None => eol_marker,
+                        };
                         line_spans.extend(eol_marker);
 
                         lines.push(Line::from(line_spans));
@@ -2997,6 +3022,111 @@ mod remote_comments_snapshot_tests {
         text.split_whitespace()
             .filter_map(|token| token.parse().ok())
             .collect()
+    }
+
+    /// First cell at or right of `min_x` where `needle` starts.
+    fn find_text_from(buffer: &Buffer, needle: &str, min_x: u16) -> (u16, u16) {
+        let width = needle.chars().count() as u16;
+        for y in 0..buffer.area.height {
+            for x in min_x..buffer.area.width.saturating_sub(width - 1) {
+                let found = needle
+                    .chars()
+                    .enumerate()
+                    .all(|(i, ch)| buffer[(x + i as u16, y)].symbol() == ch.to_string());
+                if found {
+                    return (x, y);
+                }
+            }
+        }
+        panic!("could not find {needle:?} right of column {min_x}");
+    }
+
+    /// A working-tree review of `src.rs` whose `one` (context) was changed in
+    /// `$EDITOR`, `two` (added) left alone, and a line removed above `four`.
+    fn locally_edited_app(dir: &Path) -> App {
+        let line = |origin, content: &str, old_lineno, new_lineno| DiffLine {
+            origin,
+            content: content.to_string(),
+            old_lineno,
+            new_lineno: Some(new_lineno),
+            raw_content: None,
+            highlighted_spans: None,
+        };
+        let hunks = vec![DiffHunk {
+            header: "@@ -1,3 +1,4 @@".to_string(),
+            lines: vec![
+                line(LineOrigin::Context, "one", Some(1), 1),
+                line(LineOrigin::Addition, "two", None, 2),
+                line(LineOrigin::Context, "three", Some(2), 3),
+                line(LineOrigin::Context, "four", Some(3), 4),
+            ],
+            old_start: 1,
+            old_count: 3,
+            new_start: 1,
+            new_count: 4,
+        }];
+        let content_hash = DiffFile::compute_content_hash(&hunks);
+        let mut app = make_revision_app(vec![DiffFile {
+            old_path: Some(PathBuf::from("src.rs")),
+            new_path: Some(PathBuf::from("src.rs")),
+            status: FileStatus::Modified,
+            hunks,
+            is_binary: false,
+            is_too_large: false,
+            is_commit_message: false,
+            content_hash,
+        }]);
+        app.vcs_info.root_path = dir.to_path_buf();
+        app.diff_source = DiffSource::WorkingTree;
+        app.cursor_line_highlight = false;
+
+        let path = dir.join("src.rs");
+        std::fs::write(&path, "one\ntwo\nthree\ngone\nfour\n").unwrap();
+        app.snapshot_local_edit_baseline(&crate::editor::EditorTarget {
+            path: path.clone(),
+            line: None,
+            label: "src.rs".to_string(),
+        });
+        std::fs::write(&path, "ONE\ntwo\nthree\nfour\n").unwrap();
+        app.refresh_local_edits();
+        app
+    }
+
+    #[test]
+    fn should_mark_lines_edited_in_editor_in_both_layouts() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut app = locally_edited_app(dir.path());
+        let theme = app.theme.clone();
+
+        // Unified: the sign column sits two cells before the code.
+        let buffer = draw_unified_diff(&mut app);
+        let (x, y) = find_text_from(&buffer, "one", 0);
+        assert_eq!(buffer[(x - 2, y)].symbol(), "\u{258c}");
+        assert_eq!(buffer[(x - 2, y)].fg, theme.diff_edit);
+        assert_eq!(buffer[(x, y)].bg, theme.diff_edit_bg);
+        // An edited context row is tinted past its text, like an added one.
+        assert_eq!(buffer[(x + 10, y)].bg, theme.diff_edit_bg);
+        let (x, y) = find_text_from(&buffer, "two", 0);
+        assert_eq!(buffer[(x - 2, y)].fg, theme.diff_add);
+        assert_eq!(buffer[(x, y)].bg, theme.diff_add_bg);
+        let (x, y) = find_text_from(&buffer, "four", 0);
+        assert_eq!(buffer[(x - 2, y)].symbol(), "\u{25b4}");
+        assert_eq!(buffer[(x - 2, y)].fg, theme.diff_edit);
+        assert_ne!(buffer[(x, y)].bg, theme.diff_edit_bg);
+
+        // Side by side: only the new (right) column changes; its marker sits
+        // right before the code.
+        app.diff_view_mode = DiffViewMode::SideBySide;
+        let buffer = draw_diff(&mut app);
+        let (old_x, y) = find_text_from(&buffer, "one", 0);
+        assert_ne!(buffer[(old_x, y)].bg, theme.diff_edit_bg);
+        let (new_x, new_y) = find_text_from(&buffer, "one", old_x + 3);
+        assert_eq!(new_y, y);
+        assert_eq!(buffer[(new_x - 1, y)].symbol(), "\u{258c}");
+        assert_eq!(buffer[(new_x, y)].bg, theme.diff_edit_bg);
+        let (old_x, _) = find_text_from(&buffer, "four", 0);
+        let (new_x, y) = find_text_from(&buffer, "four", old_x + 4);
+        assert_eq!(buffer[(new_x - 1, y)].symbol(), "\u{25b4}");
     }
 
     #[test]

@@ -9,14 +9,14 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{
     AnnotatedLine, App, DiffSource, ExpandDirection, FocusedPanel, GAP_EXPAND_BATCH, GapId,
-    InputMode,
+    InputMode, LocalEditMark,
 };
 use crate::model::{DiffLine, FileStatus, LineOrigin, LineRange, LineSide};
 use crate::theme::Theme;
 use crate::ui::comment_panel;
 use crate::ui::diff_view::{
-    apply_horizontal_scroll, comment_box_row, comment_type_presentation, cursor_indicator,
-    cursor_indicator_spaced, diff_stat_title, hunk_header_text_and_style,
+    apply_horizontal_scroll, apply_local_edit_mark, comment_box_row, comment_type_presentation,
+    cursor_indicator, cursor_indicator_spaced, diff_stat_title, hunk_header_text_and_style,
     paint_cursor_line_highlight, paint_visual_selection_overlay, populate_row_to_annotation,
     render_expander_line, render_hidden_lines, scroll_comment_input_into_view, skip_comment_box,
 };
@@ -234,6 +234,20 @@ fn pan_sbs_row(
         meta.right_pad_style,
     ));
     Line::from(spans)
+}
+
+/// Repaint the new side of a row for a line changed in `$EDITOR`. The
+/// metadata is enough: code rows are always drawn from it.
+fn mark_local_edit(meta: &mut SbsRowMeta, mark: Option<LocalEditMark>, theme: &Theme) {
+    let Some(mark) = mark else {
+        return;
+    };
+    if let Some(marker) = meta.right_prefix.last_mut() {
+        apply_local_edit_mark(marker, &mut meta.right_content, mark, theme);
+    }
+    if mark == LocalEditMark::Edited {
+        meta.right_pad_style = styles::diff_edit_span_style(meta.right_pad_style, theme);
+    }
 }
 
 struct SideSpec {
@@ -1626,17 +1640,20 @@ fn render_context_line_side_by_side(
             },
             w,
         );
-        ctx.sbs_meta.borrow_mut().insert(
-            line_idx,
-            SbsRowMeta {
-                left_content: content.clone(),
-                right_content: content,
-                left_prefix: lp,
-                right_prefix: rp,
-                left_pad_style: ctx_style,
-                right_pad_style: ctx_style,
-            },
+        let mut meta = SbsRowMeta {
+            left_content: content.clone(),
+            right_content: content,
+            left_prefix: lp,
+            right_prefix: rp,
+            left_pad_style: ctx_style,
+            right_pad_style: ctx_style,
+        };
+        mark_local_edit(
+            &mut meta,
+            ctx.app.local_edit_mark(file_idx, diff_line.new_lineno),
+            ctx.theme,
         );
+        ctx.sbs_meta.borrow_mut().insert(line_idx, meta);
     } else {
         lines.push(Line::default());
     }
@@ -1810,17 +1827,20 @@ fn render_deletion_addition_pair_side_by_side(
                 },
                 w,
             );
-            ctx.sbs_meta.borrow_mut().insert(
-                line_idx,
-                SbsRowMeta {
-                    left_content,
-                    right_content,
-                    left_prefix: lp,
-                    right_prefix: rp,
-                    left_pad_style: left_pad,
-                    right_pad_style: right_pad,
-                },
+            let mut meta = SbsRowMeta {
+                left_content,
+                right_content,
+                left_prefix: lp,
+                right_prefix: rp,
+                left_pad_style: left_pad,
+                right_pad_style: right_pad,
+            };
+            mark_local_edit(
+                &mut meta,
+                add_opt.and_then(|al| ctx.app.local_edit_mark(file_idx, al.new_lineno)),
+                ctx.theme,
             );
+            ctx.sbs_meta.borrow_mut().insert(line_idx, meta);
         } else {
             lines.push(Line::default());
         }
@@ -1945,17 +1965,20 @@ fn render_standalone_addition_side_by_side(
             },
             w,
         );
-        ctx.sbs_meta.borrow_mut().insert(
-            line_idx,
-            SbsRowMeta {
-                left_content: Vec::new(),
-                right_content,
-                left_prefix: lp,
-                right_prefix: rp,
-                left_pad_style: Style::default(),
-                right_pad_style: right_pad,
-            },
+        let mut meta = SbsRowMeta {
+            left_content: Vec::new(),
+            right_content,
+            left_prefix: lp,
+            right_prefix: rp,
+            left_pad_style: Style::default(),
+            right_pad_style: right_pad,
+        };
+        mark_local_edit(
+            &mut meta,
+            ctx.app.local_edit_mark(file_idx, diff_line.new_lineno),
+            ctx.theme,
         );
+        ctx.sbs_meta.borrow_mut().insert(line_idx, meta);
     } else {
         lines.push(Line::default());
     }

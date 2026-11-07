@@ -951,6 +951,9 @@ impl App {
         self.sort_files_by_directory(false);
         self.populate_file_line_count_cache();
         self.expand_all_dirs();
+        // Every reload (`:e`, the editor returning, the diff watch) lands
+        // here, so the edited-line sets are recomputed in this one place.
+        self.refresh_local_edits();
 
         if self.diff_files.is_empty() {
             self.diff_state.current_file_idx = 0;

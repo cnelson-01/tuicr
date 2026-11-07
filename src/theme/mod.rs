@@ -53,6 +53,11 @@ pub struct Theme {
     pub diff_context: Color,
     pub diff_hunk_header: Color,
     pub expanded_context_fg: Color,
+    /// Lines changed in `$EDITOR` this session: the gutter marker, and the row
+    /// background that replaces the add / context one (blue family, so it
+    /// reads apart from both diff colours).
+    pub diff_edit: Color,
+    pub diff_edit_bg: Color,
 
     // Syntax highlighting diff backgrounds (for syntax-highlighted code)
     pub syntax_add_bg: Color,
@@ -124,6 +129,8 @@ impl Clone for Theme {
             diff_context: self.diff_context,
             diff_hunk_header: self.diff_hunk_header,
             expanded_context_fg: self.expanded_context_fg,
+            diff_edit: self.diff_edit,
+            diff_edit_bg: self.diff_edit_bg,
             syntax_add_bg: self.syntax_add_bg,
             syntax_del_bg: self.syntax_del_bg,
             syntax_theme: self.syntax_theme.clone(),
@@ -206,6 +213,8 @@ impl Theme {
             diff_context: Color::Rgb(200, 200, 200),
             diff_hunk_header: Color::Rgb(90, 200, 255),
             expanded_context_fg: Color::Rgb(140, 140, 140),
+            diff_edit: Color::Rgb(110, 160, 255),
+            diff_edit_bg: Color::Rgb(24, 40, 84),
 
             // Syntax highlighting diff backgrounds
             syntax_add_bg: Color::Rgb(0, 35, 12),
@@ -278,6 +287,8 @@ impl Theme {
             diff_context: Color::Rgb(0, 0, 0),      // Black for max readability
             diff_hunk_header: Color::Rgb(0, 60, 140),
             expanded_context_fg: Color::Rgb(60, 60, 60),
+            diff_edit: Color::Rgb(30, 80, 200),
+            diff_edit_bg: Color::Rgb(210, 222, 255),
 
             // Syntax highlighting diff backgrounds (lighter for light theme)
             syntax_add_bg: Color::Rgb(220, 255, 220), // Very light green
@@ -361,6 +372,8 @@ impl Theme {
             diff_context: base00,
             diff_hunk_header: blue,
             expanded_context_fg: base1,
+            diff_edit: blue,
+            diff_edit_bg: Color::Rgb(220, 226, 248),
 
             syntax_add_bg: Color::Rgb(222, 240, 205),
             syntax_del_bg: Color::Rgb(252, 225, 224),
@@ -435,6 +448,8 @@ impl Theme {
             diff_context: base0,
             diff_hunk_header: blue,
             expanded_context_fg: base01,
+            diff_edit: blue,
+            diff_edit_bg: Color::Rgb(28, 44, 104),
 
             syntax_add_bg: Color::Rgb(0, 60, 20),
             syntax_del_bg: Color::Rgb(70, 0, 0),
@@ -593,6 +608,8 @@ impl Theme {
             diff_context: Color::Rgb(92, 103, 115),
             diff_hunk_header: Color::Rgb(54, 163, 217),
             expanded_context_fg: Color::Rgb(130, 140, 153),
+            diff_edit: Color::Rgb(65, 130, 230),
+            diff_edit_bg: Color::Rgb(222, 232, 252),
 
             // Syntax highlighting diff backgrounds
             syntax_add_bg: Color::Rgb(244, 251, 228),
@@ -683,6 +700,8 @@ impl Theme {
             diff_context: fg,
             diff_hunk_header: blue,
             expanded_context_fg: dim,
+            diff_edit: Color::Rgb(130, 150, 255),
+            diff_edit_bg: Color::Rgb(51, 60, 100),
 
             syntax_add_bg: Color::Rgb(30, 47, 36),
             syntax_del_bg: Color::Rgb(50, 30, 35),
@@ -746,6 +765,8 @@ impl Theme {
             diff_context: Color::Rgb(171, 178, 191),
             diff_hunk_header: Color::Rgb(86, 182, 194),
             expanded_context_fg: Color::Rgb(92, 99, 112),
+            diff_edit: Color::Rgb(97, 175, 239),
+            diff_edit_bg: Color::Rgb(46, 62, 100),
 
             // Syntax highlighting diff backgrounds
             syntax_add_bg: Color::Rgb(37, 49, 38),
@@ -815,6 +836,8 @@ impl Theme {
             diff_context: Color::Rgb(31, 35, 40),
             diff_hunk_header: Color::Rgb(9, 105, 218),
             expanded_context_fg: Color::Rgb(110, 119, 129),
+            diff_edit: Color::Rgb(9, 105, 218),
+            diff_edit_bg: Color::Rgb(222, 222, 255),
 
             syntax_add_bg: Color::Rgb(230, 255, 236),
             syntax_del_bg: Color::Rgb(255, 235, 233),
@@ -876,6 +899,8 @@ impl Theme {
             diff_context: Color::Rgb(230, 237, 243),
             diff_hunk_header: Color::Rgb(88, 166, 255),
             expanded_context_fg: Color::Rgb(139, 148, 158),
+            diff_edit: Color::Rgb(88, 166, 255),
+            diff_edit_bg: Color::Rgb(23, 38, 74),
 
             syntax_add_bg: Color::Rgb(16, 35, 28),
             syntax_del_bg: Color::Rgb(48, 27, 31),
@@ -936,6 +961,9 @@ impl Theme {
             diff_context: Color::Rgb(0xf0, 0xf6, 0xfc),
             diff_hunk_header: Color::Rgb(0x44, 0x93, 0xf8),
             expanded_context_fg: Color::Rgb(0x65, 0x6c, 0x76),
+            // Additions are blue in this theme, so edits go violet.
+            diff_edit: Color::Rgb(0xbc, 0x8c, 0xff),
+            diff_edit_bg: Color::Rgb(0x34, 0x24, 0x54),
 
             syntax_add_bg: Color::Rgb(0x1e, 0x42, 0x73),
             syntax_del_bg: Color::Rgb(0x5f, 0x36, 0x1e),
@@ -1013,6 +1041,9 @@ impl Theme {
             diff_context: fg_dark,
             diff_hunk_header: blue,
             expanded_context_fg: dark3,
+            // Additions are blue-green and search hits blue, so edits go violet.
+            diff_edit: magenta,
+            diff_edit_bg: Color::Rgb(66, 62, 96),
 
             syntax_add_bg: Color::Rgb(28, 42, 52),
             syntax_del_bg: Color::Rgb(47, 30, 38),
@@ -1091,6 +1122,9 @@ impl Theme {
             diff_context: fg,
             diff_hunk_header: blue,
             expanded_context_fg: dark3,
+            // Additions are already blue-tinted here, so edits go violet.
+            diff_edit: magenta,
+            diff_edit_bg: Color::Rgb(214, 206, 236),
 
             syntax_add_bg: Color::Rgb(216, 230, 236), // #d8e6ec
             syntax_del_bg: Color::Rgb(245, 213, 217), // #f5d5d9
@@ -1429,6 +1463,19 @@ fn blend(base: Color, accent: Color, accent_percent: u8) -> Color {
     }
 }
 
+/// Edited-line colours for a palette with no true blue to borrow (gruvbox's
+/// and everforest's "blue" is teal, which sits too close to their greens).
+/// Light bases are warm, and blending blue into them turns grey, so the light
+/// background is a fixed lavender.
+fn palette_free_edit_colors(dark: bool, bg0: Color) -> (Color, Color) {
+    if dark {
+        let edit = rgb(131, 148, 224);
+        (edit, blend(bg0, edit, 22))
+    } else {
+        (rgb(60, 80, 180), rgb(222, 224, 242))
+    }
+}
+
 fn catppuccin_theme(flavor: CatppuccinFlavor, syntect_theme: EmbeddedThemeName) -> Theme {
     let accent_fg = if flavor.dark {
         flavor.base
@@ -1459,6 +1506,8 @@ fn catppuccin_theme(flavor: CatppuccinFlavor, syntect_theme: EmbeddedThemeName) 
         diff_context: flavor.text,
         diff_hunk_header: flavor.blue,
         expanded_context_fg: flavor.overlay1,
+        diff_edit: flavor.blue,
+        diff_edit_bg: blend(flavor.base, flavor.blue, 20),
 
         // Syntax highlighting diff backgrounds
         syntax_add_bg,
@@ -1516,6 +1565,7 @@ fn gruvbox_theme(flavor: GruvboxFlavor) -> Theme {
         EmbeddedThemeName::GruvboxLight
     };
     let accent_fg = if flavor.dark { flavor.bg0 } else { flavor.fg1 };
+    let (diff_edit, diff_edit_bg) = palette_free_edit_colors(flavor.dark, flavor.bg0);
 
     Theme {
         highlighter: OnceLock::new(),
@@ -1536,6 +1586,8 @@ fn gruvbox_theme(flavor: GruvboxFlavor) -> Theme {
         diff_context: flavor.fg0,
         diff_hunk_header: flavor.blue,
         expanded_context_fg: flavor.grey1,
+        diff_edit,
+        diff_edit_bg,
 
         // Syntax highlighting diff backgrounds
         syntax_add_bg: flavor.bg_green,
@@ -1588,6 +1640,7 @@ fn gruvbox_theme(flavor: GruvboxFlavor) -> Theme {
 
 fn everforest_theme(flavor: EverforestFlavor) -> Theme {
     let accent_fg = if flavor.dark { flavor.bg0 } else { flavor.fg };
+    let (diff_edit, diff_edit_bg) = palette_free_edit_colors(flavor.dark, flavor.bg0);
     let syntax_add_bg = blend(flavor.bg0, flavor.green, 12);
     let syntax_del_bg = blend(flavor.bg0, flavor.red, 12);
 
@@ -1608,6 +1661,8 @@ fn everforest_theme(flavor: EverforestFlavor) -> Theme {
         diff_context: flavor.fg,
         diff_hunk_header: flavor.blue,
         expanded_context_fg: flavor.grey1,
+        diff_edit,
+        diff_edit_bg,
 
         syntax_add_bg,
         syntax_del_bg,
@@ -1674,6 +1729,8 @@ fn nord_theme(flavor: NordFlavor) -> Theme {
         diff_context: flavor.fg0,
         diff_hunk_header: flavor.frost1,
         expanded_context_fg: flavor.bg3,
+        diff_edit: flavor.frost2,
+        diff_edit_bg: blend(flavor.bg0, flavor.frost2, 35),
 
         syntax_add_bg,
         syntax_del_bg,
@@ -2156,6 +2213,24 @@ fn require_local_theme_color(table: &toml::Table, key: &str) -> Result<Color, St
     parse_color_value(raw).ok_or_else(|| format!("Theme key '{key}' could not be parsed"))
 }
 
+fn optional_local_theme_color(table: &toml::Table, key: &str) -> Result<Option<Color>, String> {
+    table
+        .get(key)
+        .map(|_| require_local_theme_color(table, key))
+        .transpose()
+}
+
+/// Edited-line colours for a local theme that does not set them.
+fn default_edit_colors(panel_bg: Color) -> (Color, Color) {
+    if is_dark_color(panel_bg) {
+        let edit = rgb(110, 160, 255);
+        (edit, blend(panel_bg, edit, 22))
+    } else {
+        let edit = rgb(30, 80, 200);
+        (edit, blend(panel_bg, edit, 15))
+    }
+}
+
 fn parse_optional_local_theme_string(
     table: &toml::Table,
     key: &str,
@@ -2229,6 +2304,8 @@ const LOCAL_THEME_KEYS: &[&str] = &[
     "diff_context",
     "diff_hunk_header",
     "expanded_context_fg",
+    "diff_edit",
+    "diff_edit_bg",
     "syntax_add_bg",
     "syntax_del_bg",
     "syntax_theme",
@@ -2313,6 +2390,13 @@ fn load_local_theme_from_path(path: &Path) -> Result<(Theme, Vec<String>), Strin
         None => SyntaxThemeSource::Embedded(fallback_embedded_theme_for_panel_bg(panel_bg)),
     };
 
+    // Optional: themes written before the edited-line highlight existed
+    // still load, with a blue pair suited to their background.
+    let (default_edit, default_edit_bg) = default_edit_colors(panel_bg);
+    let diff_edit = optional_local_theme_color(table, "diff_edit")?.unwrap_or(default_edit);
+    let diff_edit_bg =
+        optional_local_theme_color(table, "diff_edit_bg")?.unwrap_or(default_edit_bg);
+
     let theme = Theme {
         highlighter: OnceLock::new(),
         selection_marker: table
@@ -2331,6 +2415,8 @@ fn load_local_theme_from_path(path: &Path) -> Result<(Theme, Vec<String>), Strin
         diff_context: require_local_theme_color(table, "diff_context")?,
         diff_hunk_header: require_local_theme_color(table, "diff_hunk_header")?,
         expanded_context_fg: require_local_theme_color(table, "expanded_context_fg")?,
+        diff_edit,
+        diff_edit_bg,
         syntax_add_bg: require_local_theme_color(table, "syntax_add_bg")?,
         syntax_del_bg: require_local_theme_color(table, "syntax_del_bg")?,
         syntax_theme,
@@ -2802,6 +2888,50 @@ mode_bg = "#82aaff"
             assert_eq!(theme.selection_marker, expected);
             assert!(warnings.is_empty());
         }
+    }
+
+    #[test]
+    fn edited_line_background_stands_apart_in_every_bundled_theme() {
+        for (name, arg) in ThemeArg::choices() {
+            let theme = resolve_theme(*arg);
+            for (other, key) in [
+                (theme.panel_bg, "panel_bg"),
+                (theme.diff_add_bg, "diff_add_bg"),
+                (theme.syntax_add_bg, "syntax_add_bg"),
+                (theme.diff_del_bg, "diff_del_bg"),
+                (theme.syntax_del_bg, "syntax_del_bg"),
+                (theme.cursor_line_bg, "cursor_line_bg"),
+                (theme.search_match_bg, "search_match_bg"),
+            ] {
+                assert_ne!(
+                    theme.diff_edit_bg, other,
+                    "{name}: diff_edit_bg equals {key}"
+                );
+            }
+            assert_ne!(
+                theme.diff_edit, theme.diff_edit_bg,
+                "{name}: invisible marker"
+            );
+        }
+    }
+
+    #[test]
+    fn edited_line_colors_are_optional_in_local_themes() {
+        let dir = tempdir().unwrap();
+        let path = write_local_theme(dir.path(), "edits", &sample_local_theme_body(""));
+        let (theme, warnings) = load_local_theme_from_path(&path).unwrap();
+        assert!(warnings.is_empty());
+        assert_eq!(
+            (theme.diff_edit, theme.diff_edit_bg),
+            default_edit_colors(theme.panel_bg)
+        );
+
+        let body = sample_local_theme_body("diff_edit = \"#7aa2f7\"\ndiff_edit_bg = \"#1f2a48\"");
+        let path = write_local_theme(dir.path(), "edits", &body);
+        let (theme, warnings) = load_local_theme_from_path(&path).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(theme.diff_edit, Color::Rgb(0x7a, 0xa2, 0xf7));
+        assert_eq!(theme.diff_edit_bg, Color::Rgb(0x1f, 0x2a, 0x48));
     }
 
     #[test]

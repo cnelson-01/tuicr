@@ -1024,6 +1024,7 @@ fn main() -> anyhow::Result<()> {
                         break;
                     }
                     if let Some(target) = app.take_pending_editor_target() {
+                        app.snapshot_local_edit_baseline(&target);
                         match run_editor_from_tui(
                             &mut terminal,
                             &target,
@@ -1055,8 +1056,12 @@ fn main() -> anyhow::Result<()> {
                                             } else {
                                                 String::new()
                                             };
+                                            let edits_suffix = app
+                                                .local_edit_summary(&target)
+                                                .map(|summary| format!(" \u{00b7} {summary}"))
+                                                .unwrap_or_default();
                                             app.set_message(format!(
-                                                "Opened {} and reloaded {count} files{invalidated_suffix}",
+                                                "Opened {} and reloaded {count} files{invalidated_suffix}{edits_suffix}",
                                                 target.label
                                             ));
                                         }
@@ -1067,7 +1072,27 @@ fn main() -> anyhow::Result<()> {
                                         }
                                     }
                                 } else {
-                                    app.set_message(format!("Opened {}", target.label));
+                                    // Nothing reloads here, so recompute the
+                                    // edited lines for the message by hand.
+                                    app.refresh_local_edits();
+                                    let message = match app.local_edit_summary(&target) {
+                                        Some(summary)
+                                            if matches!(
+                                                app.diff_source,
+                                                app::DiffSource::CommitRange(_)
+                                            ) =>
+                                        {
+                                            format!(
+                                                "Opened {} \u{00b7} {summary}; :local compares the review with your working tree",
+                                                target.label
+                                            )
+                                        }
+                                        Some(summary) => {
+                                            format!("Opened {} \u{00b7} {summary}", target.label)
+                                        }
+                                        None => format!("Opened {}", target.label),
+                                    };
+                                    app.set_message(message);
                                 }
                             }
                             Ok(Err(err)) => app.set_error(err.to_string()),
