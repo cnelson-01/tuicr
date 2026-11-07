@@ -939,6 +939,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                                 &mut lines,
                                 &mut line_idx,
                                 expanded_line,
+                                file_idx,
                                 &ctx,
                             );
                         }
@@ -1012,6 +1013,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                                 &mut lines,
                                 &mut line_idx,
                                 expanded_line,
+                                file_idx,
                                 &ctx,
                             );
                         }
@@ -1087,6 +1089,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                             &mut lines,
                             &mut line_idx,
                             expanded_line,
+                            file_idx,
                             &ctx,
                         );
                     }
@@ -1120,6 +1123,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                             &mut lines,
                             &mut line_idx,
                             expanded_line,
+                            file_idx,
                             &ctx,
                         );
                     }
@@ -1391,6 +1395,7 @@ fn render_sbs_expanded_context_line(
     lines: &mut Vec<Line<'_>>,
     line_idx: &mut usize,
     expanded_line: &crate::model::DiffLine,
+    file_idx: usize,
     ctx: &SideBySideContext,
 ) {
     let theme = ctx.theme;
@@ -1442,17 +1447,20 @@ fn render_sbs_expanded_context_line(
     if let Some((needle, hl)) = ctx.search_for(*line_idx) {
         content = apply_search_highlight_spans(content, needle, hl);
     }
-    ctx.sbs_meta.borrow_mut().insert(
-        *line_idx,
-        SbsRowMeta {
-            left_content: content.clone(),
-            right_content: content,
-            left_prefix,
-            right_prefix,
-            left_pad_style: ec_style,
-            right_pad_style: ec_style,
-        },
+    let mut meta = SbsRowMeta {
+        left_content: content.clone(),
+        right_content: content,
+        left_prefix,
+        right_prefix,
+        left_pad_style: ec_style,
+        right_pad_style: ec_style,
+    };
+    mark_local_edit(
+        &mut meta,
+        ctx.app.local_edit_mark(file_idx, expanded_line.new_lineno),
+        theme,
     );
+    ctx.sbs_meta.borrow_mut().insert(*line_idx, meta);
     *line_idx += 1;
 }
 

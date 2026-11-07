@@ -262,6 +262,7 @@ impl App {
                 Ok(diff_files) => {
                     self.diff_files = diff_files;
                     self.diff_source = DiffSource::StagedAndUnstaged;
+                    self.refresh_local_edits();
 
                     // Update session for new files
                     for file in &self.diff_files {
@@ -1735,7 +1736,9 @@ impl App {
     /// `None` means it has to be fetched.
     ///
     /// There are two caches. `range_diff_files` holds the every-row selection,
-    /// loaded once when the review opened, so it is checked first.
+    /// loaded when the review opened (and again by a reload of a review that
+    /// ends at the working tree, see `apply_diff_files`), so it is checked
+    /// first.
     /// `commit_diff_cache` fills up with narrower selections as the user
     /// cycles through them.
     fn cached_selection_diff(&self, start: usize, end: usize) -> Option<Vec<DiffFile>> {
@@ -1785,6 +1788,7 @@ impl App {
         };
 
         self.diff_files = diff_files;
+        self.refresh_local_edits();
 
         // Register the files in the session. `r`, `R` and the comment path all
         // look a file up here, so a file reachable only through a narrowed

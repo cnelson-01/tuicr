@@ -37,10 +37,11 @@ pub struct LocalEditedFile {
     /// 1-based working-tree line now following each place where baseline
     /// lines were deleted; `line_count + 1` for a deletion at the end.
     pub removed: BTreeSet<u32>,
-    /// Whether the file has differed from the baseline yet. A windowed
-    /// editor's baseline can be refreshed before the user saves, so only a
-    /// file that was edited and then put back is dropped.
-    seen_edit: bool,
+    /// Whether an editor may still save the first change. A windowed
+    /// editor's baseline can be refreshed before the user saves, so a file
+    /// that still matches its baseline is kept until it has been edited or a
+    /// terminal editor on it has returned.
+    pending_save: bool,
 }
 
 impl LocalEditedFile {
@@ -98,8 +99,16 @@ impl LocalEdits {
             baseline,
             changed: BTreeSet::new(),
             removed: BTreeSet::new(),
-            seen_edit: false,
+            pending_save: true,
         });
+    }
+
+    /// A terminal editor on `rel` has returned, so nothing is left unsaved:
+    /// the next refresh drops the entry if the file matches its baseline.
+    fn editor_returned(&mut self, rel: &Path) {
+        if let Some(file) = self.files.get_mut(rel) {
+            file.pending_save = false;
+        }
     }
 
     /// Re-read every tracked file and recompute its line sets. A file that
@@ -114,10 +123,10 @@ impl LocalEdits {
             if current == file.baseline {
                 file.changed.clear();
                 file.removed.clear();
-                return !file.seen_edit;
+                return file.pending_save;
             }
             (file.changed, file.removed) = line_changes(&file.baseline, &current);
-            file.seen_edit = true;
+            file.pending_save = false;
             true
         });
     }
@@ -180,11 +189,20 @@ impl App {
             .snapshot(rel.to_path_buf(), target.path.clone(), baseline);
     }
 
-    /// Recompute the edited lines from disk. Runs wherever a diff is applied
-    /// (`apply_diff_files`) and after an editor returns in a review that does
-    /// not reload.
+    /// Recompute the edited lines from disk. Runs wherever a working-tree
+    /// diff is installed (`apply_diff_files` and the selection loaders) and
+    /// after an editor returns in a review that does not reload.
     pub fn refresh_local_edits(&mut self) {
         self.local_edits.refresh();
+    }
+
+    /// Called when a terminal editor on `target` has returned, before the
+    /// refresh that follows: a file left as it was stops being tracked, so
+    /// later changes from other tools do not get the edit tint.
+    pub fn local_edit_editor_returned(&mut self, target: &EditorTarget) {
+        if let Ok(rel) = target.path.strip_prefix(&self.vcs_info.root_path) {
+            self.local_edits.editor_returned(rel);
+        }
     }
 
     /// `:clearedits`: forget every baseline, so the highlights go away.
@@ -247,8 +265,17 @@ impl App {
 
     /// Load `ids` as a commit range or, `to_local`, as those commits plus the
     /// working tree, with the Staged / Unstaged rows the commit selector
-    /// would show beside them.
+    /// would show beside them. Every row starts selected, whatever
+    /// `initial_commit_selection` says: narrowed to the oldest commit, the
+    /// working tree would not be in the diff at all.
     fn load_local_compare(&mut self, ids: Vec<String>, to_local: bool) -> Result<()> {
+        let start = std::mem::replace(&mut self.commit_selection_start, CommitSelectionStart::All);
+        let loaded = self.load_local_compare_rows(ids, to_local);
+        self.commit_selection_start = start;
+        loaded
+    }
+
+    fn load_local_compare_rows(&mut self, ids: Vec<String>, to_local: bool) -> Result<()> {
         let mut commits = self.vcs.get_commits_info(&ids)?;
         if !to_local {
             return self.load_commit_range_selection(ids, commits);
@@ -316,7 +343,6 @@ impl App {
             return;
         }
 
-        self.refresh_local_edits();
         if let Some(idx) = current_path.and_then(|path| {
             self.diff_files
                 .iter()
@@ -408,6 +434,12 @@ mod tests {
         // editor may not have saved yet).
         edits.refresh();
         assert!(edits.get(Path::new("f.txt")).is_some());
+        // A terminal editor that returned has nothing left to save.
+        edits.editor_returned(Path::new("f.txt"));
+        edits.refresh();
+        assert!(edits.get(Path::new("f.txt")).is_none());
+
+        edits.snapshot(PathBuf::from("f.txt"), path.clone(), b"a\nb\n".to_vec());
 
         std::fs::write(&path, "a\nB\n").unwrap();
         edits.refresh();
@@ -434,7 +466,7 @@ mod tests {
             baseline: Vec::new(),
             changed: set(changed),
             removed: set(removed),
-            seen_edit: true,
+            pending_save: false,
         };
         assert_eq!(file(&[], &[]).summary(), None);
         assert_eq!(file(&[1], &[]).summary().as_deref(), Some("1 line edited"));

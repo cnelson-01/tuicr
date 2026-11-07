@@ -29,13 +29,19 @@ pub fn diff_edit_marker_style(theme: &Theme) -> Style {
 }
 
 /// A span on a line changed in `$EDITOR`: the add / context background gives
-/// way to `diff_edit_bg`. The foreground (syntax colours) stays, and so does
-/// an emphasis background (intraline, search match).
+/// way to `diff_edit_bg`, and added-word emphasis to its edit-coloured
+/// counterpart. The foreground (syntax colours) stays, and so does a search
+/// match background.
 pub fn diff_edit_span_style(style: Style, theme: &Theme) -> Style {
     match style.bg {
         None | Some(Color::Reset) => style.bg(theme.diff_edit_bg),
         Some(bg) if bg == theme.diff_add_bg || bg == theme.syntax_add_bg => {
             style.bg(theme.diff_edit_bg)
+        }
+        Some(bg)
+            if bg == theme.intraline_bg(true, true) || bg == theme.intraline_bg(true, false) =>
+        {
+            style.bg(theme.edit_intraline_bg())
         }
         Some(_) => style,
     }
@@ -273,6 +279,20 @@ pub fn graph_track_style(_theme: &Theme, color_index: usize) -> Style {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn edited_spans_trade_add_colours_for_edit_ones() {
+        let theme = Theme::dark();
+        let bg = |bg: Color| diff_edit_span_style(Style::default().bg(bg), &theme).bg;
+        assert_eq!(bg(theme.syntax_add_bg), Some(theme.diff_edit_bg));
+        // Added-word emphasis stays emphasised, in the edit colour.
+        let emphasis = theme.edit_intraline_bg();
+        assert_ne!(emphasis, theme.diff_edit_bg);
+        assert_eq!(bg(theme.intraline_bg(true, true)), Some(emphasis));
+        assert_eq!(bg(theme.intraline_bg(true, false)), Some(emphasis));
+        // A search match keeps its own background.
+        assert_eq!(bg(theme.search_match_bg), Some(theme.search_match_bg));
+    }
 
     #[test]
     fn remote_branches_never_share_the_local_branch_colour() {

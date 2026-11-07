@@ -513,6 +513,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                 lw,
                                 app.relative_line_numbers,
                                 line_search,
+                                app.local_edit_mark(file_idx, expanded_line.new_lineno),
                             );
                         }
                     }
@@ -594,6 +595,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                                 lw,
                                 app.relative_line_numbers,
                                 line_search,
+                                app.local_edit_mark(file_idx, expanded_line.new_lineno),
                             );
                         }
                     }
@@ -1188,6 +1190,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                             lw,
                             app.relative_line_numbers,
                             line_search,
+                            app.local_edit_mark(file_idx, expanded_line.new_lineno),
                         );
                     }
                 }
@@ -1229,6 +1232,7 @@ pub(super) fn render_unified_diff(frame: &mut Frame, app: &mut App, area: Rect) 
                             lw,
                             app.relative_line_numbers,
                             line_search,
+                            app.local_edit_mark(file_idx, expanded_line.new_lineno),
                         );
                     }
                 }
@@ -1586,6 +1590,7 @@ fn render_expanded_context_line(
     lw: usize,
     relative_line_numbers: bool,
     search: Option<(&crate::ui::text_utils::SearchPattern, Style)>,
+    edit_mark: Option<LocalEditMark>,
 ) {
     let indicator = cursor_indicator(*line_idx, current_line_idx);
     let line_num = crate::ui::diff_view::expanded_context_lineno_field(
@@ -1613,6 +1618,20 @@ fn render_expanded_context_line(
             needle,
             hl,
         ));
+    }
+    // A line changed in `$EDITOR` that the diff shows only as context (an
+    // edit that put back what HEAD has) is marked like any other.
+    if let Some(mark) = edit_mark {
+        let (marker, content) = line_spans[content_start - 1..]
+            .split_first_mut()
+            .expect("sign span precedes content");
+        apply_local_edit_mark(marker, content, mark, theme);
+        if mark == LocalEditMark::Edited {
+            line_spans.push(Span::styled(
+                String::new(),
+                styles::diff_edit_span_style(styles::expanded_context_style(theme), theme),
+            ));
+        }
     }
     lines.push(Line::from(line_spans));
     *line_idx += 1;
@@ -3127,6 +3146,77 @@ mod remote_comments_snapshot_tests {
         let (old_x, _) = find_text_from(&buffer, "four", 0);
         let (new_x, y) = find_text_from(&buffer, "four", old_x + 4);
         assert_eq!(buffer[(new_x - 1, y)].symbol(), "\u{25b4}");
+    }
+
+    #[test]
+    fn should_mark_an_edited_line_in_expanded_context() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = |content: &str, n: u32| DiffLine {
+            origin: LineOrigin::Context,
+            content: content.to_string(),
+            old_lineno: Some(n),
+            new_lineno: Some(n),
+            raw_content: None,
+            highlighted_spans: None,
+        };
+        let hunks = vec![DiffHunk {
+            header: "@@ -2,1 +2,1 @@".to_string(),
+            lines: vec![context("two", 2)],
+            old_start: 2,
+            old_count: 1,
+            new_start: 2,
+            new_count: 1,
+        }];
+        let content_hash = DiffFile::compute_content_hash(&hunks);
+        let mut app = make_revision_app(vec![DiffFile {
+            old_path: Some(PathBuf::from("src.rs")),
+            new_path: Some(PathBuf::from("src.rs")),
+            status: FileStatus::Modified,
+            hunks,
+            is_binary: false,
+            is_too_large: false,
+            is_commit_message: false,
+            content_hash,
+        }]);
+        app.vcs_info.root_path = dir.path().to_path_buf();
+        app.diff_source = DiffSource::WorkingTree;
+        app.cursor_line_highlight = false;
+        // The edit put line 1 back to what HEAD has, so the diff shows it only
+        // in the expanded gap above the hunk.
+        app.expanded_top.insert(
+            crate::app::GapId {
+                file_idx: 0,
+                hunk_idx: 0,
+            },
+            vec![context("same", 1)],
+        );
+        app.rebuild_annotations();
+        let path = dir.path().join("src.rs");
+        std::fs::write(&path, "changed\ntwo\n").unwrap();
+        app.snapshot_local_edit_baseline(&crate::editor::EditorTarget {
+            path: path.clone(),
+            line: None,
+            label: "src.rs".to_string(),
+        });
+        std::fs::write(&path, "same\ntwo\n").unwrap();
+        app.refresh_local_edits();
+        let theme = app.theme.clone();
+
+        let buffer = draw_unified_diff(&mut app);
+        let (x, y) = find_text_from(&buffer, "same", 0);
+        assert_eq!(buffer[(x - 2, y)].symbol(), "\u{258c}");
+        assert_eq!(buffer[(x - 2, y)].fg, theme.diff_edit);
+        assert_eq!(buffer[(x, y)].bg, theme.diff_edit_bg);
+        assert_eq!(buffer[(x + 10, y)].bg, theme.diff_edit_bg);
+
+        app.diff_view_mode = DiffViewMode::SideBySide;
+        let buffer = draw_diff(&mut app);
+        let (old_x, y) = find_text_from(&buffer, "same", 0);
+        assert_ne!(buffer[(old_x, y)].bg, theme.diff_edit_bg);
+        let (new_x, new_y) = find_text_from(&buffer, "same", old_x + 4);
+        assert_eq!(new_y, y);
+        assert_eq!(buffer[(new_x - 1, y)].symbol(), "\u{258c}");
+        assert_eq!(buffer[(new_x, y)].bg, theme.diff_edit_bg);
     }
 
     #[test]

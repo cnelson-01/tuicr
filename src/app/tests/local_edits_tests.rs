@@ -378,3 +378,104 @@ fn local_is_refused_where_there_is_no_range_to_compare() {
     assert_eq!(message.message_type, MessageType::Error);
     assert!(message.content.contains("not available"));
 }
+
+#[test]
+fn a_file_left_as_it_was_stops_being_tracked_once_the_editor_returns() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    std::fs::write(root.join("f.rs"), "a\n").unwrap();
+    let mut app = build_app(root, vec![added_file("f.rs", 1)], DiffSource::WorkingTree);
+
+    app.snapshot_local_edit_baseline(&target(root, "f.rs"));
+    // A windowed editor may not have saved yet: keep the baseline.
+    app.refresh_local_edits();
+    assert!(app.local_edits.get(Path::new("f.rs")).is_some());
+
+    // A terminal editor quit without saving: later changes by other tools
+    // are not edits made in `$EDITOR`.
+    app.local_edit_editor_returned(&target(root, "f.rs"));
+    app.refresh_local_edits();
+    assert!(app.local_edits.is_empty());
+    std::fs::write(root.join("f.rs"), "A\n").unwrap();
+    app.refresh_local_edits();
+    assert_eq!(app.local_edit_mark(0, Some(1)), None);
+}
+
+#[test]
+fn selection_loaders_recompute_the_edited_lines() {
+    let _reviews = TestReviewsDir::new();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    std::fs::write(root.join("f.rs"), "a\nb\n").unwrap();
+    let mut app = build_app(root, vec![added_file("f.rs", 2)], DiffSource::WorkingTree);
+    app.snapshot_local_edit_baseline(&target(root, "f.rs"));
+    std::fs::write(root.join("f.rs"), "A\nb\n").unwrap();
+    app.refresh_local_edits();
+    assert_eq!(
+        lines(&app.local_edits.get(Path::new("f.rs")).unwrap().changed),
+        vec![1]
+    );
+
+    // Something else adds two lines at the top before the user picks a
+    // selection that installs a fresh diff without a reload.
+    std::fs::write(root.join("f.rs"), "x\ny\nA\nb\n").unwrap();
+    app.load_working_tree_selection().expect("load");
+    assert_eq!(
+        lines(&app.local_edits.get(Path::new("f.rs")).unwrap().changed),
+        vec![1, 2, 3]
+    );
+}
+
+#[test]
+fn reload_refreshes_the_selector_caches_of_a_review_ending_at_the_working_tree() {
+    let _reviews = TestReviewsDir::new();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ids = vec!["aaaaaaaaaa".to_string(), "bbbbbbbbbb".to_string()];
+    let mut app = build_app(
+        dir.path(),
+        vec![added_file("a.rs", 1), added_file("b.rs", 1)],
+        DiffSource::CommitRange(ids.clone()),
+    );
+    app.toggle_compare_with_local();
+    assert_eq!(app.diff_source, DiffSource::StagedUnstagedAndCommits(ids));
+
+    // Every row selected: the whole-range copy is the reloaded diff.
+    app.range_diff_files = Some(Vec::new());
+    app.commit_diff_cache.insert((1, 1), Vec::new());
+    app.reload_diff_files().expect("reload");
+    assert_eq!(app.range_diff_files.as_ref().map(Vec::len), Some(2));
+    assert!(app.commit_diff_cache.is_empty());
+
+    // Narrowed: the whole range is refetched when the selection widens.
+    app.commit_selection_range = Some((0, 1));
+    app.commit_diff_cache.insert((1, 1), Vec::new());
+    app.reload_diff_files().expect("reload");
+    assert!(app.range_diff_files.is_none());
+    assert!(app.commit_diff_cache.is_empty());
+}
+
+#[test]
+fn local_selects_every_row_whatever_the_initial_selection() {
+    let _reviews = TestReviewsDir::new();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ids = vec!["aaaaaaaaaa".to_string(), "bbbbbbbbbb".to_string()];
+    let mut app = build_app(
+        dir.path(),
+        vec![added_file("a.rs", 1)],
+        DiffSource::CommitRange(ids.clone()),
+    );
+    app.commit_selection_start = CommitSelectionStart::Oldest;
+
+    app.toggle_compare_with_local();
+    assert_eq!(
+        app.diff_source,
+        DiffSource::StagedUnstagedAndCommits(ids.clone())
+    );
+    // Unstaged, then both commits, newest first.
+    assert_eq!(app.commit_selection_range, Some((0, 2)));
+    assert_eq!(app.commit_selection_start, CommitSelectionStart::Oldest);
+
+    app.toggle_compare_with_local();
+    assert_eq!(app.diff_source, DiffSource::CommitRange(ids));
+    assert_eq!(app.commit_selection_range, Some((0, 1)));
+}

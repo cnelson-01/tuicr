@@ -516,6 +516,7 @@ impl App {
 
         self.diff_files = diff_files;
         self.diff_source = DiffSource::StagedAndUnstaged;
+        self.refresh_local_edits();
         self.input_mode = InputMode::Normal;
         self.diff_state = DiffState::default();
         self.file_list_state = FileListState::default();
@@ -556,6 +557,7 @@ impl App {
 
         self.diff_files = diff_files;
         self.diff_source = DiffSource::WorkingTree;
+        self.refresh_local_edits();
         self.input_mode = InputMode::Normal;
         self.diff_state = DiffState::default();
         self.file_list_state = FileListState::default();
@@ -626,6 +628,7 @@ impl App {
 
         self.diff_files = diff_files;
         self.diff_source = DiffSource::Unstaged;
+        self.refresh_local_edits();
         self.input_mode = InputMode::Normal;
         self.diff_state = DiffState::default();
         self.file_list_state = FileListState::default();
@@ -944,6 +947,18 @@ impl App {
             }
         }
 
+        // The inline selector caches diffs that end at the working tree,
+        // which just moved. Keep the whole-range copy only when that is what
+        // was fetched; anything else is refetched when the selection changes.
+        if matches!(self.diff_source, DiffSource::StagedUnstagedAndCommits(_)) {
+            let strict = Self::is_strict_commit_selection(
+                self.commit_selection_range,
+                self.review_commits.len(),
+            );
+            self.range_diff_files = (!strict).then(|| diff_files.clone());
+            self.commit_diff_cache.clear();
+        }
+
         self.diff_files = diff_files;
         self.clear_expanded_gaps();
         self.insert_commit_message_if_single();
@@ -952,7 +967,8 @@ impl App {
         self.populate_file_line_count_cache();
         self.expand_all_dirs();
         // Every reload (`:e`, the editor returning, the diff watch) lands
-        // here, so the edited-line sets are recomputed in this one place.
+        // here. The selection loaders, which install a diff without coming
+        // through here, recompute the edited lines themselves.
         self.refresh_local_edits();
 
         if self.diff_files.is_empty() {
@@ -1130,6 +1146,7 @@ impl App {
 
         self.diff_files = diff_files;
         self.diff_source = DiffSource::StagedUnstagedAndCommits(selected_ids);
+        self.refresh_local_edits();
         self.input_mode = InputMode::Normal;
         self.diff_state = DiffState::default();
         self.file_list_state = FileListState::default();

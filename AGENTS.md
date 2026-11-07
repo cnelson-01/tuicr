@@ -21,7 +21,7 @@ src/
 ├── app.rs               # Application state (App struct, InputMode, etc.)
 │   ├── coloring.rs      # Render-time syntax coloring of hunks near the viewport
 │   ├── editor_target.rs # Read-only snapshots of a PR revision for `$EDITOR`
-│   ├── local_edits.rs   # Lines changed in `$EDITOR` this session (pre-editor baselines, refreshed in `apply_diff_files`), `:local`, `:clearedits`
+│   ├── local_edits.rs   # Lines changed in `$EDITOR` this session (pre-editor baselines, refreshed wherever a working-tree diff is installed: `apply_diff_files` and the selection loaders), `:local`, `:clearedits`
 │   ├── file_filter.rs   # File-tree include/exclude regex filters + `/` path search
 │   ├── log_pane.rs      # Persistent log pane: own list state swapped into the selector fields per action, live preview
 │   ├── branches.rs      # Branch picker, checkout with dirty-tree guard / stash-and-switch, :branch, abort

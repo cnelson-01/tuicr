@@ -192,6 +192,16 @@ impl Theme {
         }
     }
 
+    /// The added-token emphasis of `intraline_bg` on a line changed in
+    /// `$EDITOR`: the edit background pushed toward the edit accent, so the
+    /// row reads as one colour while still showing which words differ.
+    pub fn edit_intraline_bg(&self) -> Color {
+        match (self.diff_edit_bg, self.diff_edit) {
+            (Color::Rgb(..), Color::Rgb(..)) => blend(self.diff_edit_bg, self.diff_edit, 30),
+            _ => self.diff_edit_bg,
+        }
+    }
+
     /// Create the dark theme (current default colors)
     pub fn dark() -> Self {
         Self {
@@ -2221,13 +2231,23 @@ fn optional_local_theme_color(table: &toml::Table, key: &str) -> Result<Option<C
 }
 
 /// Edited-line colours for a local theme that does not set them.
+///
+/// Only an RGB `panel_bg` can be blended. A named one gets a fixed pair, since
+/// `blend` would hand back the marker colour itself as the background.
 fn default_edit_colors(panel_bg: Color) -> (Color, Color) {
-    if is_dark_color(panel_bg) {
-        let edit = rgb(110, 160, 255);
-        (edit, blend(panel_bg, edit, 22))
-    } else {
-        let edit = rgb(30, 80, 200);
-        (edit, blend(panel_bg, edit, 15))
+    let (dark_edit, light_edit) = (rgb(110, 160, 255), rgb(30, 80, 200));
+    match panel_bg {
+        Color::Rgb(..) if is_dark_color(panel_bg) => (dark_edit, blend(panel_bg, dark_edit, 22)),
+        Color::Rgb(..) => (light_edit, blend(panel_bg, light_edit, 15)),
+        Color::White
+        | Color::Gray
+        | Color::LightRed
+        | Color::LightGreen
+        | Color::LightYellow
+        | Color::LightBlue
+        | Color::LightMagenta
+        | Color::LightCyan => (light_edit, rgb(210, 222, 255)),
+        _ => (dark_edit, rgb(24, 40, 84)),
     }
 }
 
@@ -2932,6 +2952,26 @@ mode_bg = "#82aaff"
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(theme.diff_edit, Color::Rgb(0x7a, 0xa2, 0xf7));
         assert_eq!(theme.diff_edit_bg, Color::Rgb(0x1f, 0x2a, 0x48));
+    }
+
+    #[test]
+    fn default_edit_colors_stay_visible_on_a_named_panel_bg() {
+        let dir = tempdir().unwrap();
+        for (named, light) in [("black", false), ("white", true)] {
+            let body = sample_local_theme_body("")
+                .replace("panel_bg = \"#011627\"", &format!("panel_bg = \"{named}\""));
+            let path = write_local_theme(dir.path(), "named", &body);
+            let (theme, _) = load_local_theme_from_path(&path).unwrap();
+            assert_ne!(theme.diff_edit, theme.diff_edit_bg, "{named}");
+            assert_eq!(
+                theme.diff_edit_bg,
+                if light {
+                    rgb(210, 222, 255)
+                } else {
+                    rgb(24, 40, 84)
+                }
+            );
+        }
     }
 
     #[test]

@@ -1043,6 +1043,7 @@ fn main() -> anyhow::Result<()> {
                                 app.set_message(format!("Opened {}{hint}", target.label));
                             }
                             Ok(Ok(EditorOutcome::Finished)) => {
+                                app.local_edit_editor_returned(&target);
                                 if app.input_mode == InputMode::MergeConflict {
                                     // Merge-view edit: re-parse the file so
                                     // hand-resolved markers disappear and

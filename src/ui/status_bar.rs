@@ -564,7 +564,8 @@ fn mode_hints(app: &App) -> Vec<Hint> {
         ],
         InputMode::Normal => vec![
             hint("j/k move"),
-            hint("]/[ change"),
+            hint("n/N change"),
+            hint("]/[ hunk"),
             hint("}/{ file"),
             hint("h/l pan"),
             hint("c comment"),
