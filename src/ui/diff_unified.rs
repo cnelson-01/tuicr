@@ -2138,12 +2138,21 @@ mod remote_comments_snapshot_tests {
                     let buffer = draw_diff(&mut app);
                     let inner = app.diff_inner_area.unwrap();
                     let cursor_bg = app.theme.cursor_line_bg;
+                    // The side-by-side divider keeps its change-block
+                    // connector on the cursor row.
+                    let divider = (mode == DiffViewMode::SideBySide).then(|| {
+                        let start = app.pane_geometry(inner, LineSide::Old).content_x_end;
+                        start..start + 3
+                    });
                     let mut cursor_rows = 0;
                     for (row, &idx) in app.diff_row_to_annotation.iter().enumerate() {
                         if idx == indices[0] {
                             cursor_rows += 1;
                             let y = inner.y + row as u16;
                             for x in inner.x..inner.right() {
+                                if divider.as_ref().is_some_and(|d| d.contains(&x)) {
+                                    continue;
+                                }
                                 assert_eq!(
                                     buffer[(x, y)].bg,
                                     cursor_bg,

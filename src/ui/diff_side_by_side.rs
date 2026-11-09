@@ -27,6 +27,22 @@ use crate::ui::text_utils::{
 };
 use crate::vcs::git::calculate_gap;
 
+/// How a code row joins its two columns across the divider.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum SbsLink {
+    /// Unchanged on both sides: the plain divider.
+    #[default]
+    None,
+    /// A removed line beside the line that replaced it.
+    Both,
+    /// A removed line with nothing beside it. `fold` is set on the first
+    /// such row of a change block, where the new side closes.
+    OldOnly { fold: bool },
+    /// An added line with nothing beside it; `fold` likewise, for the old
+    /// side.
+    NewOnly { fold: bool },
+}
+
 #[derive(Clone, Default)]
 struct SbsRowMeta {
     left_content: Vec<Span<'static>>,
@@ -35,6 +51,7 @@ struct SbsRowMeta {
     right_prefix: Vec<Span<'static>>,
     left_pad_style: Style,
     right_pad_style: Style,
+    link: SbsLink,
 }
 
 type WrappedRows = Vec<Vec<Span<'static>>>;
@@ -396,6 +413,93 @@ fn paint_sbs_clip_markers(
             }
             if len > scroll_x + w {
                 mark(x + w as u16 - 1, y, '›');
+            }
+        }
+    }
+}
+
+/// Join each change block across the divider, the way an IDE's diff gutter
+/// does. A removed line and its replacement share a band: the old side's
+/// colour up to the centre, the new side's from there on. Where one side has
+/// no line, the other's colour stops at the centre, so the blank rows read as
+/// padding and not as blank lines.
+///
+/// The first of those blank rows is where the block folds. There the longer
+/// side's band steps across the divider and thins into a rule along the top
+/// of the blank row, as wide as the shorter side: the gap between two of its
+/// lines that the rest of the block collapses into.
+///
+/// Only block elements are used, which terminals draw edge to edge.
+#[allow(clippy::too_many_arguments)]
+fn paint_sbs_connectors(
+    frame: &mut Frame,
+    inner: Rect,
+    theme: &Theme,
+    sbs_meta: &std::collections::HashMap<usize, SbsRowMeta>,
+    scroll_offset: usize,
+    row_heights: &[usize],
+    lw: usize,
+    (left_width, right_width): (usize, usize),
+) {
+    let right_edge = inner.x + inner.width;
+    // The three divider cells: `x`, the centre `x + 1`, and `x + 2`.
+    let x = inner.x + crate::app::sbs_left_gutter(lw) + left_width as u16;
+    if x + 2 >= right_edge {
+        return;
+    }
+    // A rule spans its side's gutter and column. The old side's leaves the
+    // cursor-indicator cell alone.
+    let old_rule = (inner.x + 1)..x;
+    let new_side_end = inner.x + crate::app::sbs_overhead(lw) + (left_width + right_width) as u16;
+    let new_rule = (x + 3)..new_side_end.min(right_edge);
+
+    let bottom = inner.y + inner.height;
+    let buf = frame.buffer_mut();
+    let mut y = inner.y;
+    for (i, &height) in row_heights.iter().enumerate() {
+        let rows = y..(y + height as u16).min(bottom);
+        y = rows.end;
+        let Some(meta) = sbs_meta.get(&(scroll_offset + i)) else {
+            continue;
+        };
+        // Each side's colour follows its own row background, so a line tinted
+        // as a local edit gets a band to match.
+        let old = theme.sbs_link_color(meta.left_pad_style.bg, false);
+        let new = theme.sbs_link_color(meta.right_pad_style.bg, true);
+        for (k, y) in rows.enumerate() {
+            // A wrapped line folds on its first row only.
+            let first_row = k == 0;
+            match meta.link {
+                SbsLink::None => {}
+                SbsLink::Both => {
+                    buf[(x, y)].set_bg(old);
+                    buf[(x + 1, y)].set_char('▌').set_fg(old).set_bg(new);
+                    buf[(x + 2, y)].set_bg(new);
+                }
+                SbsLink::OldOnly { fold: true } if first_row => {
+                    buf[(x, y)].set_bg(old);
+                    buf[(x + 1, y)].set_char('▛').set_fg(old);
+                    buf[(x + 2, y)].set_char('▀').set_fg(old);
+                    for rule_x in new_rule.clone() {
+                        buf[(rule_x, y)].set_char('▔').set_fg(old);
+                    }
+                }
+                SbsLink::OldOnly { .. } => {
+                    buf[(x, y)].set_bg(old);
+                    buf[(x + 1, y)].set_char('▌').set_fg(old);
+                }
+                SbsLink::NewOnly { fold: true } if first_row => {
+                    for rule_x in old_rule.clone() {
+                        buf[(rule_x, y)].set_char('▔').set_fg(new);
+                    }
+                    buf[(x, y)].set_char('▀').set_fg(new);
+                    buf[(x + 1, y)].set_char('▜').set_fg(new);
+                    buf[(x + 2, y)].set_bg(new);
+                }
+                SbsLink::NewOnly { .. } => {
+                    buf[(x + 1, y)].set_char('▐').set_fg(new);
+                    buf[(x + 2, y)].set_bg(new);
+                }
             }
         }
     }
@@ -1330,6 +1434,20 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
         app,
     );
 
+    // Change-block connectors in the divider: after the cursor-line tint, so
+    // a band runs unbroken through the cursor row, and before the caret that
+    // shares its last cell.
+    paint_sbs_connectors(
+        frame,
+        inner,
+        &app.theme,
+        &sbs_meta,
+        scroll_offset,
+        &row_heights,
+        lw,
+        (left_width, right_width),
+    );
+
     // Move the `▶` caret onto the active side for the cursor row.
     paint_sbs_active_side_caret(frame, inner, app, lw, left_width, &row_heights);
 
@@ -1454,6 +1572,7 @@ fn render_sbs_expanded_context_line(
         right_prefix,
         left_pad_style: ec_style,
         right_pad_style: ec_style,
+        link: SbsLink::None,
     };
     mark_local_edit(
         &mut meta,
@@ -1539,8 +1658,13 @@ fn render_hunk_lines_side_by_side(
                 i = lines_processed;
             }
             LineOrigin::Addition => {
+                // A run of additions with nothing removed (additions that
+                // follow deletions are paired above). The old side folds at
+                // the run's first line.
+                let starts_block = i == 0 || hunk_lines[i - 1].origin != LineOrigin::Addition;
                 let (new_line_idx, cursor_info) = render_standalone_addition_side_by_side(
                     diff_line,
+                    starts_block,
                     line_comments,
                     ctx,
                     file_idx,
@@ -1655,6 +1779,7 @@ fn render_context_line_side_by_side(
             right_prefix: rp,
             left_pad_style: ctx_style,
             right_pad_style: ctx_style,
+            link: SbsLink::None,
         };
         mark_local_edit(
             &mut meta,
@@ -1842,6 +1967,18 @@ fn render_deletion_addition_pair_side_by_side(
                 right_prefix: rp,
                 left_pad_style: left_pad,
                 right_pad_style: right_pad,
+                // Offsets past the shorter side are one-sided; the first of
+                // them is where that side closes.
+                link: match (del_opt, add_opt) {
+                    (Some(_), Some(_)) => SbsLink::Both,
+                    (Some(_), None) => SbsLink::OldOnly {
+                        fold: offset == add_count,
+                    },
+                    (None, Some(_)) => SbsLink::NewOnly {
+                        fold: offset == del_count,
+                    },
+                    (None, None) => SbsLink::None,
+                },
             };
             mark_local_edit(
                 &mut meta,
@@ -1920,6 +2057,7 @@ fn render_deletion_addition_pair_side_by_side(
 /// Returns (new_line_idx, optional cursor info for inline comment input)
 fn render_standalone_addition_side_by_side(
     diff_line: &crate::model::DiffLine,
+    starts_block: bool,
     line_comments: &std::collections::HashMap<u32, Vec<crate::model::Comment>>,
     ctx: &SideBySideContext,
     file_idx: usize,
@@ -1980,6 +2118,7 @@ fn render_standalone_addition_side_by_side(
             right_prefix: rp,
             left_pad_style: Style::default(),
             right_pad_style: right_pad,
+            link: SbsLink::NewOnly { fold: starts_block },
         };
         mark_local_edit(
             &mut meta,
@@ -2877,7 +3016,8 @@ mod remote_comments_side_by_side_snapshot_tests {
         let divider = left_start + content_width as u16 + 1;
         let right_start = left_start + content_width as u16 + lw as u16 + 5;
         assert_eq!(char_at(&buf, left_start, row), "L");
-        assert_eq!(char_at(&buf, divider, row), "│");
+        // A changed pair: the divider column holds the seam of its band.
+        assert_eq!(char_at(&buf, divider, row), "▌");
         assert_eq!(char_at(&buf, right_start, row), "R");
 
         app.enter_comment_mode(false, Some((1, LineSide::New)));
@@ -2918,11 +3058,13 @@ mod remote_comments_side_by_side_snapshot_tests {
             "expected ≥2 wrapped rows, got {}",
             rows_with_l.len()
         );
+        // The pair is one changed line on each side, so every wrapped row
+        // carries the seam of its band in the divider column.
         for y in &rows_with_l {
             let glyph = char_at(&buf, divider_glyph_x as u16, *y);
             assert_eq!(
-                glyph, "│",
-                "expected │ at col {divider_glyph_x} on row {y}, got {glyph:?}"
+                glyph, "▌",
+                "expected ▌ at col {divider_glyph_x} on row {y}, got {glyph:?}"
             );
         }
     }
@@ -2954,10 +3096,19 @@ mod remote_comments_side_by_side_snapshot_tests {
             let right: String = (right_content_start..right_content_end)
                 .map(|x| char_at(&buf, x as u16, y))
                 .collect();
-            assert!(
-                right.trim().is_empty(),
-                "right column should be blank on wrapped L row {y}, got {right:?}"
-            );
+            // The deletion has no counterpart: its first row draws the fold
+            // rule across the new side, the rows under it stay blank.
+            if checked == 1 {
+                assert!(
+                    right.chars().all(|c| c == '▔'),
+                    "right column should hold the fold rule on row {y}, got {right:?}"
+                );
+            } else {
+                assert!(
+                    right.trim().is_empty(),
+                    "right column should be blank on wrapped L row {y}, got {right:?}"
+                );
+            }
         }
         assert!(
             checked >= 2,
@@ -3058,12 +3209,241 @@ mod remote_comments_side_by_side_snapshot_tests {
         let (left_w, right_w) = app.sbs_column_widths(118);
         assert!(left_w > right_w * 2, "{left_w} vs {right_w}");
         let divider = 1 + crate::app::sbs_left_gutter(lw) + left_w as u16 + 1;
-        assert_eq!(char_at(&buf, divider, row), "│");
+        assert_eq!(char_at(&buf, divider, row), "▌");
         let right_start = divider + 1 + lw as u16 + 3;
         let right_text: String = (right_start..right_start + 7)
             .map(|x| char_at(&buf, x, row))
             .collect();
         assert_eq!(right_text, "NEWSIDE");
+    }
+
+    /// One hunk from `(origin, text)` rows, numbered from line 1 on each side.
+    fn diff_file_with_lines(rows: &[(LineOrigin, &str)]) -> DiffFile {
+        let (mut old_no, mut new_no) = (0u32, 0u32);
+        let lines: Vec<DiffLine> = rows
+            .iter()
+            .map(|&(origin, text)| {
+                let old_lineno = (origin != LineOrigin::Addition).then(|| {
+                    old_no += 1;
+                    old_no
+                });
+                let new_lineno = (origin != LineOrigin::Deletion).then(|| {
+                    new_no += 1;
+                    new_no
+                });
+                DiffLine {
+                    origin,
+                    content: text.to_string(),
+                    old_lineno,
+                    new_lineno,
+                    raw_content: None,
+                    highlighted_spans: None,
+                }
+            })
+            .collect();
+        let hunks = vec![DiffHunk {
+            header: format!("@@ -1,{old_no} +1,{new_no} @@"),
+            lines,
+            old_start: 1,
+            old_count: old_no,
+            new_start: 1,
+            new_count: new_no,
+        }];
+        let content_hash = DiffFile::compute_content_hash(&hunks);
+        DiffFile {
+            old_path: Some(PathBuf::from("src/lib.rs")),
+            new_path: Some(PathBuf::from("src/lib.rs")),
+            status: FileStatus::Modified,
+            hunks,
+            is_binary: false,
+            is_too_large: false,
+            is_commit_message: false,
+            content_hash,
+        }
+    }
+
+    /// The divider's three cells on `row`, and the x of the first.
+    fn divider_cells(app: &App, buf: &Buffer, width: u16, row: u16) -> (u16, String) {
+        let (left_w, _) = app.sbs_column_widths(width - 2);
+        let x = 1 + crate::app::sbs_left_gutter(app.lineno_width()) + left_w as u16;
+        (x, (x..x + 3).map(|cx| char_at(buf, cx, row)).collect())
+    }
+
+    /// Text of `row` over the old side (gutter and column) and the new side.
+    fn side_texts(app: &App, buf: &Buffer, width: u16, row: u16) -> (String, String) {
+        let (left_w, right_w) = app.sbs_column_widths(width - 2);
+        let (x, _) = divider_cells(app, buf, width, row);
+        let new_end = 1 + crate::app::sbs_overhead(app.lineno_width()) + (left_w + right_w) as u16;
+        let text = |range: std::ops::Range<u16>| range.map(|cx| char_at(buf, cx, row)).collect();
+        (text(2..x), text(x + 3..new_end))
+    }
+
+    #[test]
+    fn should_join_a_changed_pair_across_the_divider() {
+        let mut app = make_pr_app();
+        app.diff_files = vec![diff_file_with_lines(&[
+            (LineOrigin::Context, "BEFORE"),
+            (LineOrigin::Deletion, "OLDSIDE"),
+            (LineOrigin::Addition, "NEWSIDE"),
+        ])];
+        app.set_diff_wrap(false);
+        app.rebuild_annotations();
+
+        let buf = draw_sbs(&mut app, 120, 20);
+
+        let row = row_containing(&buf, "OLDSIDE");
+        let (x, cells) = divider_cells(&app, &buf, 120, row);
+        let old = app.theme.sbs_link_color(Some(app.theme.diff_del_bg), false);
+        let new = app.theme.sbs_link_color(Some(app.theme.diff_add_bg), true);
+        assert_eq!(cells, " ▌ ");
+        assert_eq!(buf[(x, row)].bg, old);
+        assert_eq!((buf[(x + 1, row)].fg, buf[(x + 1, row)].bg), (old, new));
+        assert_eq!(buf[(x + 2, row)].bg, new);
+        // Equal sides: nothing folds.
+        let (old_text, new_text) = side_texts(&app, &buf, 120, row);
+        assert!(!old_text.contains('▔') && !new_text.contains('▔'));
+
+        // An unchanged row keeps the plain divider.
+        let context = row_containing(&buf, "BEFORE");
+        let (cx, cells) = divider_cells(&app, &buf, 120, context);
+        assert_eq!(cells, " │ ");
+        assert_ne!(buf[(cx, context)].bg, old);
+    }
+
+    #[test]
+    fn should_fold_extra_deletions_into_a_rule_on_the_new_side() {
+        let mut app = make_pr_app();
+        app.diff_files = vec![diff_file_with_lines(&[
+            (LineOrigin::Deletion, "GONE1"),
+            (LineOrigin::Deletion, "GONE2"),
+            (LineOrigin::Deletion, "GONE3"),
+            (LineOrigin::Addition, "KEPT1"),
+            (LineOrigin::Context, "AFTER"),
+        ])];
+        app.set_diff_wrap(false);
+        app.rebuild_annotations();
+
+        let buf = draw_sbs(&mut app, 120, 20);
+        let old = app.theme.sbs_link_color(Some(app.theme.diff_del_bg), false);
+
+        // The paired row is a plain band.
+        let paired = row_containing(&buf, "GONE1");
+        assert_eq!(divider_cells(&app, &buf, 120, paired).1, " ▌ ");
+
+        // The new side ends above GONE2: the old band steps across and
+        // becomes a rule over the whole new side.
+        let fold = row_containing(&buf, "GONE2");
+        let (x, cells) = divider_cells(&app, &buf, 120, fold);
+        assert_eq!(cells, " ▛▀");
+        assert_eq!(buf[(x, fold)].bg, old);
+        assert_eq!(buf[(x + 1, fold)].fg, old);
+        let (_, new_text) = side_texts(&app, &buf, 120, fold);
+        assert!(new_text.chars().all(|c| c == '▔'), "{new_text:?}");
+        assert_eq!(buf[(x + 3, fold)].fg, old);
+
+        // Later rows of the block hug the old side: no second rule.
+        let rest = row_containing(&buf, "GONE3");
+        assert_eq!(divider_cells(&app, &buf, 120, rest).1, " ▌ ");
+        let (_, new_text) = side_texts(&app, &buf, 120, rest);
+        assert!(new_text.trim().is_empty(), "{new_text:?}");
+        assert_ne!(buf[(x + 2, rest)].bg, old);
+    }
+
+    #[test]
+    fn should_fold_extra_additions_into_a_rule_on_the_old_side() {
+        let mut app = make_pr_app();
+        app.diff_files = vec![diff_file_with_lines(&[
+            (LineOrigin::Context, "BEFORE"),
+            (LineOrigin::Addition, "FRESH1"),
+            (LineOrigin::Addition, "FRESH2"),
+            (LineOrigin::Context, "BETWEEN"),
+            (LineOrigin::Deletion, "GONE1"),
+            (LineOrigin::Addition, "KEPT1"),
+            (LineOrigin::Addition, "KEPT2"),
+        ])];
+        app.set_diff_wrap(false);
+        app.rebuild_annotations();
+
+        let buf = draw_sbs(&mut app, 120, 20);
+        let new = app.theme.sbs_link_color(Some(app.theme.diff_add_bg), true);
+
+        // A pure insertion folds on its first row.
+        let fold = row_containing(&buf, "FRESH1");
+        let (x, cells) = divider_cells(&app, &buf, 120, fold);
+        assert_eq!(cells, "▀▜ ");
+        assert_eq!(buf[(x + 2, fold)].bg, new);
+        let (old_text, _) = side_texts(&app, &buf, 120, fold);
+        assert!(old_text.chars().all(|c| c == '▔'), "{old_text:?}");
+        assert_eq!(buf[(x - 1, fold)].fg, new);
+        // The cursor-indicator cell stays clear of the rule.
+        assert_ne!(char_at(&buf, 1, fold), "▔");
+
+        let rest = row_containing(&buf, "FRESH2");
+        assert_eq!(divider_cells(&app, &buf, 120, rest).1, " ▐ ");
+        let (old_text, _) = side_texts(&app, &buf, 120, rest);
+        assert!(old_text.trim().is_empty(), "{old_text:?}");
+
+        // After a paired row, the fold lands on the first unpaired addition.
+        assert_eq!(
+            divider_cells(&app, &buf, 120, row_containing(&buf, "KEPT1")).1,
+            " ▌ "
+        );
+        assert_eq!(
+            divider_cells(&app, &buf, 120, row_containing(&buf, "KEPT2")).1,
+            "▀▜ "
+        );
+    }
+
+    #[test]
+    fn should_fold_a_wrapped_line_on_its_first_row_only() {
+        let mut app = make_pr_app();
+        app.diff_files = vec![diff_file_with_standalone_deletion(&"L".repeat(200))];
+        app.set_diff_wrap(true);
+        app.rebuild_annotations();
+
+        let buf = draw_sbs(&mut app, 160, 20);
+
+        let rows: Vec<u16> = (0..buf.area.height)
+            .filter(|&y| {
+                let row: String = (0..buf.area.width).map(|x| char_at(&buf, x, y)).collect();
+                row.contains("LLLLLLLLLL")
+            })
+            .collect();
+        assert!(rows.len() >= 2, "expected wrapped rows, got {rows:?}");
+        assert_eq!(divider_cells(&app, &buf, 160, rows[0]).1, " ▛▀");
+        for &y in &rows[1..] {
+            assert_eq!(divider_cells(&app, &buf, 160, y).1, " ▌ ");
+        }
+    }
+
+    #[test]
+    fn should_keep_the_connector_on_the_cursor_row() {
+        let mut app = make_pr_app();
+        app.diff_files = vec![diff_file_with_pair("OLDSIDE", "NEWSIDE")];
+        app.set_diff_wrap(false);
+        app.rebuild_annotations();
+        app.diff_state.cursor_line = app
+            .line_annotations
+            .iter()
+            .position(|a| matches!(a, crate::app::AnnotatedLine::SideBySideLine { .. }))
+            .expect("code row");
+
+        let buf = draw_sbs(&mut app, 120, 20);
+
+        let row = row_containing(&buf, "OLDSIDE");
+        let (x, _) = divider_cells(&app, &buf, 120, row);
+        // The row is tinted as the cursor line; the band is drawn over it.
+        assert_eq!(buf[(x - 1, row)].bg, app.theme.cursor_line_bg);
+        assert_eq!(
+            buf[(x, row)].bg,
+            app.theme.sbs_link_color(Some(app.theme.diff_del_bg), false)
+        );
+        // The caret for the new side sits on the band's last cell.
+        assert_eq!(char_at(&buf, x + 2, row), "▶");
+        assert_eq!(
+            buf[(x + 2, row)].bg,
+            app.theme.sbs_link_color(Some(app.theme.diff_add_bg), true)
+        );
     }
 
     #[test]

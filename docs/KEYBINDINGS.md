@@ -72,6 +72,15 @@ Long lines don't wrap by default. Both side-by-side columns pan together
 a column's right edge means the line continues past it, and a `‹` in the
 gutter means text has scrolled off the left. File and hunk headers stay put.
 
+In side-by-side view the divider joins each change across the two columns. A
+removed line and the line that replaced it share a band, the old side's colour
+meeting the new side's at the centre. When one side of a change has more lines
+than the other, the shorter side is padded with blank rows. The first of them
+is where the change folds: the longer side's band steps across the divider and
+runs on as a thin rule over the blank row. The rule sits between the two lines
+on that side where the extra lines were removed or will be added. On the rows
+below it the band stays on its own side.
+
 To give the code more room:
 
 - Drag the `│` divider, or use `<leader><` / `<leader>>`, to give the side

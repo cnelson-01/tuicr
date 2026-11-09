@@ -22,6 +22,11 @@ splitter and the tool-window edges, and hide every tool window to read a diff.
       gutter. Indent them to the content column
 - [x] No intra-line (word-level) change highlighting. Paired deletion and
       addition lines should emphasize just the tokens that differ, in both views
+- [x] Nothing links a change across the two columns, and the blank rows that
+      pad the shorter side look like blank lines. Draw a connector in the
+      divider: a band joining each removed line to its replacement, and a
+      rule across the shorter side at the point the rest of the change folds
+      into
 - [x] The side-by-side split is fixed at 50/50. Add keys to move it, a
       `:set split N` command, a reset key, and mouse drag on the divider
 - [x] The file tree is fixed at 20% width. Add keys to resize it, a

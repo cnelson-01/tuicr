@@ -192,6 +192,20 @@ impl Theme {
         }
     }
 
+    /// Colour of the side-by-side connector beside a row whose column
+    /// background is `row_bg`: that background pushed toward the change
+    /// accent, far enough to read as a shape of its own next to the row. A
+    /// row tinted as a local edit takes the edit accent. Palette (non-RGB)
+    /// themes get the bare accent.
+    pub fn sbs_link_color(&self, row_bg: Option<Color>, addition: bool) -> Color {
+        let (plain_bg, accent) = match (row_bg, addition) {
+            (Some(bg), _) if bg == self.diff_edit_bg => (bg, self.diff_edit),
+            (_, true) => (self.diff_add_bg, self.diff_add),
+            (_, false) => (self.diff_del_bg, self.diff_del),
+        };
+        blend(row_bg.unwrap_or(plain_bg), accent, 45)
+    }
+
     /// The added-token emphasis of `intraline_bg` on a line changed in
     /// `$EDITOR`: the edit background pushed toward the edit accent, so the
     /// row reads as one colour while still showing which words differ.
@@ -2933,6 +2947,40 @@ mode_bg = "#82aaff"
                 "{name}: invisible marker"
             );
         }
+    }
+
+    #[test]
+    fn side_by_side_connector_stands_apart_in_every_bundled_theme() {
+        for (name, arg) in ThemeArg::choices() {
+            let theme = resolve_theme(*arg);
+            for (addition, row_bgs) in [
+                (true, [theme.diff_add_bg, theme.syntax_add_bg]),
+                (false, [theme.diff_del_bg, theme.syntax_del_bg]),
+            ] {
+                for row_bg in row_bgs {
+                    let link = theme.sbs_link_color(Some(row_bg), addition);
+                    assert_ne!(link, row_bg, "{name}: connector merges into its row");
+                    assert_ne!(
+                        link, theme.panel_bg,
+                        "{name}: connector merges into the panel"
+                    );
+                }
+            }
+            assert_ne!(
+                theme.sbs_link_color(Some(theme.diff_edit_bg), true),
+                theme.sbs_link_color(Some(theme.diff_add_bg), true),
+                "{name}: an edited line's connector should take the edit accent"
+            );
+        }
+    }
+
+    #[test]
+    fn side_by_side_connector_uses_the_bare_accent_without_rgb() {
+        let mut theme = Theme::dark();
+        theme.diff_add = Color::Green;
+        theme.diff_del = Color::Red;
+        assert_eq!(theme.sbs_link_color(None, true), Color::Green);
+        assert_eq!(theme.sbs_link_color(Some(Color::Reset), false), Color::Red);
     }
 
     #[test]
