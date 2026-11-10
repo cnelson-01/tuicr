@@ -533,6 +533,7 @@ fn mode_hints(app: &App) -> Vec<Hint> {
             hint("v revert"),
             hint("x reset"),
             hint("t tag"),
+            hint("F fetch"),
             hint("/ filter"),
             hint("esc diff"),
             actions(),

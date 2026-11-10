@@ -223,6 +223,8 @@ pub enum Action {
     SelectorTag,
     /// Copy the cursor commit's full hash (`y`).
     SelectorCopyHash,
+    /// Fetch every remote and refresh the log (`F`).
+    SelectorFetch,
     /// Interactive rebase from the cursor commit (`i`).
     SelectorInteractiveRebase,
 
@@ -818,6 +820,7 @@ fn map_commit_select_mode_with_q_quits(key: KeyEvent, q_quits: bool) -> Action {
         (KeyCode::Char('x'), KeyModifiers::NONE) => Action::SelectorReset,
         (KeyCode::Char('t'), KeyModifiers::NONE) => Action::SelectorTag,
         (KeyCode::Char('y'), KeyModifiers::NONE) => Action::SelectorCopyHash,
+        (KeyCode::Char('F'), _) => Action::SelectorFetch,
         (KeyCode::Char('i'), KeyModifiers::NONE) => Action::SelectorInteractiveRebase,
         (KeyCode::Char('p'), KeyModifiers::CONTROL) => Action::OpenPalette,
         (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
@@ -858,6 +861,7 @@ pub fn map_log_pane_mode(key: KeyEvent, leader_key: char, q_quits: bool) -> Acti
         (KeyCode::Char('x'), KeyModifiers::NONE) => Action::SelectorReset,
         (KeyCode::Char('t'), KeyModifiers::NONE) => Action::SelectorTag,
         (KeyCode::Char('y'), KeyModifiers::NONE) => Action::SelectorCopyHash,
+        (KeyCode::Char('F'), _) => Action::SelectorFetch,
         (KeyCode::Char('i'), KeyModifiers::NONE) => Action::SelectorInteractiveRebase,
         (KeyCode::Char('/'), _) => Action::BeginTargetFilter,
         (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
@@ -1142,6 +1146,13 @@ mod tests {
             map_changes_pane_mode(key(KeyCode::Char('f')), DEFAULT_LEADER_KEY, false),
             Action::FindInFiles
         );
+        // `F` fetches from the log pane and the selector.
+        let shift_f = KeyEvent::new(KeyCode::Char('F'), KeyModifiers::SHIFT);
+        assert_eq!(
+            map_log_pane_mode(shift_f, DEFAULT_LEADER_KEY, false),
+            Action::SelectorFetch
+        );
+        assert_eq!(map_commit_select_mode(shift_f), Action::SelectorFetch);
         // The log pane keeps `f` for fixup.
         assert_eq!(
             map_log_pane_mode(key(KeyCode::Char('f')), DEFAULT_LEADER_KEY, false),

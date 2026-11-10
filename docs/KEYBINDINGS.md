@@ -549,6 +549,7 @@ with `<leader>+` / `<leader>-`, `:set logheight N`, or `log_height = N`.
 | `x` | Reset the branch to the cursor commit: opens `:reset ` for `soft`, `mixed` (default), or `hard` (asks first) |
 | `t` | Tag the cursor commit: opens `:tag ` for the name |
 | `y` | Copy the cursor commit's full hash |
+| `F` | Fetch every remote (as `:fetch`), then refresh the log so the new remote-tracking commits show |
 | `/` | Filter the log (see below); `Esc` clears an active filter |
 | `Tab` / `Shift-Tab`, `<leader>k` / `<leader>j` | Move focus between the pane and the other panels |
 | `Esc` | Return focus to the diff |
@@ -667,6 +668,7 @@ first, with children always above their parents so the graph stays coherent.
 | `a` | Abort the in-progress merge / cherry-pick / rebase / revert |
 | `B` | Open the branch picker |
 | `v` / `R` / `D` / `f` / `x` / `t` / `y` | Revert / reword / drop / fixup / reset to / tag / copy hash of the cursor commit (as in the log pane) |
+| `F` | Local tab: fetch every remote (as `:fetch`) and refresh the list |
 | `/` | Local tab: filter the log by message / `author:` / `path:` (see the log pane section); Pull Requests tab: filter the loaded PR rows |
 | `r` | In Pull Requests tab, toggle all open PRs / PRs requesting your review |
 | `a` | In Sessions tab, show or hide saved reviews holding no progress |

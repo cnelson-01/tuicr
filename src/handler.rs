@@ -2063,6 +2063,7 @@ fn handle_local_target_action(app: &mut App, action: Action) {
         Action::SelectorReset => app.start_reset_prompt(),
         Action::SelectorTag => app.start_tag_prompt(),
         Action::SelectorCopyHash => app.copy_cursor_commit_hash(),
+        Action::SelectorFetch => app.start_remote_op(RemoteOp::Fetch),
         Action::SelectorInteractiveRebase => app.open_rebase_editor_at_cursor(),
         Action::BeginTargetFilter => app.begin_commit_filter(),
         _ => {}
@@ -2342,6 +2343,7 @@ fn handle_log_pane_action(app: &mut App, action: Action) {
         Action::SelectorReset => app.start_reset_prompt(),
         Action::SelectorTag => app.start_tag_prompt(),
         Action::SelectorCopyHash => app.copy_cursor_commit_hash(),
+        Action::SelectorFetch => app.start_remote_op(RemoteOp::Fetch),
         Action::SelectorInteractiveRebase => app.open_rebase_editor_at_cursor(),
         // Esc clears an active filter first; a second Esc leaves the pane.
         Action::ExitMode => {

@@ -635,6 +635,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  F         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Fetch every remote (as `:fetch`) and refresh the log"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  a         ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),

@@ -214,6 +214,7 @@ pub const ENTRIES: &[Entry] = &[
     e(Log, "Log", "Enter", "Load the commit (or picked range)", Keys("<CR>")),
     e(Log, "Log", "Space", "Pick a commit for a range", Keys("<Space>")),
     e(Log, "Log", "/", "Filter: text, author:, path:, branch:", Keys("/")),
+    e(Log, "Log", "F", "Fetch every remote", Keys("F")),
     e(Global, "Log", ":history", "Commits that touched this file", Cmd("history")),
     e(Log, "Commit", "y", "Copy the commit hash", Keys("y")),
     e(Log, "Commit", "c", "Check out the branch / commit", Keys("c")),
