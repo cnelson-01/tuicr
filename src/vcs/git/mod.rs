@@ -477,8 +477,10 @@ impl VcsBackend for GitBackend {
     }
 
     fn main_track_tip(&self) -> Option<String> {
-        // Both backends ask the CLI, like `list_branches` below.
-        cli::main_track_tip(&self.info().root_path)
+        match self {
+            Self::Libgit2(backend) => backend.main_track_tip(),
+            Self::Cli(backend) => cli::main_track_tip(&backend.info().root_path),
+        }
     }
 
     fn list_branches(&self) -> Result<Vec<BranchInfo>> {

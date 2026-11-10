@@ -83,13 +83,16 @@ impl App {
         let commit_limit = initial_commit_limit();
         let commits = self.fetch_history(0, commit_limit).unwrap_or_default();
         let highlighter = self.theme.syntax_highlighter();
-        let change_status = Self::get_change_status_with_ignore(
+        let probed = Self::get_change_status_with_ignore(
             self.vcs.as_ref(),
             &self.vcs_info.root_path,
             highlighter,
             self.path_filter.as_deref(),
-        )
-        .unwrap_or_default();
+        );
+        if let Ok(status) = probed {
+            self.remember_change_status(status);
+        }
+        let change_status = probed.unwrap_or_default();
         let merge_conflicts = self.vcs.get_merge_conflicts().ok().flatten();
 
         let has_more = commits.len() >= commit_limit;

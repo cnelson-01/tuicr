@@ -197,6 +197,10 @@ impl VcsBackend for Libgit2Backend {
         context::file_line_count(&self.repo, file_path, file_status, ref_commit)
     }
 
+    fn main_track_tip(&self) -> Option<String> {
+        repository::main_track_tip(&self.repo)
+    }
+
     fn get_recent_commits(&self, offset: usize, limit: usize) -> Result<Vec<CommitInfo>> {
         let git_commits = repository::get_recent_commits(&self.repo, offset, limit)?;
         Ok(git_commits

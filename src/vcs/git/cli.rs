@@ -25,6 +25,7 @@ use crate::vcs::{
     container_file_paths, enhance_with_full_file_highlight, slice_context_lines, tabify,
 };
 
+use super::repository::MAIN_BRANCH_NAMES;
 use super::{
     GitRepoMode, RevisionExpression, git_bool_config_enabled, git_command_error,
     git_fsmonitor_config_enabled, run_git_command,
@@ -1200,19 +1201,9 @@ pub(super) fn search_commits(
     Ok(commits)
 }
 
-/// Branch names the log treats as the repository's main line, in order of
-/// preference.
-const MAIN_BRANCH_NAMES: [&str; 2] = ["main", "master"];
-
-/// Where the log's main track starts (`VcsBackend::main_track_tip`).
-///
-/// The anchor is local `main`, else local `master`, else the same names on
-/// `origin`, else on any other remote. When the anchor is a local branch
-/// and its remote-tracking twin is ahead of it along first parents (a fetch
-/// that has not been pulled yet), the track starts at the remote tip, so
-/// the new commits sit on the main track rather than beside it. A twin that
-/// diverged, or that reaches the local tip only through a merge's second
-/// parent, does not move the start.
+/// Where the log's main track starts (`VcsBackend::main_track_tip`), for
+/// the CLI backend. The rule is `repository::main_track_tip`'s, which the
+/// libgit2 backend runs in process.
 pub(super) fn main_track_tip(workdir: &Path) -> Option<String> {
     let output = run_git_command(
         workdir,
@@ -2478,6 +2469,14 @@ mod tests {
             write_file(workdir, name, name);
             git(workdir, &["add", "."]);
             git(workdir, &["commit", "-m", name]);
+        };
+        // Both backends answer through this, so each case below also holds
+        // the in-process rule to the CLI one.
+        let main_track_tip = |workdir: &Path| -> Option<String> {
+            let via_cli = super::main_track_tip(workdir);
+            let repo = git2::Repository::open(workdir).expect("open");
+            assert_eq!(repository::main_track_tip(&repo), via_cli);
+            via_cli
         };
         // given a repository with neither main nor master
         git(workdir, &["init", "-b", "trunk"]);

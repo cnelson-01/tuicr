@@ -459,6 +459,7 @@ impl App {
 
             app.has_more_commit = commits.len() >= commit_limit;
             app.visible_commit_count = app.commit_list.len();
+            app.remember_change_status(change_status);
             Ok(app)
         }
     }
@@ -711,6 +712,10 @@ impl App {
             find: FindState::default(),
             blame: BlameState::default(),
             remote_op: None,
+            background_status_probe: false,
+            last_change_status: None,
+            status_probe_rx: None,
+            status_probe_pending: None,
             pending_history: None,
             commit_order: CommitOrder::default(),
             commit_selection_start: CommitSelectionStart::default(),

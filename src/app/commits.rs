@@ -171,19 +171,37 @@ impl App {
             self.saved_inline_selection = self.commit_selection_range;
         }
 
-        let highlighter = self.theme.syntax_highlighter();
-        let change_status = Self::get_change_status_with_ignore(
-            self.vcs.as_ref(),
-            &self.vcs_info.root_path,
-            highlighter,
-            self.path_filter.as_deref(),
-        )?;
+        let commit_limit = initial_commit_limit();
+        let commits =
+            crate::profile::time("selector.history", || self.fetch_history(0, commit_limit))?;
+        self.main_track_tip =
+            crate::profile::time("selector.main_track_tip", || self.vcs.main_track_tip());
+
+        // `git status` is the slow part of opening the selector on a large
+        // tree. Open on the status last seen and let a worker read it again;
+        // `poll_status_probe` fixes the two rows if it has changed. With no
+        // history to show the rows are all there is, so that case waits.
+        let change_status = match self.remembered_change_status() {
+            Some(remembered) if !commits.is_empty() => {
+                self.spawn_status_probe();
+                remembered
+            }
+            _ => {
+                let highlighter = self.theme.syntax_highlighter();
+                let status = crate::profile::time("selector.change_status", || {
+                    Self::get_change_status_with_ignore(
+                        self.vcs.as_ref(),
+                        &self.vcs_info.root_path,
+                        highlighter,
+                        self.path_filter.as_deref(),
+                    )
+                })?;
+                self.remember_change_status(status);
+                status
+            }
+        };
         let has_staged_changes = change_status.staged;
         let has_unstaged_changes = change_status.unstaged;
-
-        let commit_limit = initial_commit_limit();
-        let commits = self.fetch_history(0, commit_limit)?;
-        self.main_track_tip = self.vcs.main_track_tip();
         let no_local_targets = commits.is_empty() && !has_staged_changes && !has_unstaged_changes;
         // Allow opening the selector on the Pull Requests or Sessions tab even
         // when there are no local commits or changes — that tab is the user's

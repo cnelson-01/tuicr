@@ -1835,6 +1835,18 @@ pub struct App {
     pub blame: BlameState,
     /// The fetch / pull / push running on a worker thread, if any.
     pub remote_op: Option<RemoteOpInFlight>,
+    /// Whether the selector may open on the remembered working-tree status
+    /// and re-read it on a worker (`status_probe.rs`). The main loop turns
+    /// this on; without a loop to poll the worker the status is read first.
+    pub background_status_probe: bool,
+    /// The working-tree status last read from the repository.
+    pub last_change_status: Option<crate::vcs::traits::VcsChangeStatus>,
+    /// The status re-read in flight for the selector, if any.
+    pub status_probe_rx: Option<
+        std::sync::mpsc::Receiver<crate::error::Result<crate::vcs::traits::VcsChangeStatus>>,
+    >,
+    /// A re-read status waiting for the selector's rows to be on screen.
+    pub status_probe_pending: Option<crate::vcs::traits::VcsChangeStatus>,
     /// A drop or reset waiting on its prompt, with the mode to return to.
     pub pending_history: Option<(HistoryAction, InputMode)>,
     /// Display order for the inline commit selector (presentation only).
@@ -2296,6 +2308,7 @@ mod reviewed;
 mod search;
 mod session;
 pub mod sessions_tab;
+mod status_probe;
 mod submit;
 mod theme_picker;
 mod tree;
