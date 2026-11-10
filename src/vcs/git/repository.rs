@@ -1,4 +1,4 @@
-use crate::vcs::traits::{RefKind, RefLabel};
+use crate::vcs::traits::{MainTrack, RefKind, RefLabel};
 use chrono::{DateTime, TimeZone, Utc};
 use git2::{BranchType, Oid, Repository};
 use std::collections::HashMap;
@@ -167,18 +167,21 @@ fn ref_kind_rank(kind: RefKind) -> u8 {
 /// preference.
 pub(super) const MAIN_BRANCH_NAMES: [&str; 2] = ["main", "master"];
 
-/// Where the log's main track starts (`VcsBackend::main_track_tip`), read
-/// in process. `cli::main_track_tip` is the same rule through the CLI, and
-/// a test holds the two to the same answers.
+/// The log's leftmost track (`VcsBackend::main_track`), read in process.
+/// `cli::main_track` is the same rule through the CLI, and a test holds the
+/// two to the same answers.
 ///
-/// The anchor is local `main`, else local `master`, else the same names on
-/// `origin`, else on any other remote. When the anchor is a local branch
-/// and its remote-tracking twin is ahead of it along first parents (a fetch
-/// that has not been pulled yet), the track starts at the remote tip, so
-/// the new commits sit on the main track rather than beside it. A twin that
-/// diverged, or that reaches the local tip only through a merge's second
-/// parent, does not move the start.
-pub fn main_track_tip(repo: &Repository) -> Option<String> {
+/// The local branch is `main`, else `master`; its remote-tracking twin is
+/// the same name on `origin`, else on the first other remote. With only
+/// one of the two, the track is a line from it. With both:
+///
+/// - a twin ahead of the local branch along first parents (fetched, not
+///   pulled) is the line, and the local tip sits on it further down;
+/// - a twin the local branch is ahead of along first parents is on the
+///   local branch's line, which is the track;
+/// - otherwise they have diverged: the line is the twin's, and the local
+///   branch's own first-parent commits are stacked on top of it.
+pub fn main_track(repo: &Repository) -> Option<MainTrack> {
     // (remote, branch, oid), `origin` first and the rest by name.
     let mut remotes: Vec<(String, String, Oid)> = Vec::new();
     if let Ok(branches) = repo.branches(Some(BranchType::Remote)) {
@@ -199,18 +202,61 @@ pub fn main_track_tip(repo: &Repository) -> Option<String> {
         let Ok(local) = repo.refname_to_id(&format!("refs/heads/{name}")) else {
             continue;
         };
-        let ahead = remotes
+        let twins: Vec<Oid> = remotes
             .iter()
-            .filter(|(_, branch, oid)| branch == name && *oid != local)
-            .find(|(_, _, oid)| first_parent_chain_reaches(repo, *oid, local));
-        return Some(ahead.map_or(local, |(_, _, oid)| *oid).to_string());
+            .filter(|(_, branch, _)| branch == name)
+            .map(|(_, _, oid)| *oid)
+            .collect();
+        if let Some(ahead) = twins
+            .iter()
+            .find(|&&twin| twin != local && first_parent_chain_reaches(repo, twin, local))
+        {
+            return Some(MainTrack::line(ahead.to_string()));
+        }
+        let Some(&twin) = twins.first() else {
+            return Some(MainTrack::line(local.to_string()));
+        };
+        if twin == local || first_parent_chain_reaches(repo, local, twin) {
+            return Some(MainTrack::line(local.to_string()));
+        }
+        return Some(MainTrack {
+            tip: twin.to_string(),
+            stacked: first_parents_beyond(repo, local, twin)
+                .iter()
+                .map(Oid::to_string)
+                .collect(),
+        });
     }
     MAIN_BRANCH_NAMES.iter().find_map(|name| {
         remotes
             .iter()
             .find(|(_, branch, _)| branch == name)
-            .map(|(_, _, oid)| oid.to_string())
+            .map(|(_, _, oid)| MainTrack::line(oid.to_string()))
     })
+}
+
+/// `tip`'s first-parent commits that `base` does not have, newest first:
+/// the walk stops at the first one `base` can reach.
+fn first_parents_beyond(repo: &Repository, tip: Oid, base: Oid) -> Vec<Oid> {
+    // One walk for everything `tip` has that `base` does not, then the
+    // first-parent line through it.
+    let Ok(mut walk) = repo.revwalk() else {
+        return Vec::new();
+    };
+    if walk.push(tip).is_err() || walk.hide(base).is_err() {
+        return Vec::new();
+    }
+    let beyond: std::collections::HashSet<Oid> = walk.flatten().collect();
+    let mut out = Vec::new();
+    let mut at = tip;
+    while out.len() < MainTrack::MAX_STACKED && beyond.contains(&at) {
+        out.push(at);
+        match repo.find_commit(at).and_then(|commit| commit.parent_id(0)) {
+            Ok(parent) => at = parent,
+            Err(_) => break,
+        }
+    }
+    out
 }
 
 /// Whether following first parents from `tip` arrives at `ancestor`.
@@ -296,6 +342,53 @@ fn history_walk<'r>(repo: &'r Repository, tips: &[Oid]) -> Result<git2::Revwalk<
     Ok(revwalk)
 }
 
+/// Reorder `order` so the local main branch's own commits come before the
+/// remote line they are drawn on top of (`MainTrack::stacked` above
+/// `MainTrack::tip`).
+///
+/// Date order puts whichever side committed last on top, so a fetch that
+/// brings newer commits would list the remote tip first and leave the graph
+/// no way to stack the local branch on it. The two sides are unrelated, so
+/// either order keeps children above parents. The remote tip and those of
+/// its ancestors that sit above the stack's oldest commit sink to just
+/// below it, keeping their own order: everything they depend on is already
+/// further down, and everything that depends on them stays where it is,
+/// above.
+fn stack_local_main_first(repo: &Repository, order: &mut Vec<Oid>) {
+    let Some(track) = main_track(repo) else {
+        return;
+    };
+    let (Some(Ok(oldest)), Ok(tip)) = (
+        track.stacked.last().map(|id| Oid::from_str(id)),
+        Oid::from_str(&track.tip),
+    ) else {
+        return;
+    };
+    let positions: HashMap<Oid, usize> = order.iter().enumerate().map(|(i, o)| (*o, i)).collect();
+    let (Some(&floor), Some(&tip_at)) = (positions.get(&oldest), positions.get(&tip)) else {
+        return;
+    };
+    if tip_at > floor {
+        return;
+    }
+    let mut sinking: std::collections::HashSet<Oid> = std::collections::HashSet::new();
+    let mut pending = vec![tip];
+    while let Some(oid) = pending.pop() {
+        if positions.get(&oid).is_none_or(|&at| at > floor) || !sinking.insert(oid) {
+            continue;
+        }
+        if let Ok(commit) = repo.find_commit(oid) {
+            pending.extend(commit.parent_ids());
+        }
+    }
+    let (upper, lower) = order.split_at(floor + 1);
+    let mut fixed = Vec::with_capacity(order.len());
+    fixed.extend(upper.iter().filter(|oid| !sinking.contains(oid)));
+    fixed.extend(upper.iter().filter(|oid| sinking.contains(oid)));
+    fixed.extend(lower);
+    *order = fixed;
+}
+
 /// Rows `offset..offset + limit` of the log's order, from the kept walk
 /// when the tips have not moved since it was made.
 fn history_page(repo: &Repository, tips: &[Oid], offset: usize, limit: usize) -> Result<Vec<Oid>> {
@@ -322,6 +415,7 @@ fn history_page(repo: &Repository, tips: &[Oid], offset: usize, limit: usize) ->
                 }
                 order.push(oid?);
             }
+            stack_local_main_first(&walker, &mut order);
             *slot = Some(HistoryOrder {
                 git_dir: repo.path().to_path_buf(),
                 tips: tips.to_vec(),
@@ -574,6 +668,60 @@ mod tests {
             .into_iter()
             .map(|c| c.summary)
             .collect()
+    }
+
+    /// An empty-tree commit on `parent` at `time` that no ref points at.
+    fn loose_commit(repo: &Repository, message: &str, time: i64, parent: Oid) -> Oid {
+        let sig = git2::Signature::new("Tester", "t@example.com", &git2::Time::new(time, 0))
+            .expect("signature");
+        let parent = repo.find_commit(parent).expect("parent");
+        let tree = parent.tree().expect("tree");
+        repo.commit(None, &sig, &sig, message, &tree, &[&parent])
+            .expect("commit")
+    }
+
+    #[test]
+    fn should_list_a_diverged_local_main_above_the_remote_line() {
+        // given local master two commits past `base`
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let repo = Repository::init(temp_dir.path()).expect("failed to init repo");
+        repo.set_head("refs/heads/master").expect("head");
+        let base = commit(&repo, "base", 1_700_000_000);
+        commit(&repo, "local-1", 1_700_000_100);
+        commit(&repo, "local-2", 1_700_000_200);
+        // and a remote master with two newer commits of its own, plus a
+        // branch cut from the remote tip that is newer still
+        let remote_1 = loose_commit(&repo, "remote-1", 1_700_000_300, base);
+        let remote_2 = loose_commit(&repo, "remote-2", 1_700_000_400, remote_1);
+        repo.reference("refs/remotes/origin/master", remote_2, true, "test")
+            .expect("remote ref");
+        let topic = loose_commit(&repo, "topic", 1_700_000_500, remote_2);
+        repo.reference("refs/remotes/origin/topic", topic, true, "test")
+            .expect("topic ref");
+
+        // when the log is listed
+        let rows = summaries(&repo, 0, 10);
+        // then the local commits come before the remote line, which date
+        // order alone would put on top, and children still precede parents
+        assert_eq!(
+            rows,
+            [
+                "topic", "local-2", "local-1", "remote-2", "remote-1", "base"
+            ]
+        );
+        // and the main track says the same
+        let track = main_track(&repo).expect("track");
+        assert_eq!(track.tip, remote_2.to_string());
+        assert_eq!(track.stacked.len(), 2);
+
+        // when the local branch catches up (fast-forwards to the remote)
+        repo.reference("refs/heads/master", remote_2, true, "test")
+            .expect("move master");
+        // then plain date order is back
+        assert_eq!(
+            summaries(&repo, 0, 10),
+            ["topic", "remote-2", "remote-1", "base"]
+        );
     }
 
     #[test]

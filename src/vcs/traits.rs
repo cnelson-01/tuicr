@@ -536,6 +536,43 @@ pub enum RevisionDiffTarget {
     },
 }
 
+/// The log's leftmost track: the repository's main line, with the local
+/// branch drawn on top of its remote-tracking branch.
+///
+/// With one of the two only, or when one contains the other along first
+/// parents, the track is a single line from whichever tip is ahead and
+/// `stacked` is empty. When they have diverged (local commits not pushed,
+/// remote commits not pulled, or a merge of the remote not pushed yet) the
+/// line is the remote's, and the local branch's own commits are `stacked`
+/// on top of it in the same track.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MainTrack {
+    /// Where the track's line starts; it follows first parents from here.
+    pub tip: String,
+    /// The local branch's first-parent commits that `tip` does not have,
+    /// newest first, at most [`MainTrack::MAX_STACKED`].
+    pub stacked: Vec<String>,
+}
+
+impl MainTrack {
+    /// Local commits drawn on top of the remote line. A branch further
+    /// ahead than this keeps the rest on an ordinary track.
+    pub const MAX_STACKED: usize = 256;
+
+    /// A track that is one line from `tip`.
+    pub fn line(tip: impl Into<String>) -> Self {
+        Self {
+            tip: tip.into(),
+            stacked: Vec::new(),
+        }
+    }
+
+    /// Whether `id` is the line's tip or one of the stacked commits.
+    pub fn names(&self, id: &str) -> bool {
+        self.tip == id || self.stacked.iter().any(|stacked| stacked == id)
+    }
+}
+
 /// Cheap repository change summary used by selection UIs before loading full diffs.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct VcsChangeStatus {
@@ -1074,13 +1111,10 @@ pub trait VcsBackend: Send {
         ))
     }
 
-    /// Commit where the log's main track starts: the tip of `main` (else
-    /// `master`), or of its remote-tracking branch when that is strictly
-    /// ahead along first parents, so fetched commits stay on the same
-    /// track. With no local branch of either name the remote's is used.
-    /// `None` when the repository has neither, or the backend reports no
-    /// parents to draw a graph from.
-    fn main_track_tip(&self) -> Option<String> {
+    /// What the log draws on its leftmost track: `main` (else `master`)
+    /// and its remote-tracking branch. `None` when the repository has
+    /// neither, or the backend reports no parents to draw a graph from.
+    fn main_track(&self) -> Option<MainTrack> {
         None
     }
 

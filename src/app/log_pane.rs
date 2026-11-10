@@ -79,7 +79,7 @@ impl App {
     /// fullscreen selector's post-operation refresh. Re-reads the main
     /// track's tip too: whatever moved the rows may have moved `main`.
     pub(in crate::app) fn log_rows_from_vcs(&mut self) -> (Vec<CommitInfo>, bool) {
-        self.main_track_tip = self.vcs.main_track_tip();
+        self.main_track = self.vcs.main_track();
         let commit_limit = initial_commit_limit();
         let commits = self.fetch_history(0, commit_limit).unwrap_or_default();
         let highlighter = self.theme.syntax_highlighter();

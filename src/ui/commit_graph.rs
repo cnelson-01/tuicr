@@ -8,10 +8,13 @@
 //! converge at that parent's row; merge commits fork extra lanes for
 //! their additional parents.
 //!
-//! When the caller names the main track's tip (`main` / `master`), lane 0
-//! belongs to that commit's first-parent chain and to nothing else, so the
-//! main line is always the leftmost track and every other branch hangs off
-//! its right side. See [`main_track_tip_for`].
+//! When the caller names the main track (`main` / `master` and its
+//! remote-tracking branch), lane 0 belongs to it and to nothing else, so
+//! the main line is always the leftmost track and every other branch hangs
+//! off its right side. The lane holds the first-parent chain from the
+//! track's tip and, when the local branch has diverged from the remote one,
+//! the local branch's own commits stacked on top of it. See
+//! [`main_track_for`].
 
 use std::collections::{HashMap, HashSet};
 
@@ -20,7 +23,7 @@ use ratatui::text::Span;
 use crate::app::{STAGED_SELECTION_ID, UNSTAGED_SELECTION_ID};
 use crate::theme::Theme;
 use crate::ui::styles;
-use crate::vcs::CommitInfo;
+use crate::vcs::{CommitInfo, MainTrack};
 
 /// Cap on rendered lanes; topology beyond this is clipped, not wrapped.
 pub const MAX_GRAPH_LANES: usize = 8;
@@ -117,7 +120,7 @@ struct Lane {
 const MAIN_TRACK_COLOR: usize = 0;
 
 /// Allocate the leftmost free lane at or right of `first` (or grow) for an
-/// edge awaiting `id`.
+/// edge awaiting `id`, in the next unused colour.
 fn alloc_lane(
     lanes: &mut Vec<Option<Lane>>,
     next_color: &mut usize,
@@ -126,6 +129,11 @@ fn alloc_lane(
 ) -> usize {
     let color = *next_color;
     *next_color += 1;
+    place_lane(lanes, id, first, color)
+}
+
+/// [`alloc_lane`] with the colour given.
+fn place_lane(lanes: &mut Vec<Option<Lane>>, id: String, first: usize, color: usize) -> usize {
     let lane = Lane {
         awaiting: id,
         color,
@@ -139,22 +147,22 @@ fn alloc_lane(
     }
 }
 
-/// The main track's tip to lay `commits` out around, or `None` to lay them
-/// out without a reserved lane.
+/// The main track to lay `commits` out around, or `None` to lay them out
+/// without a reserved lane.
 ///
-/// `tip` is what the backend reports (`VcsBackend::main_track_tip`). The
-/// lane is held when that commit is in the list, and also while it may
-/// still page in (`tip_may_page_in`: an unfiltered log with more history to
-/// load), so the tracks do not all shift right the moment it arrives. A
-/// list that will never show the tip (a filter on another branch) keeps
-/// its full width.
-pub fn main_track_tip_for<'a>(
-    tip: Option<&'a str>,
+/// `track` is what the backend reports (`VcsBackend::main_track`). The
+/// lane is held when one of its commits is in the list, and also while they
+/// may still page in (`may_page_in`: an unfiltered log with more history to
+/// load), so the tracks do not all shift right the moment one arrives. A
+/// list that will never show them (a filter on another branch) keeps its
+/// full width.
+pub fn main_track_for<'a>(
+    track: Option<&'a MainTrack>,
     commits: &[CommitInfo],
-    tip_may_page_in: bool,
-) -> Option<&'a str> {
-    let tip = tip?;
-    (tip_may_page_in || commits.iter().any(|c| c.id == tip)).then_some(tip)
+    may_page_in: bool,
+) -> Option<&'a MainTrack> {
+    let track = track?;
+    (may_page_in || commits.iter().any(|c| track.names(&c.id))).then_some(track)
 }
 
 /// Ids on the main track: `tip` and its first-parent ancestors, as far as
@@ -182,10 +190,28 @@ fn main_track_ids<'a>(commits: &'a [CommitInfo], tip: &str) -> HashSet<&'a str> 
 /// --date-order`). Lists with no parent information at all (hg/jj,
 /// PR commit subsets) produce an empty graph so the gutter collapses.
 ///
-/// `main_tip` (from [`main_track_tip_for`]) reserves lane 0 for the main
-/// track: that commit and its first-parent ancestors. The lane stays empty
-/// above the tip, and while the tip has not been paged in yet.
-pub fn compute_commit_graph(commits: &[CommitInfo], main_tip: Option<&str>) -> CommitGraph {
+/// `main` (from [`main_track_for`]) reserves lane 0 for the main track: its
+/// tip and that commit's first-parent ancestors, with the stacked local
+/// commits above them. The lane stays empty where none of those are, and
+/// while they have not been paged in yet.
+///
+/// The stacked commits sit on the lane as a run of their own. The last of
+/// them hands its parent edge to a side lane, since that parent is further
+/// down the line than the commits the lane is about to carry:
+///
+/// ```text
+/// ●     local tip
+/// ●─╮   oldest local commit; its parent is the fork point
+///   │ ● some other branch
+/// ● │   remote tip
+/// ● │
+/// ●─╯   fork point
+/// ```
+///
+/// That needs the local commits listed above the remote tip. In an order
+/// that has the remote tip first, the lane is taken when they arrive and
+/// they get an ordinary track.
+pub fn compute_commit_graph(commits: &[CommitInfo], main: Option<&MainTrack>) -> CommitGraph {
     if commits.iter().all(|c| c.parent_ids.is_empty()) {
         return CommitGraph {
             rows: vec![GraphRow::default(); commits.len()],
@@ -193,7 +219,10 @@ pub fn compute_commit_graph(commits: &[CommitInfo], main_tip: Option<&str>) -> C
         };
     }
 
-    let main_ids = main_tip.map(|tip| main_track_ids(commits, tip));
+    let main_ids = main.map(|track| main_track_ids(commits, &track.tip));
+    let stacked: HashSet<&str> = main
+        .map(|track| track.stacked.iter().map(String::as_str).collect())
+        .unwrap_or_default();
     // Lanes left of this index are never handed out or trimmed.
     let reserved = usize::from(main_ids.is_some());
     let mut lanes: Vec<Option<Lane>> = vec![None; reserved];
@@ -219,9 +248,15 @@ pub fn compute_commit_graph(commits: &[CommitInfo], main_tip: Option<&str>) -> C
             })
             .collect();
 
-        let on_main_track = main_ids
+        let on_main_line = main_ids
             .as_ref()
             .is_some_and(|ids| ids.contains(commit.id.as_str()));
+        // A stacked commit takes the main lane while the lane is its to
+        // take: empty (the local tip) or waiting for it (the rest).
+        let on_main_stack = !on_main_line
+            && stacked.contains(commit.id.as_str())
+            && lanes[0].as_ref().is_none_or(|l| l.awaiting == commit.id);
+        let on_main_track = on_main_line || on_main_stack;
         let (node_lane, node_color) = if on_main_track {
             // Whatever waited for this commit bends into the main lane.
             (0, MAIN_TRACK_COLOR)
@@ -245,7 +280,13 @@ pub fn compute_commit_graph(commits: &[CommitInfo], main_tip: Option<&str>) -> C
             .filter(|&(lane, _)| lane != node_lane)
             .collect();
         let mut parents = commit.parent_ids.iter();
-        lanes[node_lane] = parents.next().map(|p| Lane {
+        let first_parent = parents.next();
+        // The bottom of the stack: its parent is not the next commit the
+        // main lane carries, so the edge leaves for a lane of its own.
+        let detour = first_parent
+            .filter(|p| on_main_stack && !stacked.contains(p.as_str()))
+            .cloned();
+        lanes[node_lane] = first_parent.filter(|_| detour.is_none()).map(|p| Lane {
             awaiting: p.clone(),
             color: node_color,
         });
@@ -255,13 +296,16 @@ pub fn compute_commit_graph(commits: &[CommitInfo], main_tip: Option<&str>) -> C
 
         // Extra parents of a merge commit fork new tracks (which may reuse
         // a lane freed this very row — drawn as a combined end+fork glyph).
-        let forks: Vec<(usize, usize)> = parents
-            .map(|p| {
-                let lane = alloc_lane(&mut lanes, &mut next_color, p.clone(), reserved);
-                let color = lanes[lane].as_ref().expect("lane just allocated").color;
-                (lane, color)
-            })
-            .collect();
+        let mut forks: Vec<(usize, usize)> = Vec::new();
+        if let Some(parent) = detour {
+            let lane = place_lane(&mut lanes, parent, reserved, MAIN_TRACK_COLOR);
+            forks.push((lane, MAIN_TRACK_COLOR));
+        }
+        forks.extend(parents.map(|p| {
+            let lane = alloc_lane(&mut lanes, &mut next_color, p.clone(), reserved);
+            let color = lanes[lane].as_ref().expect("lane just allocated").color;
+            (lane, color)
+        }));
 
         let span_min = ends
             .iter()
@@ -494,7 +538,7 @@ mod tests {
             commit("m1", &[]),
         ];
         // when main's tip is named
-        let graph = compute_commit_graph(&commits, Some("m2"));
+        let graph = compute_commit_graph(&commits, Some(&MainTrack::line("m2")));
         // then lane 0 stays empty above the tip and the branch bends into it
         assert_eq!(graph.lane_count, 2);
         assert_eq!(
@@ -524,7 +568,7 @@ mod tests {
             commit("base", &[]),
         ];
         // when
-        let graph = compute_commit_graph(&commits, Some("merge"));
+        let graph = compute_commit_graph(&commits, Some(&MainTrack::line("merge")));
         // then the first-parent line holds lane 0 and the side branch lane 1
         assert_eq!(
             glyphs(&graph.rows[0]),
@@ -561,7 +605,7 @@ mod tests {
             commit("m1", &[]),
         ];
         // when
-        let graph = compute_commit_graph(&commits, Some("m2"));
+        let graph = compute_commit_graph(&commits, Some(&MainTrack::line("m2")));
         // then every non-main node sits right of lane 0
         for row in &graph.rows[..3] {
             assert_eq!(row.cells[0].glyph, GraphGlyph::Blank, "{:?}", glyphs(row));
@@ -570,13 +614,177 @@ mod tests {
         assert_eq!(graph.rows[4].cells[0].glyph, GraphGlyph::Node);
     }
 
+    /// Local `l2 → l1` and remote `r2 → r1` both fork from `base`.
+    fn diverged() -> MainTrack {
+        MainTrack {
+            tip: "r2".to_string(),
+            stacked: vec!["l2".to_string(), "l1".to_string()],
+        }
+    }
+
+    #[test]
+    fn should_stack_a_diverged_local_branch_on_the_remote_line() {
+        // given the local commits listed first, then a branch `x` cut from
+        // the remote tip, then the remote line
+        let commits = vec![
+            commit("l2", &["l1"]),
+            commit("l1", &["base"]),
+            commit("x", &["r2"]),
+            commit("r2", &["r1"]),
+            commit("r1", &["base"]),
+            commit("base", &[]),
+        ];
+        // when
+        let graph = compute_commit_graph(&commits, Some(&diverged()));
+        // then the local commits sit on the main lane
+        assert_eq!(glyphs(&graph.rows[0]), vec![GraphGlyph::Node]);
+        // and the oldest hands its edge to a side lane
+        assert_eq!(
+            glyphs(&graph.rows[1]),
+            vec![GraphGlyph::Node, GraphGlyph::ForkFromLeft]
+        );
+        // which runs past the other branch with the main lane empty
+        assert_eq!(
+            glyphs(&graph.rows[2]),
+            vec![GraphGlyph::Blank, GraphGlyph::Vertical, GraphGlyph::Node]
+        );
+        // the remote line then takes the main lane, under the local commits
+        assert_eq!(
+            glyphs(&graph.rows[3]),
+            vec![
+                GraphGlyph::Node,
+                GraphGlyph::Cross,
+                GraphGlyph::MergeIntoLeft
+            ]
+        );
+        assert_eq!(
+            glyphs(&graph.rows[4]),
+            vec![GraphGlyph::Node, GraphGlyph::Vertical]
+        );
+        // and the side lane comes back in at the fork point
+        assert_eq!(
+            glyphs(&graph.rows[5]),
+            vec![GraphGlyph::Node, GraphGlyph::MergeIntoLeft]
+        );
+        // all of it in the main track's colour
+        let main_color = graph.rows[0].cells[0].color;
+        for (row, lane) in [
+            (1, 0),
+            (1, 1),
+            (2, 1),
+            (3, 0),
+            (4, 0),
+            (4, 1),
+            (5, 0),
+            (5, 1),
+        ] {
+            assert_eq!(
+                graph.rows[row].cells[lane].color, main_color,
+                "row {row} lane {lane}"
+            );
+        }
+        assert_ne!(graph.rows[2].cells[2].color, main_color);
+    }
+
+    #[test]
+    fn should_stack_a_local_merge_of_the_remote_on_the_remote_line() {
+        // given local `m` = merge(l1, r1), not pushed: the remote tip is its
+        // second parent
+        let commits = vec![
+            commit("m", &["l1", "r1"]),
+            commit("l1", &["base"]),
+            commit("r1", &["base"]),
+            commit("base", &[]),
+        ];
+        let track = MainTrack {
+            tip: "r1".to_string(),
+            stacked: vec!["m".to_string(), "l1".to_string()],
+        };
+        // when
+        let graph = compute_commit_graph(&commits, Some(&track));
+        // then the merge forks toward the remote tip from the main lane
+        assert_eq!(
+            glyphs(&graph.rows[0]),
+            vec![GraphGlyph::Node, GraphGlyph::ForkFromLeft]
+        );
+        // the stack ends, its edge leaving for the fork point across the
+        // merge's
+        assert_eq!(
+            glyphs(&graph.rows[1]),
+            vec![
+                GraphGlyph::Node,
+                GraphGlyph::Cross,
+                GraphGlyph::ForkFromLeft
+            ]
+        );
+        // the remote tip takes the lane, the merge's edge arriving
+        assert_eq!(
+            glyphs(&graph.rows[2]),
+            vec![
+                GraphGlyph::Node,
+                GraphGlyph::MergeIntoLeft,
+                GraphGlyph::Vertical
+            ]
+        );
+        assert_eq!(graph.rows[3].cells[0].glyph, GraphGlyph::Node);
+        assert_eq!(graph.rows[3].cells[2].glyph, GraphGlyph::MergeIntoLeft);
+    }
+
+    #[test]
+    fn should_give_the_local_branch_its_own_lane_when_the_remote_tip_is_listed_first() {
+        // given an order with the remote line on top (a backend that does
+        // not reorder)
+        let commits = vec![
+            commit("r2", &["r1"]),
+            commit("r1", &["base"]),
+            commit("l2", &["l1"]),
+            commit("l1", &["base"]),
+            commit("base", &[]),
+        ];
+        // when
+        let graph = compute_commit_graph(&commits, Some(&diverged()));
+        // then the remote line holds the main lane and the local commits
+        // run beside it, no edge lost
+        assert_eq!(glyphs(&graph.rows[0]), vec![GraphGlyph::Node]);
+        assert_eq!(glyphs(&graph.rows[1]), vec![GraphGlyph::Node]);
+        assert_eq!(
+            glyphs(&graph.rows[2]),
+            vec![GraphGlyph::Vertical, GraphGlyph::Node]
+        );
+        assert_eq!(
+            glyphs(&graph.rows[3]),
+            vec![GraphGlyph::Vertical, GraphGlyph::Node]
+        );
+        assert_eq!(
+            glyphs(&graph.rows[4]),
+            vec![GraphGlyph::Node, GraphGlyph::MergeIntoLeft]
+        );
+    }
+
+    #[test]
+    fn should_keep_the_stack_on_the_main_lane_before_the_remote_tip_has_loaded() {
+        // given a first page holding only the local commits
+        let commits = vec![commit("l2", &["l1"]), commit("l1", &["base"])];
+        let track = diverged();
+        // when
+        let held = main_track_for(Some(&track), &commits, true);
+        let graph = compute_commit_graph(&commits, held);
+        // then they are already where they stay once the rest pages in
+        assert_eq!(glyphs(&graph.rows[0]), vec![GraphGlyph::Node]);
+        assert_eq!(
+            glyphs(&graph.rows[1]),
+            vec![GraphGlyph::Node, GraphGlyph::ForkFromLeft]
+        );
+    }
+
     #[test]
     fn should_hold_the_main_lane_while_the_tip_is_still_to_load() {
         // given a page of branch commits; main's tip `m9` is further down
         let commits = vec![commit("f2", &["f1"]), commit("f1", &["f0"])];
         // when the lane is held for it
-        let tip = main_track_tip_for(Some("m9"), &commits, true);
-        let graph = compute_commit_graph(&commits, tip);
+        let track = MainTrack::line("m9");
+        let held = main_track_for(Some(&track), &commits, true);
+        let graph = compute_commit_graph(&commits, held);
         // then the branch already sits on lane 1, where it stays once
         // main's history pages in
         assert_eq!(graph.lane_count, 2);
@@ -590,10 +798,24 @@ mod tests {
         // given a filtered list with no more history that lacks main's tip
         let commits = vec![commit("f2", &["f1"]), commit("f1", &[])];
         // then no lane is reserved
-        assert_eq!(main_track_tip_for(Some("m9"), &commits, false), None);
-        // while a loaded tip always reserves it, and no tip never does
-        assert_eq!(main_track_tip_for(Some("f1"), &commits, false), Some("f1"));
-        assert_eq!(main_track_tip_for(None, &commits, true), None);
+        let absent = MainTrack::line("m9");
+        assert_eq!(main_track_for(Some(&absent), &commits, false), None);
+        // while a loaded tip always reserves it, as does a stacked commit
+        let loaded = MainTrack::line("f1");
+        assert_eq!(
+            main_track_for(Some(&loaded), &commits, false),
+            Some(&loaded)
+        );
+        let stacked = MainTrack {
+            tip: "m9".to_string(),
+            stacked: vec!["f2".to_string()],
+        };
+        assert_eq!(
+            main_track_for(Some(&stacked), &commits, false),
+            Some(&stacked)
+        );
+        // and no track never does
+        assert_eq!(main_track_for(None, &commits, true), None);
     }
 
     #[test]

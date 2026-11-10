@@ -15,7 +15,7 @@ use crate::vcs::git::raw::{
     pair_metadata_with_patch, parse_raw_metadata_from_patch_output, parse_raw_patch_output,
     patch_text_from_raw_patch_output, split_patch_blocks,
 };
-use crate::vcs::traits::{CommitQuery, ConflictCommit, RefKind, RefLabel};
+use crate::vcs::traits::{CommitQuery, ConflictCommit, MainTrack, RefKind, RefLabel};
 use crate::vcs::whitespace::{WhitespaceComparison, materialize_diff};
 use crate::vcs::{
     ChangeKind, CommitInfo, DiffWhitespaceMode, MergeConflictInfo, ResolvedRevisionRange,
@@ -1201,10 +1201,10 @@ pub(super) fn search_commits(
     Ok(commits)
 }
 
-/// Where the log's main track starts (`VcsBackend::main_track_tip`), for
-/// the CLI backend. The rule is `repository::main_track_tip`'s, which the
-/// libgit2 backend runs in process.
-pub(super) fn main_track_tip(workdir: &Path) -> Option<String> {
+/// The log's leftmost track (`VcsBackend::main_track`) for the CLI
+/// backend. The rule is `repository::main_track`'s, which the libgit2
+/// backend runs in process.
+pub(super) fn main_track(workdir: &Path) -> Option<MainTrack> {
     let output = run_git_command(
         workdir,
         &[
@@ -1240,18 +1240,46 @@ pub(super) fn main_track_tip(workdir: &Path) -> Option<String> {
         let Some(&local) = locals.get(name) else {
             continue;
         };
-        let ahead = remotes
+        let twins: Vec<&str> = remotes
             .iter()
-            .filter(|&&(_, branch, oid)| branch == name && oid != local)
-            .find(|&&(_, _, oid)| first_parent_chain_reaches(workdir, oid, local));
-        return Some(ahead.map_or(local, |&(_, _, oid)| oid).to_string());
-    }
-    for name in MAIN_BRANCH_NAMES {
-        if let Some(&(_, _, oid)) = remotes.iter().find(|&&(_, branch, _)| branch == name) {
-            return Some(oid.to_string());
+            .filter(|&&(_, branch, _)| branch == name)
+            .map(|&(_, _, oid)| oid)
+            .collect();
+        if let Some(ahead) = twins
+            .iter()
+            .find(|&&twin| twin != local && first_parent_chain_reaches(workdir, twin, local))
+        {
+            return Some(MainTrack::line(*ahead));
         }
+        let Some(&twin) = twins.first() else {
+            return Some(MainTrack::line(local));
+        };
+        if twin == local || first_parent_chain_reaches(workdir, local, twin) {
+            return Some(MainTrack::line(local));
+        }
+        return Some(MainTrack {
+            tip: twin.to_string(),
+            stacked: first_parents_beyond(workdir, local, twin),
+        });
     }
-    None
+    MAIN_BRANCH_NAMES.iter().find_map(|name| {
+        remotes
+            .iter()
+            .find(|&&(_, branch, _)| branch == *name)
+            .map(|&(_, _, oid)| MainTrack::line(oid))
+    })
+}
+
+/// `tip`'s first-parent commits that `base` does not have, newest first.
+fn first_parents_beyond(workdir: &Path, tip: &str, base: &str) -> Vec<String> {
+    let exclude = format!("^{base}");
+    let limit = format!("--max-count={}", MainTrack::MAX_STACKED);
+    run_git_command(
+        workdir,
+        &["rev-list", "--first-parent", &limit, tip, &exclude],
+    )
+    .map(|output| output.lines().map(str::to_string).collect())
+    .unwrap_or_default()
 }
 
 /// Whether following first parents from `tip` arrives at `ancestor`.
@@ -2456,7 +2484,7 @@ mod tests {
     }
 
     #[test]
-    fn main_track_tip_prefers_main_and_follows_a_remote_that_is_ahead() {
+    fn main_track_prefers_main_follows_a_remote_ahead_and_stacks_a_diverged_local() {
         let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
         let workdir = temp_dir.path();
         let head = |rev: &str| -> String {
@@ -2472,64 +2500,99 @@ mod tests {
         };
         // Both backends answer through this, so each case below also holds
         // the in-process rule to the CLI one.
-        let main_track_tip = |workdir: &Path| -> Option<String> {
-            let via_cli = super::main_track_tip(workdir);
+        let main_track = |workdir: &Path| -> Option<MainTrack> {
+            let via_cli = super::main_track(workdir);
             let repo = git2::Repository::open(workdir).expect("open");
-            assert_eq!(repository::main_track_tip(&repo), via_cli);
+            assert_eq!(repository::main_track(&repo), via_cli);
             via_cli
         };
+        let line = |rev: &str| Some(MainTrack::line(head(rev)));
         // given a repository with neither main nor master
         git(workdir, &["init", "-b", "trunk"]);
         git(workdir, &["config", "user.email", "test@example.com"]);
         git(workdir, &["config", "user.name", "Test User"]);
         commit("base");
         // then there is no main track
-        assert_eq!(main_track_tip(workdir), None);
+        assert_eq!(main_track(workdir), None);
 
         // a remote-tracking master alone is used
         git(
             workdir,
             &["update-ref", "refs/remotes/origin/master", "HEAD"],
         );
-        assert_eq!(main_track_tip(workdir), Some(head("trunk")));
+        assert_eq!(main_track(workdir), line("trunk"));
 
         // local master beats the remote, and main beats master
         git(workdir, &["checkout", "-qb", "master"]);
         commit("on-master");
-        assert_eq!(main_track_tip(workdir), Some(head("master")));
+        assert_eq!(main_track(workdir), line("master"));
         git(workdir, &["checkout", "-qb", "main", "trunk"]);
         commit("on-main");
+        commit("on-main-2");
         let main = head("main");
-        assert_eq!(main_track_tip(workdir), Some(main.clone()));
+        assert_eq!(main_track(workdir), line("main"));
 
-        // a remote main that is behind or level leaves the tip on main
+        // a remote main that is behind or level is on the local line
         git(
             workdir,
             &["update-ref", "refs/remotes/origin/main", "trunk"],
         );
-        assert_eq!(main_track_tip(workdir), Some(main.clone()));
+        assert_eq!(main_track(workdir), line("main"));
+        git(workdir, &["update-ref", "refs/remotes/origin/main", "main"]);
+        assert_eq!(main_track(workdir), line("main"));
 
-        // a remote main ahead along first parents moves the tip to it
+        // a remote main ahead along first parents is the line
         git(workdir, &["checkout", "-q", "--detach", "main"]);
         commit("fetched-1");
         commit("fetched-2");
         git(workdir, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
-        assert_eq!(main_track_tip(workdir), Some(head("origin/main")));
+        assert_eq!(main_track(workdir), line("origin/main"));
 
-        // a remote main that diverged does not
+        // a remote main that diverged is the line, with the local branch's
+        // own commits stacked on it, newest first
         git(workdir, &["checkout", "-q", "--detach", "trunk"]);
         commit("diverged");
         git(workdir, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
-        assert_eq!(main_track_tip(workdir), Some(main.clone()));
+        assert_eq!(
+            main_track(workdir),
+            Some(MainTrack {
+                tip: head("origin/main"),
+                stacked: vec![main.clone(), head("main~1")],
+            })
+        );
 
-        // nor does one that reaches main only through a merge's second
-        // parent: its first-parent line is another branch's
+        // a local merge of the remote, not pushed: the remote is still the
+        // line, and the merge joins the stack
+        git(workdir, &["checkout", "-q", "main"]);
+        git(
+            workdir,
+            &[
+                "merge",
+                "-q",
+                "--no-ff",
+                "-m",
+                "merge origin",
+                "origin/main",
+            ],
+        );
+        assert_eq!(
+            main_track(workdir),
+            Some(MainTrack {
+                tip: head("origin/main"),
+                stacked: vec![head("main"), main.clone(), head("main~2")],
+            })
+        );
+
+        // a remote that merged the local branch as a second parent has
+        // everything the local branch has: nothing to stack
+        git(workdir, &["reset", "-q", "--hard", &main]);
+        git(workdir, &["checkout", "-q", "--detach", "origin/main"]);
         git(
             workdir,
             &["merge", "-q", "--no-ff", "-m", "merge main", "main"],
         );
         git(workdir, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
-        assert_eq!(main_track_tip(workdir), Some(main));
+        assert_eq!(main_track(workdir), line("origin/main"));
     }
 
     #[test]

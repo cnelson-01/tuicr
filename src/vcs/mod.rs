@@ -33,7 +33,7 @@ pub use jj::JjBackend;
 pub use pr_noop::PrNoopVcs;
 pub use traits::{
     BlameLine, ChangeArea, ChangeKind, CommitInfo, CommitQuery, DiffWhitespaceMode, HunkScope,
-    MergeConflictInfo, ResetMode, ResolvedRevisionRange, RevisionDiffTarget, StashEntry,
+    MainTrack, MergeConflictInfo, ResetMode, ResolvedRevisionRange, RevisionDiffTarget, StashEntry,
     StatusEntry, SubmoduleState, VcsBackend, VcsChangeStatus, VcsInfo, WhitespaceAutoPolicy,
 };
 

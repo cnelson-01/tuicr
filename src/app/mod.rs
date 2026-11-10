@@ -1529,10 +1529,10 @@ pub struct App {
     pub visible_commit_count: usize,
     pub commit_page_size: usize,
     pub has_more_commit: bool,
-    /// Commit the log graph's main track starts at
-    /// (`VcsBackend::main_track_tip`), re-read whenever the log rows are;
+    /// What the log graph draws on its leftmost track
+    /// (`VcsBackend::main_track`), re-read whenever the log rows are;
     /// `None` when the repository has no `main` / `master`.
-    pub main_track_tip: Option<String>,
+    pub main_track: Option<crate::vcs::MainTrack>,
 
     // Review target selector tab state. The selector reuses InputMode::CommitSelect
     // but is conceptually a "target" picker with Local and Pull Requests tabs.

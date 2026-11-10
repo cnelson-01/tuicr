@@ -174,8 +174,7 @@ impl App {
         let commit_limit = initial_commit_limit();
         let commits =
             crate::profile::time("selector.history", || self.fetch_history(0, commit_limit))?;
-        self.main_track_tip =
-            crate::profile::time("selector.main_track_tip", || self.vcs.main_track_tip());
+        self.main_track = crate::profile::time("selector.main_track", || self.vcs.main_track());
 
         // `git status` is the slow part of opening the selector on a large
         // tree. Open on the status last seen and let a worker read it again;

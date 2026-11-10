@@ -22,8 +22,8 @@ use crate::process::{CommandOutputError, CommandOutputErrorKind, run_command_out
 use crate::syntax::SyntaxHighlighter;
 
 use super::traits::{
-    ChangeKind, CommitInfo, DiffWhitespaceMode, MergeConflictInfo, ResolvedRevisionRange,
-    VcsBackend, VcsChangeStatus, VcsInfo,
+    ChangeKind, CommitInfo, DiffWhitespaceMode, MainTrack, MergeConflictInfo,
+    ResolvedRevisionRange, VcsBackend, VcsChangeStatus, VcsInfo,
 };
 use cli::GitCliBackend;
 pub use libgit2::Libgit2Backend;
@@ -476,10 +476,10 @@ impl VcsBackend for GitBackend {
         cli::search_commits(&self.info().root_path, query, offset, limit)
     }
 
-    fn main_track_tip(&self) -> Option<String> {
+    fn main_track(&self) -> Option<MainTrack> {
         match self {
-            Self::Libgit2(backend) => backend.main_track_tip(),
-            Self::Cli(backend) => cli::main_track_tip(&backend.info().root_path),
+            Self::Libgit2(backend) => backend.main_track(),
+            Self::Cli(backend) => cli::main_track(&backend.info().root_path),
         }
     }
 

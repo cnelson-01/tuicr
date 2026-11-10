@@ -8,7 +8,7 @@ use crate::syntax::SyntaxHighlighter;
 
 use super::{context, diff, repository, staging};
 use crate::vcs::traits::{
-    ChangeKind, CommitInfo, ConflictCommit, DiffWhitespaceMode, MergeConflictInfo,
+    ChangeKind, CommitInfo, ConflictCommit, DiffWhitespaceMode, MainTrack, MergeConflictInfo,
     ResolvedRevisionRange, VcsBackend, VcsInfo, VcsType,
 };
 
@@ -197,8 +197,8 @@ impl VcsBackend for Libgit2Backend {
         context::file_line_count(&self.repo, file_path, file_status, ref_commit)
     }
 
-    fn main_track_tip(&self) -> Option<String> {
-        repository::main_track_tip(&self.repo)
+    fn main_track(&self) -> Option<MainTrack> {
+        repository::main_track(&self.repo)
     }
 
     fn get_recent_commits(&self, offset: usize, limit: usize) -> Result<Vec<CommitInfo>> {
