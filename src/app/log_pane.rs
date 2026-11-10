@@ -76,8 +76,10 @@ impl App {
     /// Selector rows straight from the VCS: history across local and
     /// remote-tracking branches plus the conflicts / unstaged / staged pseudo rows on top. Returns the
     /// rows and whether more history can be paged in. Shared with the
-    /// fullscreen selector's post-operation refresh.
-    pub(in crate::app) fn log_rows_from_vcs(&self) -> (Vec<CommitInfo>, bool) {
+    /// fullscreen selector's post-operation refresh. Re-reads the main
+    /// track's tip too: whatever moved the rows may have moved `main`.
+    pub(in crate::app) fn log_rows_from_vcs(&mut self) -> (Vec<CommitInfo>, bool) {
+        self.main_track_tip = self.vcs.main_track_tip();
         let commit_limit = initial_commit_limit();
         let commits = self.fetch_history(0, commit_limit).unwrap_or_default();
         let highlighter = self.theme.syntax_highlighter();

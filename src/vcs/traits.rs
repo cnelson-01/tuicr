@@ -1074,6 +1074,16 @@ pub trait VcsBackend: Send {
         ))
     }
 
+    /// Commit where the log's main track starts: the tip of `main` (else
+    /// `master`), or of its remote-tracking branch when that is strictly
+    /// ahead along first parents, so fetched commits stay on the same
+    /// track. With no local branch of either name the remote's is used.
+    /// `None` when the repository has neither, or the backend reports no
+    /// parents to draw a graph from.
+    fn main_track_tip(&self) -> Option<String> {
+        None
+    }
+
     /// Run `git <args>` in the repository root and return its stdout (Git
     /// backends only). `network` disables credential and ssh prompts, for
     /// commands that talk to a remote from under the TUI.

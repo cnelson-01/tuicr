@@ -632,7 +632,12 @@ header: resolve with `:merge`, then `:continue`, `:skip`, or `:abort`.
 
 The Local tab draws a commit graph across all local and remote-tracking branches, so commits
 that so far exist only on `origin/…` show up too: each branch gets a colored track, with branch
-chips on tips. History loads as you move down past the last row, so older branches are a scroll
+chips on tips. `main` (or `master`) always takes the leftmost track, in the same colour, and
+every other branch hangs off its right side; commits ahead of it sit one track over until
+they meet it. The track follows first parents from the branch tip, and starts at
+`origin/main` instead when that is ahead of the local branch, so freshly fetched commits
+stay on it. A repository with neither branch lays its tracks out left to right as they
+appear. The log pane draws the same graph. History loads as you move down past the last row, so older branches are a scroll
 away rather than behind repeated "show more" presses. When the repository has unresolved
 merge conflicts, a `· conflicts ·` row appears at the top — `Enter` on it opens
 the merge conflict view.

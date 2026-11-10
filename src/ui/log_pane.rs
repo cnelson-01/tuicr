@@ -13,7 +13,7 @@ use ratatui::{
 };
 
 use crate::app::App;
-use crate::ui::commit_graph::{compute_commit_graph, graph_row_spans};
+use crate::ui::commit_graph::{compute_commit_graph, graph_row_spans, main_track_tip_for};
 use crate::ui::commit_row::{CommitRowLayout, CommitRowSpec, render_commit_row};
 use crate::ui::selector::overflow_row;
 use crate::ui::styles;
@@ -50,6 +50,8 @@ pub(super) fn render_log_pane(frame: &mut Frame, app: &mut App, area: Rect) {
     let loaded: HashSet<&str> = app.review_commits.iter().map(|c| c.id.as_str()).collect();
 
     let theme = &app.theme;
+    let main_tip = app.main_track_tip.as_deref();
+    let unfiltered = app.commit_filter_shown.is_none();
     let Some(pane) = app.log_pane.as_mut() else {
         return;
     };
@@ -78,7 +80,8 @@ pub(super) fn render_log_pane(frame: &mut Frame, app: &mut App, area: Rect) {
     pane.list.scroll_offset = offset;
     let list = &pane.list;
 
-    let graph = compute_commit_graph(&list.commits);
+    let main_tip = main_track_tip_for(main_tip, &list.commits, unfiltered && list.has_more);
+    let graph = compute_commit_graph(&list.commits, main_tip);
     let gutter_lanes = graph.gutter_lanes();
     let layout = CommitRowLayout::fit_rows(&list.commits, inner.width as usize, gutter_lanes * 2);
 

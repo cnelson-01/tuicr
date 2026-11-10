@@ -19,7 +19,8 @@
 - Three export targets: push a real review to GitHub, GitLab, Gitea, Bitbucket, Azure DevOps, or Gerrit, copy
   structured markdown to your clipboard, or pipe to stdout.
 - Commit selector with an IDE-style branch graph: colored tracks across local and
-  remote-tracking branches, with branch chips on tips.
+  remote-tracking branches, with branch chips on tips and `main` / `master` always on the
+  leftmost track.
 - Three-pane merge conflict resolution (ours | result | theirs), with each pane attributed
   to its branch and commit: pick ours/theirs/both per conflict, preview the result live,
   write, and stage — straight from the commit selector or `:merge`.

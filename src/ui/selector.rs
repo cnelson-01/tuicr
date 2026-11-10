@@ -9,7 +9,7 @@ use ratatui::{
 use crate::app::{App, TargetTab, sessions_tab};
 use crate::forge::selector::{PrTabStatus, PrTabView};
 use crate::forge::traits::PullRequestListScope;
-use crate::ui::commit_graph::{compute_commit_graph, graph_row_spans};
+use crate::ui::commit_graph::{compute_commit_graph, graph_row_spans, main_track_tip_for};
 use crate::ui::commit_row::{
     CURSOR_GLYPH, CommitRowLayout, CommitRowSpec, format_relative_short, render_commit_row,
 };
@@ -213,7 +213,12 @@ fn render_local_target_tab(frame: &mut Frame, app: &mut App, area: Rect) {
 
     // Lane layout over the whole loaded list so tracks stay stable while
     // paging; the gutter collapses when no commit reports parents.
-    let graph = compute_commit_graph(&app.commit_list);
+    let main_tip = main_track_tip_for(
+        app.main_track_tip.as_deref(),
+        &app.commit_list,
+        app.commit_filter_shown.is_none() && app.has_more_commit,
+    );
+    let graph = compute_commit_graph(&app.commit_list, main_tip);
     let gutter_lanes = graph.gutter_lanes();
     let layout = CommitRowLayout::fit_rows(&app.commit_list, area.width as usize, gutter_lanes * 2);
 

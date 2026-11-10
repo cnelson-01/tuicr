@@ -183,6 +183,7 @@ impl App {
 
         let commit_limit = initial_commit_limit();
         let commits = self.fetch_history(0, commit_limit)?;
+        self.main_track_tip = self.vcs.main_track_tip();
         let no_local_targets = commits.is_empty() && !has_staged_changes && !has_unstaged_changes;
         // Allow opening the selector on the Pull Requests or Sessions tab even
         // when there are no local commits or changes — that tab is the user's

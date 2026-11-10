@@ -499,6 +499,7 @@ impl App {
         Self::register_diff_files(&mut session, &diff_files, preserve_hunks);
 
         let has_more_commit = commit_list.len() >= VISIBLE_COMMIT_COUNT;
+        let main_track_tip = vcs.main_track_tip();
         let visible_commit_count = if commit_list.is_empty() {
             VISIBLE_COMMIT_COUNT
         } else {
@@ -597,6 +598,7 @@ impl App {
             visible_commit_count,
             commit_page_size: COMMIT_PAGE_SIZE,
             has_more_commit,
+            main_track_tip,
             target_tab: TargetTab::Local,
             forge_repository: None,
             repo_url_override,

@@ -476,6 +476,11 @@ impl VcsBackend for GitBackend {
         cli::search_commits(&self.info().root_path, query, offset, limit)
     }
 
+    fn main_track_tip(&self) -> Option<String> {
+        // Both backends ask the CLI, like `list_branches` below.
+        cli::main_track_tip(&self.info().root_path)
+    }
+
     fn list_branches(&self) -> Result<Vec<BranchInfo>> {
         let output = run_git_command(
             &self.info().root_path,

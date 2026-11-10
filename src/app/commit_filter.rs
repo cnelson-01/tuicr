@@ -196,6 +196,7 @@ impl App {
         history: Vec<CommitInfo>,
         has_more: bool,
     ) {
+        self.main_track_tip = self.vcs.main_track_tip();
         if self.input_mode == InputMode::CommitSelect {
             let special: Vec<CommitInfo> = self
                 .commit_list

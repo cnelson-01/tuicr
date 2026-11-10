@@ -1200,6 +1200,89 @@ pub(super) fn search_commits(
     Ok(commits)
 }
 
+/// Branch names the log treats as the repository's main line, in order of
+/// preference.
+const MAIN_BRANCH_NAMES: [&str; 2] = ["main", "master"];
+
+/// Where the log's main track starts (`VcsBackend::main_track_tip`).
+///
+/// The anchor is local `main`, else local `master`, else the same names on
+/// `origin`, else on any other remote. When the anchor is a local branch
+/// and its remote-tracking twin is ahead of it along first parents (a fetch
+/// that has not been pulled yet), the track starts at the remote tip, so
+/// the new commits sit on the main track rather than beside it. A twin that
+/// diverged, or that reaches the local tip only through a merge's second
+/// parent, does not move the start.
+pub(super) fn main_track_tip(workdir: &Path) -> Option<String> {
+    let output = run_git_command(
+        workdir,
+        &[
+            "for-each-ref",
+            "--format=%(refname)%00%(objectname)",
+            "refs/heads",
+            "refs/remotes",
+        ],
+    )
+    .ok()?;
+    let mut locals: HashMap<&str, &str> = HashMap::new();
+    // (remote, branch, oid), `origin` first and the rest by name.
+    let mut remotes: Vec<(&str, &str, &str)> = Vec::new();
+    for line in output.lines() {
+        let Some((full, oid)) = line.split_once('\0') else {
+            continue;
+        };
+        if let Some(name) = full.strip_prefix("refs/heads/") {
+            if MAIN_BRANCH_NAMES.contains(&name) {
+                locals.insert(name, oid);
+            }
+        } else if let Some((remote, name)) = full
+            .strip_prefix("refs/remotes/")
+            .and_then(|rest| rest.split_once('/'))
+            && MAIN_BRANCH_NAMES.contains(&name)
+        {
+            remotes.push((remote, name, oid));
+        }
+    }
+    remotes.sort_by_key(|&(remote, _, _)| (remote != "origin", remote));
+
+    for name in MAIN_BRANCH_NAMES {
+        let Some(&local) = locals.get(name) else {
+            continue;
+        };
+        let ahead = remotes
+            .iter()
+            .filter(|&&(_, branch, oid)| branch == name && oid != local)
+            .find(|&&(_, _, oid)| first_parent_chain_reaches(workdir, oid, local));
+        return Some(ahead.map_or(local, |&(_, _, oid)| oid).to_string());
+    }
+    for name in MAIN_BRANCH_NAMES {
+        if let Some(&(_, _, oid)) = remotes.iter().find(|&&(_, branch, _)| branch == name) {
+            return Some(oid.to_string());
+        }
+    }
+    None
+}
+
+/// Whether following first parents from `tip` arrives at `ancestor`.
+fn first_parent_chain_reaches(workdir: &Path, tip: &str, ancestor: &str) -> bool {
+    // First-parent commits of `tip` that `ancestor` does not already have,
+    // each followed by its parents. The walk stops where it meets
+    // `ancestor`'s history, so the chain runs through `ancestor` itself
+    // only when the last commit listed has it as first parent.
+    let exclude = format!("^{ancestor}");
+    let Ok(output) = run_git_command(
+        workdir,
+        &["rev-list", "--first-parent", "--parents", tip, &exclude],
+    ) else {
+        return false;
+    };
+    output
+        .lines()
+        .last()
+        .and_then(|line| line.split_whitespace().nth(1))
+        == Some(ancestor)
+}
+
 /// Every ref pointing at each commit (branches, remotes, tags) plus HEAD,
 /// for the log's label chips. Annotated tags are peeled to their commit.
 pub(super) struct RefIndex {
@@ -2379,6 +2462,75 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["Fix retry in B"]
         );
+    }
+
+    #[test]
+    fn main_track_tip_prefers_main_and_follows_a_remote_that_is_ahead() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let workdir = temp_dir.path();
+        let head = |rev: &str| -> String {
+            run_git_command(workdir, &["rev-parse", rev])
+                .expect("rev-parse")
+                .trim()
+                .to_string()
+        };
+        let commit = |name: &str| {
+            write_file(workdir, name, name);
+            git(workdir, &["add", "."]);
+            git(workdir, &["commit", "-m", name]);
+        };
+        // given a repository with neither main nor master
+        git(workdir, &["init", "-b", "trunk"]);
+        git(workdir, &["config", "user.email", "test@example.com"]);
+        git(workdir, &["config", "user.name", "Test User"]);
+        commit("base");
+        // then there is no main track
+        assert_eq!(main_track_tip(workdir), None);
+
+        // a remote-tracking master alone is used
+        git(
+            workdir,
+            &["update-ref", "refs/remotes/origin/master", "HEAD"],
+        );
+        assert_eq!(main_track_tip(workdir), Some(head("trunk")));
+
+        // local master beats the remote, and main beats master
+        git(workdir, &["checkout", "-qb", "master"]);
+        commit("on-master");
+        assert_eq!(main_track_tip(workdir), Some(head("master")));
+        git(workdir, &["checkout", "-qb", "main", "trunk"]);
+        commit("on-main");
+        let main = head("main");
+        assert_eq!(main_track_tip(workdir), Some(main.clone()));
+
+        // a remote main that is behind or level leaves the tip on main
+        git(
+            workdir,
+            &["update-ref", "refs/remotes/origin/main", "trunk"],
+        );
+        assert_eq!(main_track_tip(workdir), Some(main.clone()));
+
+        // a remote main ahead along first parents moves the tip to it
+        git(workdir, &["checkout", "-q", "--detach", "main"]);
+        commit("fetched-1");
+        commit("fetched-2");
+        git(workdir, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        assert_eq!(main_track_tip(workdir), Some(head("origin/main")));
+
+        // a remote main that diverged does not
+        git(workdir, &["checkout", "-q", "--detach", "trunk"]);
+        commit("diverged");
+        git(workdir, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        assert_eq!(main_track_tip(workdir), Some(main.clone()));
+
+        // nor does one that reaches main only through a merge's second
+        // parent: its first-parent line is another branch's
+        git(
+            workdir,
+            &["merge", "-q", "--no-ff", "-m", "merge main", "main"],
+        );
+        git(workdir, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        assert_eq!(main_track_tip(workdir), Some(main));
     }
 
     #[test]
