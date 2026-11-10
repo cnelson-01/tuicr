@@ -16,6 +16,7 @@ src/
 ├── lib.rs               # Public crate surface: ReviewStore, session/comment types, core modules
 ├── main.rs              # Entry point, event loop (palette-injected keys first), action dispatch
 ├── git_console.rs       # Process-wide log of git commands run (`:console`), recorded where git is spawned
+├── busy.rs              # Busy indicator: a watchdog that paints a spinner + the git command in flight on the bottom row while the main thread is blocked
 ├── config/
 │   └── mod.rs           # User config loading (XDG on Unix, %APPDATA% on Windows)
 ├── app.rs               # Application state (App struct, InputMode, etc.)

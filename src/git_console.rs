@@ -115,7 +115,7 @@ pub fn is_mutating(args: &[String]) -> bool {
 
 /// Drop tuicr's `-c key=value` plumbing so the logged line reads like what a
 /// person would type.
-fn display_args(args: &[String]) -> String {
+pub(crate) fn display_args(args: &[String]) -> String {
     let mut shown = Vec::new();
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {

@@ -1215,6 +1215,7 @@ fn run_git_env(workdir: &Path, args: &[String], envs: &[(&str, String)]) -> Resu
         command.env(key, value);
     }
     let started = std::time::Instant::now();
+    let _busy = crate::busy::git_command(args);
     let output = command.output().map_err(|e| {
         crate::git_console::record(args, None, false, started.elapsed(), &e.to_string());
         TuicrError::VcsCommand(format!("Failed to run git: {e}"))

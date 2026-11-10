@@ -41,6 +41,8 @@ where
             .collect()
     });
     let started = std::time::Instant::now();
+    // Names the command on the busy indicator while it runs.
+    let _busy = logged_args.as_deref().map(crate::busy::git_command);
 
     let output = command.args(&args).output().map_err(|err| {
         let kind = if err.kind() == std::io::ErrorKind::NotFound {

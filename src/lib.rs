@@ -1,4 +1,5 @@
 pub mod app;
+pub mod busy;
 pub mod cli;
 pub mod comment_vim;
 pub mod config;
