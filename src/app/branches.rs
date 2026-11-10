@@ -7,10 +7,22 @@ use super::{App, InputMode};
 use crate::vcs::detect_vcs;
 use crate::vcs::traits::{BranchInfo, CommitInfo, RefKind};
 
+/// What Enter does in the branch picker.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BranchPickerPurpose {
+    /// Check the branch out (`B`, `<leader>b`, `:branch`).
+    #[default]
+    Checkout,
+    /// Show only that branch in the log (`S` in the log pane or selector).
+    ShowInLog,
+}
+
 /// The branch picker modal: every local and remote-tracking branch, filtered
 /// by what the user types, with the cursor on a row of the filtered view.
 #[derive(Debug)]
 pub struct BranchPicker {
+    /// What Enter does with the highlighted row.
+    pub purpose: BranchPickerPurpose,
     pub branches: Vec<BranchInfo>,
     pub filter: String,
     /// Row within [`BranchPicker::visible`], not into `branches`.
@@ -87,6 +99,17 @@ impl App {
     /// Open the branch picker over the current screen. From the command
     /// line the picker returns to whatever mode `:` was typed in.
     pub fn open_branch_picker(&mut self) {
+        self.open_branch_picker_for(BranchPickerPurpose::Checkout);
+    }
+
+    /// `S` in the log pane or the selector: pick the branch the log should
+    /// show. Enter filters the log to it (Tab first picks a second one);
+    /// the rest of the picker works as usual.
+    pub fn open_branch_picker_for_log(&mut self) {
+        self.open_branch_picker_for(BranchPickerPurpose::ShowInLog);
+    }
+
+    fn open_branch_picker_for(&mut self, purpose: BranchPickerPurpose) {
         let return_mode = match self.input_mode {
             InputMode::Command => self.command_return_mode,
             InputMode::CommitSelect => InputMode::CommitSelect,
@@ -97,6 +120,7 @@ impl App {
             Ok(branches) => {
                 let cursor = branches.iter().position(|b| b.is_current).unwrap_or(0);
                 self.branch_picker = Some(BranchPicker {
+                    purpose,
                     branches,
                     filter: String::new(),
                     cursor,
@@ -210,7 +234,10 @@ impl App {
             refs: names,
             ..Default::default()
         });
-        if self.log_pane.is_none() {
+        if self.input_mode == InputMode::CommitSelect {
+            // Opened from the selector: its own list is what narrows.
+            self.refresh_commit_selector_rows();
+        } else if self.log_pane.is_none() {
             self.enable_log_pane();
         } else {
             self.refresh_log_rows_keep_cursor();
@@ -227,6 +254,14 @@ impl App {
     /// branch when it does not exist yet (git's own DWIM). `smart` stashes a
     /// dirty tree around the switch instead of refusing.
     pub fn branch_picker_confirm(&mut self, smart: bool) {
+        if self
+            .branch_picker
+            .as_ref()
+            .is_some_and(|p| p.purpose == BranchPickerPurpose::ShowInLog)
+        {
+            self.branch_picker_log();
+            return;
+        }
         let Some(branch) = self
             .branch_picker
             .as_ref()
@@ -476,6 +511,7 @@ mod tests {
 
     fn picker(names: &[(&str, bool)]) -> BranchPicker {
         BranchPicker {
+            purpose: BranchPickerPurpose::Checkout,
             branches: names
                 .iter()
                 .map(|(n, remote)| branch(n, *remote, false))

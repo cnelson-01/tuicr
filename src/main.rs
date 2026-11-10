@@ -10,6 +10,7 @@ use crossterm::{
 };
 
 use tuicr::app::{self, App, AppStartupOptions, FocusedPanel, InputMode};
+use tuicr::busy::BusyIndicator;
 use tuicr::cli::parse_cli_args;
 use tuicr::config::IgnoreWhitespaceConfig;
 use tuicr::editor::{EditorCommand, EditorError, EditorLaunch, EditorSurface, EditorTarget};
@@ -374,6 +375,13 @@ fn main() -> anyhow::Result<()> {
         .mouse_enabled(mouse_enabled)
         .keyboard_enhancements_supported(keyboard_enhancement_supported)
         .enter(tty_output)?;
+    app.mouse_enabled = mouse_enabled;
+    // This loop polls the worker, so the selector need not wait on
+    // `git status` to open.
+    app.background_status_probe = true;
+    // Paints "working" over the bottom row when a handler blocks the loop.
+    // It needs its own handle on the terminal the TUI is on.
+    let busy = busy_indicator_writer(cli_args.output_to_stdout).map(BusyIndicator::start);
 
     // Apply config-driven defaults
     if let Some(ref cfg) = config_outcome.config {
@@ -509,6 +517,14 @@ fn main() -> anyhow::Result<()> {
 
         needs_redraw |= app.clear_expired_message();
 
+        // Installing what a worker sent back (a fetch, a reload) can take a
+        // while too, so the polls count as work.
+        if let Some(busy) = &busy {
+            let theme = &app.theme;
+            busy.set_colors(theme.message_warning_fg, theme.message_warning_bg);
+            busy.begin();
+        }
+
         // Snapshot before polling so the tick that drains a channel (clearing
         // its rx) still triggers a redraw with the applied result. While work
         // is pending we redraw every tick anyway so spinners animate.
@@ -529,7 +545,20 @@ fn main() -> anyhow::Result<()> {
         needs_redraw |= app.poll_changes_pane_autoshow();
         needs_redraw |= app.poll_blame();
         needs_redraw |= app.poll_remote_op();
+        needs_redraw |= app.poll_status_probe();
         needs_redraw |= pr_pending;
+
+        // The screen is this thread's again. Anything the indicator
+        // painted has to be drawn over cell by cell.
+        if busy.as_ref().is_some_and(BusyIndicator::end) {
+            app.request_full_redraw();
+            needs_redraw = true;
+        }
+
+        // `:set mouse!` flipped capture: tell the terminal.
+        if app.mouse_enabled != terminal.mouse_enabled() {
+            terminal.set_mouse_enabled(app.mouse_enabled)?;
+        }
 
         if needs_redraw {
             // Bracket the frame in a synchronized-output pair (CSI ?2026h/l)
@@ -543,8 +572,10 @@ fn main() -> anyhow::Result<()> {
             if app.take_full_redraw() {
                 terminal.repaint_from_scratch()?;
             }
-            terminal.draw(|frame| {
-                ui::render(frame, &mut app);
+            profile::time("render.frame", || {
+                terminal.draw(|frame| {
+                    ui::render(frame, &mut app);
+                })
             })?;
             // `--line` needs the viewport measured by the render above. When
             // it moves the cursor, repaint inside the same synchronized
@@ -566,6 +597,11 @@ fn main() -> anyhow::Result<()> {
         while !app.should_quit
             && let Some(timeout) = event_drain_timeout(drained)
         {
+            // Waiting for input is not work: stand the indicator down
+            // before the poll, and start the clock once an event is in hand.
+            if busy.as_ref().is_some_and(BusyIndicator::end) {
+                app.request_full_redraw();
+            }
             // Keys queued by the command palette run first, exactly as if
             // they had been typed.
             let event = if let Some(key) = app.injected_keys.pop_front() {
@@ -575,6 +611,9 @@ fn main() -> anyhow::Result<()> {
             } else {
                 break;
             };
+            if let Some(busy) = &busy {
+                busy.begin();
+            }
             drained += 1;
             // Set before reading so the many `continue` paths below (leader
             // keys, zz/ZZ, dd, {count}G, …) still schedule a redraw on the
@@ -1024,6 +1063,11 @@ fn main() -> anyhow::Result<()> {
                         break;
                     }
                     if let Some(target) = app.take_pending_editor_target() {
+                        // The editor owns the terminal from here; the full
+                        // repaint on resume covers anything already painted.
+                        if let Some(busy) = &busy {
+                            busy.end();
+                        }
                         app.snapshot_local_edit_baseline(&target);
                         match run_editor_from_tui(
                             &mut terminal,
@@ -1120,15 +1164,11 @@ fn main() -> anyhow::Result<()> {
                         app.comment_vim_feed_paste(text);
                         continue;
                     }
-                    let action = Action::Paste(text);
-                    match app.input_mode {
-                        InputMode::Comment => handle_comment_action(&mut app, action),
-                        InputMode::Command => handle_command_action(&mut app, action),
-                        InputMode::Search => handle_search_action(&mut app, action),
-                        InputMode::CommitSelect if app.pr_filter_editing() => {
-                            handle_commit_select_action(&mut app, action)
-                        }
-                        _ => {}
+                    // Every open prompt takes it (log filter, tree filters,
+                    // branch picker, palette, ...), through the same routing
+                    // as its typed characters.
+                    if handler::paste_target_open(&app) {
+                        dispatch_action(&mut app, Action::Paste(text));
                     }
                 }
                 _ => {}
@@ -1164,6 +1204,16 @@ fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// A second handle on the terminal the TUI draws on, for the busy
+/// indicator: the controlling terminal where there is one, else stdout
+/// unless stdout is carrying the export (`--stdout`).
+fn busy_indicator_writer(output_to_stdout: bool) -> Option<Box<dyn Write + Send>> {
+    if let Ok(tty) = File::options().write(true).open("/dev/tty") {
+        return Some(Box::new(tty));
+    }
+    (!output_to_stdout).then(|| Box::new(io::stdout()) as Box<dyn Write + Send>)
 }
 
 fn dispatch_action(app: &mut App, action: Action) {

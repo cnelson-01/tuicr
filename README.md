@@ -346,6 +346,8 @@ and its keys, or `?` for the full reference.
 | `;<` / `;>`, `;[` / `;]` | Move the side-by-side divider, resize the file tree (or drag them) |
 | `;z` | Zen mode: diff only |
 | `;g` / `;b` | Log pane (commit graph) / branch picker |
+| `F` / `S` in the log | Fetch every remote / show one branch, picked from the branch list |
+| `:set mouse!` | Hand the mouse to the terminal (a plain drag selects text) or take it back |
 | `;t` | Changes window: working tree status with staging, discard and commit (submodules nested) |
 | `Ctrl-l` | Redraw the whole screen |
 | `?` | Toggle full help |

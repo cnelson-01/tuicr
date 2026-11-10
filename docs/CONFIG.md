@@ -107,7 +107,7 @@ session_header = true
 | `show_changes`             | `false`      | Whether the changes window (working tree status in the file tree's place) opens once a review is on screen. Toggle with `<leader>t` or `:changes`.         |
 | `log_height`               | window / 3   | Log pane height in rows, borders included. Unset, it takes a third of the window, at most 12 rows. Adjust with `<leader>+` / `<leader>-` or `:set logheight N`. |
 | `show_reviewed`            | `true`       | Whether files already marked reviewed appear in the file tree and the diff. Set `false` to start a session showing only what is left. Toggle with `:set reviewed!`. |
-| `mouse`                    | `true`       | Wheel scrolling, clicks, and drag-to-select.                                                                                                               |
+| `mouse`                    | `true`       | Wheel scrolling, clicks, and drag-to-select. `:set mouse!` toggles it for the running session; off leaves the mouse to the terminal, so a plain drag selects text. |
 | `mouse_scroll_lines`       | `3`          | Lines scrolled per mouse wheel tick in the diff, file list, comment list, help, and summary views; the commit list moves its cursor this many rows. Must be between 1 and 100; other values are ignored with a startup warning. |
 | `leader`                   | `;`          | Single-character prefix for panel focus, sidebar toggles, and review-comment shortcuts. Invalid multi-character values are ignored with a startup warning. |
 | `editor`                   | `$EDITOR`    | Editor command for the `e` / `:edit` handoff, split with shell-like quoting rules (e.g. `"code -w"`). Falls back to `$EDITOR`, then `vi`. |

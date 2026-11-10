@@ -637,6 +637,7 @@ impl App {
             message: None,
             pending_confirm: None,
             supports_keyboard_enhancement: false,
+            mouse_enabled: true,
             show_file_list: true,
             compact_folders: false,
             is_pristine_mode: false,

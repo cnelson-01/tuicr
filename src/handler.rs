@@ -79,6 +79,9 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         &["ignorews", "set ignorews!"],
         CommandKind::SetIgnoreWhitespace(None),
     ),
+    CommandSpec::new(&["set mouse"], CommandKind::SetMouse(Some(true))),
+    CommandSpec::new(&["set nomouse"], CommandKind::SetMouse(Some(false))),
+    CommandSpec::new(&["set mouse!"], CommandKind::SetMouse(None)),
     CommandSpec::new(&["set split"], CommandKind::ResetSplit),
     CommandSpec::new(
         &["branches", "branch", "compare", "select"],
@@ -235,6 +238,9 @@ enum CommandKind {
     ResetSplit,
     /// `Some` sets, `None` toggles.
     SetIgnoreWhitespace(Option<bool>),
+    /// `:set mouse` / `nomouse` / `mouse!` (`None` toggles): whether tuicr
+    /// captures the mouse or leaves it to the terminal.
+    SetMouse(Option<bool>),
     BranchPicker,
     AbortOperation,
     Remote(RemoteOp),
@@ -728,6 +734,30 @@ fn comment_word_right(buffer: &str, cursor: usize) -> usize {
 
 /// Append a pasted payload into a single-line buffer, dropping embedded
 /// newlines so a multi-line paste doesn't smear across the prompt.
+/// Whether a bracketed paste has somewhere to go: a text input is open and
+/// its handler takes `Action::Paste`. Everywhere else a paste is dropped,
+/// so its characters never run as keys.
+pub fn paste_target_open(app: &App) -> bool {
+    match app.input_mode {
+        InputMode::Comment
+        | InputMode::Command
+        | InputMode::Search
+        | InputMode::Palette
+        | InputMode::BranchPicker => true,
+        InputMode::CommitSelect => {
+            app.pr_filter_editing()
+                || (app.target_tab == TargetTab::Local && app.commit_filter_editing())
+        }
+        InputMode::Normal => app.commit_filter_editing() || app.file_tree_prompt_editing(),
+        InputMode::ThemePicker => app.theme_picker_filtering(),
+        InputMode::RebaseEditor => app
+            .rebase_editor
+            .as_ref()
+            .is_some_and(|e| e.editing.is_some()),
+        _ => false,
+    }
+}
+
 fn push_single_line(buffer: &mut String, text: &str) {
     for ch in text.chars() {
         if matches!(ch, '\n' | '\r') {
@@ -1217,6 +1247,15 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
         }
         CommandKind::ToggleZen => {
             app.toggle_zen();
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::SetMouse(enabled) => {
+            app.mouse_enabled = enabled.unwrap_or(!app.mouse_enabled);
+            app.set_message(if app.mouse_enabled {
+                "Mouse: tuicr (click, wheel, drag lines)"
+            } else {
+                "Mouse: terminal (drag selects text)"
+            });
             CommandAfterDispatch::ExitCommandMode
         }
         CommandKind::SetIgnoreWhitespace(value) => {
@@ -2064,6 +2103,7 @@ fn handle_local_target_action(app: &mut App, action: Action) {
         Action::SelectorTag => app.start_tag_prompt(),
         Action::SelectorCopyHash => app.copy_cursor_commit_hash(),
         Action::SelectorFetch => app.start_remote_op(RemoteOp::Fetch),
+        Action::SelectorShowBranch => app.open_branch_picker_for_log(),
         Action::SelectorInteractiveRebase => app.open_rebase_editor_at_cursor(),
         Action::BeginTargetFilter => app.begin_commit_filter(),
         _ => {}
@@ -2177,6 +2217,11 @@ pub fn handle_rebase_editor_action(app: &mut App, action: Action) {
     if editing {
         match action {
             Action::InsertChar(c) => app.rebase_editor_type(c),
+            Action::Paste(text) => {
+                for c in text.chars().filter(|c| !c.is_control()) {
+                    app.rebase_editor_type(c);
+                }
+            }
             Action::DeleteChar => app.rebase_editor_backspace(),
             Action::ClearLine => app.rebase_editor_clear_subject(),
             Action::SubmitInput => app.rebase_editor_finish_reword(),
@@ -2267,6 +2312,11 @@ pub fn handle_branch_picker_action(app: &mut App, action: Action) {
         Action::BranchPickerRebase => app.branch_picker_rebase(),
         Action::BranchPickerTrack => app.branch_picker_track(),
         Action::InsertChar(c) => app.branch_picker_push(c),
+        Action::Paste(text) => {
+            for c in text.chars().filter(|c| !c.is_control()) {
+                app.branch_picker_push(c);
+            }
+        }
         Action::DeleteChar => app.branch_picker_pop(),
         Action::ClearLine => app.branch_picker_clear(),
         Action::ExitMode => {
@@ -2344,6 +2394,7 @@ fn handle_log_pane_action(app: &mut App, action: Action) {
         Action::SelectorTag => app.start_tag_prompt(),
         Action::SelectorCopyHash => app.copy_cursor_commit_hash(),
         Action::SelectorFetch => app.start_remote_op(RemoteOp::Fetch),
+        Action::SelectorShowBranch => app.open_branch_picker_for_log(),
         Action::SelectorInteractiveRebase => app.open_rebase_editor_at_cursor(),
         // Esc clears an active filter first; a second Esc leaves the pane.
         Action::ExitMode => {
@@ -2606,6 +2657,11 @@ pub fn handle_theme_picker_action(app: &mut App, action: Action) {
 fn handle_theme_picker_filter_action(app: &mut App, action: Action) {
     match action {
         Action::InsertChar(c) => app.theme_picker_filter_insert_char(c),
+        Action::Paste(text) => {
+            for c in text.chars().filter(|c| !c.is_control()) {
+                app.theme_picker_filter_insert_char(c);
+            }
+        }
         Action::DeleteChar => app.theme_picker_filter_delete_char(),
         Action::ClearLine => app.theme_picker_filter_clear_line(),
         Action::SubmitInput => app.commit_theme_picker_filter(),

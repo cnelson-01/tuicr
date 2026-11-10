@@ -715,7 +715,7 @@ pub enum InputMode {
 }
 
 pub use blame::{BLAME_WIDTH, BlameState, overlay_label};
-pub use branches::BranchPicker;
+pub use branches::{BranchPicker, BranchPickerPurpose};
 pub use changes_pane::{ChangesPane, ChangesRow};
 pub use console::ConsoleView;
 pub use find::{FIND_MAX_HITS, FindHit, FindState};
@@ -1641,6 +1641,9 @@ pub struct App {
     pub message: Option<Message>,
     pub pending_confirm: Option<ConfirmAction>,
     pub supports_keyboard_enhancement: bool,
+    /// Whether tuicr captures the mouse (config `mouse`, `:set mouse!`).
+    /// The main loop applies a change to the terminal before the next draw.
+    pub mouse_enabled: bool,
     pub show_file_list: bool,
     pub compact_folders: bool,
     /// `true` when the session was opened via `--all-files`. Drives the

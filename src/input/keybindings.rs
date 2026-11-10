@@ -225,6 +225,8 @@ pub enum Action {
     SelectorCopyHash,
     /// Fetch every remote and refresh the log (`F`).
     SelectorFetch,
+    /// Pick a branch and show only it in the log (`S`).
+    SelectorShowBranch,
     /// Interactive rebase from the cursor commit (`i`).
     SelectorInteractiveRebase,
 
@@ -424,7 +426,11 @@ fn map_normal_mode_with_q_quits(key: KeyEvent, leader_key: char, q_quits: bool) 
         (KeyCode::Char('i'), KeyModifiers::NONE) => Action::EditComment,
         (KeyCode::Char('A'), _) => Action::EditCommentAtEnd,
         (KeyCode::Char('d'), KeyModifiers::NONE) => Action::PendingDCommand,
-        (KeyCode::Char('v') | KeyCode::Char('V'), _) => Action::EnterVisualMode,
+        // Plain or shifted only: `Ctrl-v` / `Ctrl-Shift-v` is a paste
+        // reflex, and starting a selection on it moves the cursor around.
+        (KeyCode::Char('v') | KeyCode::Char('V'), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+            Action::EnterVisualMode
+        }
         (KeyCode::Char('y'), KeyModifiers::NONE) => Action::ExportToClipboard,
 
         // Local changes (working-tree reviews)
@@ -821,6 +827,7 @@ fn map_commit_select_mode_with_q_quits(key: KeyEvent, q_quits: bool) -> Action {
         (KeyCode::Char('t'), KeyModifiers::NONE) => Action::SelectorTag,
         (KeyCode::Char('y'), KeyModifiers::NONE) => Action::SelectorCopyHash,
         (KeyCode::Char('F'), _) => Action::SelectorFetch,
+        (KeyCode::Char('S'), _) => Action::SelectorShowBranch,
         (KeyCode::Char('i'), KeyModifiers::NONE) => Action::SelectorInteractiveRebase,
         (KeyCode::Char('p'), KeyModifiers::CONTROL) => Action::OpenPalette,
         (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
@@ -862,6 +869,7 @@ pub fn map_log_pane_mode(key: KeyEvent, leader_key: char, q_quits: bool) -> Acti
         (KeyCode::Char('t'), KeyModifiers::NONE) => Action::SelectorTag,
         (KeyCode::Char('y'), KeyModifiers::NONE) => Action::SelectorCopyHash,
         (KeyCode::Char('F'), _) => Action::SelectorFetch,
+        (KeyCode::Char('S'), _) => Action::SelectorShowBranch,
         (KeyCode::Char('i'), KeyModifiers::NONE) => Action::SelectorInteractiveRebase,
         (KeyCode::Char('/'), _) => Action::BeginTargetFilter,
         (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
@@ -1034,7 +1042,9 @@ fn map_visual_mode_with_q_quits(key: KeyEvent, q_quits: bool) -> Action {
         (KeyCode::Char('S'), _) => Action::StageHunk,
         (KeyCode::Char('U'), _) => Action::UnstageHunk,
         (KeyCode::Esc, KeyModifiers::NONE) => Action::ExitMode,
-        (KeyCode::Char('v') | KeyCode::Char('V'), _) => Action::ExitMode,
+        (KeyCode::Char('v') | KeyCode::Char('V'), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+            Action::ExitMode
+        }
         (KeyCode::Char('q'), KeyModifiers::NONE) => q_action(q_quits),
         _ => Action::None,
     }
@@ -1153,6 +1163,42 @@ mod tests {
             Action::SelectorFetch
         );
         assert_eq!(map_commit_select_mode(shift_f), Action::SelectorFetch);
+        // `S` picks the branch to show there; elsewhere it still stages.
+        let shift_s = KeyEvent::new(KeyCode::Char('S'), KeyModifiers::SHIFT);
+        assert_eq!(
+            map_log_pane_mode(shift_s, DEFAULT_LEADER_KEY, false),
+            Action::SelectorShowBranch
+        );
+        assert_eq!(map_commit_select_mode(shift_s), Action::SelectorShowBranch);
+        assert_eq!(
+            map_normal_mode(shift_s, DEFAULT_LEADER_KEY),
+            Action::StageHunk
+        );
+        // Ctrl-v is a paste reflex, not visual mode; v and V still are.
+        let ctrl_v = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
+        let ctrl_shift_v = KeyEvent::new(
+            KeyCode::Char('V'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
+        assert_ne!(
+            map_normal_mode(ctrl_v, DEFAULT_LEADER_KEY),
+            Action::EnterVisualMode
+        );
+        assert_ne!(
+            map_normal_mode(ctrl_shift_v, DEFAULT_LEADER_KEY),
+            Action::EnterVisualMode
+        );
+        assert_eq!(
+            map_normal_mode(key(KeyCode::Char('v')), DEFAULT_LEADER_KEY),
+            Action::EnterVisualMode
+        );
+        assert_eq!(
+            map_normal_mode(
+                KeyEvent::new(KeyCode::Char('V'), KeyModifiers::SHIFT),
+                DEFAULT_LEADER_KEY
+            ),
+            Action::EnterVisualMode
+        );
         // The log pane keeps `f` for fixup.
         assert_eq!(
             map_log_pane_mode(key(KeyCode::Char('f')), DEFAULT_LEADER_KEY, false),

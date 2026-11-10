@@ -337,6 +337,7 @@ remote-tracking ones. `:compare ma`, `↓`, `↓`, `Enter` picks the second matc
 | `:set split N` | Old side's share of the side-by-side width (15–85%); bare `:set split` resets to 50 |
 | `:set treewidth N` | File tree width (8–60%) |
 | `:zen` | Toggle zen mode (diff only) |
+| `:set mouse!` | Toggle mouse capture for this session: off hands the mouse to the terminal, so a plain drag selects text; `:set mouse` / `:set nomouse` set it. Config `mouse` sets the start-up value |
 | `:ignorews` / `:set ignorews!` | Toggle ignoring whitespace in the diff; `:set ignorews` / `:set noignorews` set it |
 | `:set relativenumber` / `:set norelativenumber` | Enable / disable relative rendered-row numbers |
 | `:set relativenumber!` | Toggle relative rendered-row numbers |
@@ -550,6 +551,7 @@ with `<leader>+` / `<leader>-`, `:set logheight N`, or `log_height = N`.
 | `t` | Tag the cursor commit: opens `:tag ` for the name |
 | `y` | Copy the cursor commit's full hash |
 | `F` | Fetch every remote (as `:fetch`), then refresh the log so the new remote-tracking commits show |
+| `S` | Show one branch: opens the branch picker, and `Enter` narrows the log to the highlighted branch (a `ref:` filter; `Tab` first picks a second branch to show both). `Esc` in the log clears it |
 | `/` | Filter the log (see below); `Esc` clears an active filter |
 | `Tab` / `Shift-Tab`, `<leader>k` / `<leader>j` | Move focus between the pane and the other panels |
 | `Esc` | Return focus to the diff |
@@ -669,6 +671,7 @@ first, with children always above their parents so the graph stays coherent.
 | `B` | Open the branch picker |
 | `v` / `R` / `D` / `f` / `x` / `t` / `y` | Revert / reword / drop / fixup / reset to / tag / copy hash of the cursor commit (as in the log pane) |
 | `F` | Local tab: fetch every remote (as `:fetch`) and refresh the list |
+| `S` | Local tab: show one branch, picked from the branch list (as in the log pane) |
 | `/` | Local tab: filter the log by message / `author:` / `path:` (see the log pane section); Pull Requests tab: filter the loaded PR rows |
 | `r` | In Pull Requests tab, toggle all open PRs / PRs requesting your review |
 | `a` | In Sessions tab, show or hide saved reviews holding no progress |
@@ -740,9 +743,25 @@ commit an approval covered, so no commits are preselected there.
 | `y` / `Enter` | Yes |
 | `n` / `Esc` | No |
 
+## Paste
+
+A paste from the terminal (bracketed paste, e.g. `Ctrl-Shift-v` or `Cmd-v`) goes into
+whichever text input is open: a comment, the `:` command line, `/` search, the log
+filter, the file-tree prompts, the branch and theme pickers, the command palette, or a
+reword in the rebase editor. With no input open it is dropped, so pasted text never runs
+as keys. `Ctrl-v` itself is not bound: it used to start a visual selection, which is on
+`v` / `V` only.
+
+While git or a large reload keeps tuicr busy for more than a quarter of a second, the
+bottom row shows a spinner with the git command that is running and how long it has
+taken. It clears when the operation returns.
+
 ## Mouse
 
-Mouse support is on by default. Disable with `mouse = false` in config.
+Mouse support is on by default. Disable with `mouse = false` in config, or for the
+running session with `:set nomouse` (`:set mouse!` toggles). With it off the terminal
+keeps the mouse: a drag selects text across the whole screen, and none of the actions
+below apply.
 
 | Action | Effect |
 |--------|--------|
@@ -753,4 +772,4 @@ Mouse support is on by default. Disable with `mouse = false` in config.
 | Click on a commit | Toggle selection (or expand the row to load more) |
 | Drag in diff | Highlight a range; press `y` to copy the selected source lines |
 
-For full native terminal selection across the UI, hold your terminal's bypass modifier while dragging (usually **Shift** or **Option/Alt**, depending on the terminal).
+For full native terminal selection across the UI, hold your terminal's bypass modifier while dragging (usually **Shift** or **Option/Alt**, depending on the terminal), or switch capture off with `:set mouse!`.

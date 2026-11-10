@@ -9,7 +9,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph},
 };
 
-use crate::app::App;
+use crate::app::{App, BranchPickerPurpose};
 use crate::ui::styles;
 use crate::ui::submit_modals::{centered_rect, modal_anchor};
 
@@ -22,10 +22,16 @@ pub(super) fn render_branch_picker(frame: &mut Frame, app: &App) {
     frame.render_widget(Clear, area);
 
     let picked = picker.picked.len();
-    let title = if picked > 0 {
-        format!(" Branches \u{00b7} {picked} picked ")
+    let show_in_log = picker.purpose == BranchPickerPurpose::ShowInLog;
+    let name = if show_in_log {
+        "Show branch in the log"
     } else {
-        " Branches ".to_string()
+        "Branches"
+    };
+    let title = if picked > 0 {
+        format!(" {name} \u{00b7} {picked} picked ")
+    } else {
+        format!(" {name} ")
     };
     let block = Block::default()
         .title(title)
@@ -113,7 +119,11 @@ pub(super) fn render_branch_picker(frame: &mut Frame, app: &App) {
     ]));
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "type to filter \u{00b7} tab pick \u{00b7} ctrl-d compare \u{00b7} ctrl-o log \u{00b7} ctrl-f fetch \u{00b7} \u{21b5} checkout \u{00b7} ctrl-s stash+switch",
+        if show_in_log {
+            "type to filter \u{00b7} \u{21b5} show in the log \u{00b7} tab pick two \u{00b7} ctrl-f fetch \u{00b7} esc cancel"
+        } else {
+            "type to filter \u{00b7} tab pick \u{00b7} ctrl-d compare \u{00b7} ctrl-o log \u{00b7} ctrl-f fetch \u{00b7} \u{21b5} checkout \u{00b7} ctrl-s stash+switch"
+        },
         Style::default().fg(theme.fg_secondary),
     )));
 

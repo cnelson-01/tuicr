@@ -642,6 +642,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  S         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Show one branch: pick it from the list (Esc clears the filter)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  a         ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
@@ -1168,6 +1175,13 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Toggle line wrap in diff view"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :set mouse!",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" Hand the mouse to the terminal (drag selects text) or back"),
         ]),
         Line::from(vec![
             Span::styled(

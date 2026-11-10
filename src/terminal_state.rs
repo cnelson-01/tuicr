@@ -94,6 +94,30 @@ impl<W: Write> TerminalSession<W> {
         self.terminal.backend_mut()
     }
 
+    /// Whether mouse capture is on for this session.
+    pub fn mouse_enabled(&self) -> bool {
+        self.features.mouse_enabled
+    }
+
+    /// Turns mouse capture on or off for the running session (`:set
+    /// mouse!`). With capture off the terminal keeps its own mouse
+    /// behaviour: a drag selects text, the wheel is the terminal's. While
+    /// suspended only the choice is recorded; resuming applies it.
+    pub fn set_mouse_enabled(&mut self, enabled: bool) -> anyhow::Result<()> {
+        if self.features.mouse_enabled == enabled {
+            return Ok(());
+        }
+        if self.active {
+            if enabled {
+                execute!(self.terminal.backend_mut(), EnableMouseCapture)?;
+            } else {
+                execute!(self.terminal.backend_mut(), DisableMouseCapture)?;
+            }
+        }
+        self.features.mouse_enabled = enabled;
+        Ok(())
+    }
+
     /// Restores the terminal state for the normal exit path.
     ///
     /// After this succeeds,
