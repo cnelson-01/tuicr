@@ -55,6 +55,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 .pending_history
                 .as_ref()
                 .is_some_and(|(_, mode)| *mode == InputMode::CommitSelect))
+        || (app.input_mode == InputMode::Confirm
+            && app
+                .pending_choice
+                .as_ref()
+                .is_some_and(|choice| choice.return_mode == InputMode::CommitSelect))
         || (app.input_mode == InputMode::Palette
             && app
                 .palette
@@ -305,6 +310,13 @@ fn render_active_confirm(frame: &mut Frame, app: &App) {
                     &pending.prompt,
                     &pending.detail,
                 );
+                return;
+            }
+            None
+        }
+        ConfirmAction::Choice => {
+            if let Some(choice) = app.pending_choice.as_ref() {
+                comment_panel::render_choice_dialog(frame, app, choice);
                 return;
             }
             None

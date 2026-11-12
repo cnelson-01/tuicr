@@ -325,6 +325,9 @@ pub enum ResetMode {
     Mixed,
     /// Move the branch, index, and working tree. Destructive.
     Hard,
+    /// Move the branch and the files that differ, keeping uncommitted
+    /// changes. Git refuses when one of them is in a file that differs.
+    Keep,
 }
 
 /// One `git stash list` row.

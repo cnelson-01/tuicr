@@ -1,5 +1,5 @@
-//! Branch operations: the branch picker, checkout with a dirty-tree guard
-//! (or stash-and-switch), branch creation at a commit, and aborting a
+//! Branch operations: the branch picker, checkout (local changes come
+//! along, see `branch_moves.rs`), branch creation at a commit, and aborting a
 //! conflicted operation. After anything moves HEAD the VCS is reopened so
 //! the header, the log, and the review's branch context see the new state.
 
@@ -251,8 +251,8 @@ impl App {
 
     /// Enter in the picker: check out the highlighted branch. A remote
     /// branch checks out its local counterpart, creating it as a tracking
-    /// branch when it does not exist yet (git's own DWIM). `smart` stashes a
-    /// dirty tree around the switch instead of refusing.
+    /// branch when it does not exist yet (git's own DWIM). `smart` (Ctrl-s)
+    /// stashes whatever is in the way and puts it back without asking.
     pub fn branch_picker_confirm(&mut self, smart: bool) {
         if self
             .branch_picker
@@ -290,67 +290,13 @@ impl App {
         self.checkout_target(&target, smart);
     }
 
-    /// Check out a branch name or commit. A dirty working tree refuses the
-    /// switch unless `smart`, which stashes (untracked files included),
-    /// switches, and pops the stash again.
+    /// Check out a branch name or commit. Uncommitted changes come along
+    /// the way git carries them. When some are in a file the switch would
+    /// rewrite, a prompt offers to stash those files and put them back, or
+    /// to leave them in the stash list; `smart` (`:checkout!`, Ctrl-s)
+    /// stashes and puts back without asking. Untracked files never block.
     pub fn checkout_target(&mut self, target: &str, smart: bool) {
-        // Same probe the selector rows use: works on every git backend and
-        // honours `.tuicrignore`, so ignored churn does not block a switch
-        // (git itself still refuses a checkout that would clobber it).
-        let highlighter = self.theme.syntax_highlighter();
-        let dirty = match Self::get_change_status_with_ignore(
-            self.vcs.as_ref(),
-            &self.vcs_info.root_path,
-            highlighter,
-            self.path_filter.as_deref(),
-        ) {
-            Ok(status) => status.staged || status.unstaged,
-            Err(e) => {
-                self.set_error(format!("Failed to read working tree status: {e}"));
-                return;
-            }
-        };
-        if dirty && !smart {
-            self.set_error(format!(
-                "Working tree has changes \u{2014} commit or stash them, or `:checkout! {target}` to stash, switch, and restore"
-            ));
-            return;
-        }
-        if dirty
-            && let Err(e) = self
-                .vcs
-                .stash_push(&format!("tuicr: switching to {target}"))
-        {
-            self.set_error(format!("Stash failed: {e}"));
-            return;
-        }
-        match self.vcs.checkout(target) {
-            Ok(()) => {
-                let mut message = format!("Switched to {target}");
-                if dirty {
-                    match self.vcs.stash_pop() {
-                        Ok(()) => message.push_str(" (changes restored)"),
-                        Err(e) => {
-                            self.after_head_moved();
-                            self.set_warning(format!(
-                                "Switched to {target}, but restoring the stash failed: {e} \u{2014} your changes are in `git stash list`"
-                            ));
-                            return;
-                        }
-                    }
-                }
-                self.after_head_moved();
-                self.set_message(message);
-            }
-            Err(e) => {
-                if dirty {
-                    // Put the tree back the way it was.
-                    let _ = self.vcs.stash_pop();
-                }
-                let err = e.to_string();
-                self.set_error(format!("Checkout failed: {}", err.trim()));
-            }
-        }
+        self.switch_to(target, smart);
     }
 
     /// The checkout target for the selector's cursor row: the commit's own
@@ -451,6 +397,7 @@ impl App {
                 if let Some(view) = self.merge_view.take() {
                     self.input_mode = view.return_mode;
                 }
+                self.move_in_flight = None;
                 self.after_head_moved();
                 self.set_message(format!("Aborted {op}"));
             }
@@ -466,10 +413,14 @@ impl App {
     /// commit list on screen and the working-tree diff if that is what is
     /// being reviewed.
     pub(in crate::app) fn after_head_moved(&mut self) {
-        match detect_vcs(
-            self.vcs_open_options.git_backend_preference,
-            self.vcs_open_options.diff_whitespace_mode.clone(),
-        ) {
+        let preference = self.vcs_open_options.git_backend_preference;
+        let whitespace = self.vcs_open_options.diff_whitespace_mode.clone();
+        let reopened = match self.vcs_reopen_root.as_deref() {
+            Some(root) => crate::vcs::git::GitBackend::discover_from(root, preference, whitespace)
+                .map(|backend| Box::new(backend) as Box<dyn crate::vcs::VcsBackend>),
+            None => detect_vcs(preference, whitespace),
+        };
+        match reopened {
             Ok(vcs) => {
                 self.vcs_info = vcs.info().clone();
                 self.vcs = vcs;

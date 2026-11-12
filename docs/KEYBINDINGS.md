@@ -349,15 +349,15 @@ remote-tracking ones. `:compare ma`, `↓`, `↓`, `Enter` picks the second matc
 | `:set logheight N` | Set the log pane height to N rows (borders included) |
 | `:branches` / `:branch` | Open the branch picker |
 | `:branch <name>` | Create `<name>` and switch to it (at the commit `n` was pressed on, else HEAD) |
-| `:checkout <target>` | Check out a branch or commit; refuses when the working tree has changes |
-| `:checkout! <target>` | Stash (untracked included), check out, and pop the stash |
+| `:checkout <target>` | Check out a branch or commit. Uncommitted changes come along; if some are in the way it asks what to do with those files (see [Local changes](#local-changes-on-a-switch-reset-or-rebase)) |
+| `:checkout! <target>` | The same, stashing whatever is in the way and putting it back without asking |
 | `:abort` | Abort the in-progress merge / cherry-pick / rebase / revert |
 | `:revert`, `:reword`, `:drop`, `:fixup` | The log-cursor commit actions above, from the command line |
-| `:reset [soft\|mixed\|hard] [commit]` | Reset the branch (default `mixed`; `hard` asks first); the commit defaults to the log cursor |
-| `:undo` | Undo the last commit, keeping its changes staged (`reset --soft HEAD~1`) |
+| `:reset [keep\|hard\|mixed\|soft] [commit]` | Reset the branch. Without a mode it asks, as `x` does. The commit defaults to the log cursor and can be a branch or tag name |
+| `:undo` | Right after a reset or a history rewrite (rebase, drop, fixup, reword, squash): put the branch back where it was; `:undo` again reverses that. Otherwise undo the last commit, keeping its changes staged (`reset --soft HEAD~1`) |
 | `:tag <name> [commit]` | Lightweight tag at the commit (default: the one `t` was pressed on, else HEAD) |
 | `:fetch` | Fetch every remote one by one (pruning, no submodules, never prompting) in the background; the status bar sums up what moved (`origin/main +3`) and names any remote that failed, such as one that wants credentials |
-| `:pull` / `:pull!` | Pull the upstream: fast-forward only, or rebase onto it with `!` |
+| `:pull` / `:pull!` | Pull the upstream: fast-forward only, or rebase onto it with `!` (uncommitted changes are autostashed around the rebase) |
 | `:push` | Show the commits that would be pushed and where, then push on `y` (the upstream, set on `origin` when missing). Refuses when the branch is behind its upstream. Never prompts for credentials |
 | `:push!` | Force-push with `--force-with-lease` after the same preview, for history you rewrote (reword, drop, fixup); the lease refuses if the remote moved since your last fetch |
 | `:merge <branch>` | Merge `<branch>` into the current branch (`--no-edit`). On conflicts, `:merge` opens the resolver, `:continue` finishes, `:abort` backs out |
@@ -547,7 +547,7 @@ with `<leader>+` / `<leader>-`, `:set logheight N`, or `log_height = N`.
 | `R` | Reword the cursor commit: the message box opens pre-filled (amends HEAD, otherwise replays the later commits) |
 | `D` | Drop the cursor commit, after a prompt |
 | `f` | Fix up: squash the cursor commit into its parent, keeping the parent's message |
-| `x` | Reset the branch to the cursor commit: opens `:reset ` for `soft`, `mixed` (default), or `hard` (asks first) |
+| `x` | Reset the branch to the cursor commit. A prompt says how many commits leave the branch and how many files have uncommitted changes, then takes one key: `k` keep (`Enter`), `h` hard, `m` mixed, `s` soft (see [Local changes](#local-changes-on-a-switch-reset-or-rebase)) |
 | `t` | Tag the cursor commit: opens `:tag ` for the name |
 | `y` | Copy the cursor commit's full hash |
 | `F` | Fetch every remote (as `:fetch`), then refresh the log so the new remote-tracking commits show |
@@ -596,7 +596,7 @@ rebase, cherry-pick, or revert in progress.
 | `Ctrl-o` | Show the picked branches (or the cursor row) in the log pane, as a `ref:` filter |
 | `Ctrl-f` | Fetch all remotes and refresh the list (ahead/behind counts update) |
 | `Enter` | Check out the highlighted branch (a remote branch creates its local tracking branch) |
-| `Ctrl-s` | Stash the working tree, check out, then pop the stash |
+| `Ctrl-s` | Check out, stashing whatever is in the way and putting it back without asking |
 | `Ctrl-g` | Merge the highlighted branch into the current one |
 | `Ctrl-b` | Rebase the current branch onto the highlighted one |
 | `Ctrl-x` | Delete the highlighted local branch (an unmerged one asks first) |
@@ -605,9 +605,48 @@ rebase, cherry-pick, or revert in progress.
 | `Backspace` / `Ctrl-u` | Edit / clear the filter |
 | `Esc` | Clear the filter, then close |
 
-A checkout refuses to run over a dirty working tree; `Ctrl-s` here or `:checkout! <target>`
-stash first (untracked files included) and restore afterwards. If the pop conflicts, the stash
-is kept and the status bar says so.
+## Local changes on a switch, reset or rebase
+
+Uncommitted changes never stop these, and none of them throws work away.
+
+**Switch** (`c` in the log, `Enter` in the branch picker, `:checkout`). Git carries your
+changes to the new branch and untracked files are left alone. Only when a changed file
+differs between the two branches does tuicr ask, naming the files:
+
+| Key | Answer |
+|-----|--------|
+| `s` / `Enter` | Stash just those files, switch, and put them back |
+| `d` | Switch without them; they stay in the stash list (`:stashes`) |
+| `Esc` | Cancel; nothing moves |
+
+`Ctrl-s` in the picker and `:checkout! <target>` take the `s` answer without asking.
+
+**Reset** (`x` on a log commit, or `:reset`). The prompt says what will happen (`2 commits
+leave the branch · 1 file has uncommitted changes`) and takes one key:
+
+| Key | Mode | What it does |
+|-----|------|--------------|
+| `k` / `Enter` | keep | Move the branch and the files with it; uncommitted changes stay. If one is in a file that differs in the target, the same `s` / `d` question as a switch |
+| `h` | hard | Move the branch and discard uncommitted changes. They are saved as a stash entry first (`tuicr: before reset --hard to …`), as is an untracked file the target would overwrite |
+| `m` | mixed | Move the branch; the commits' changes become unstaged changes |
+| `s` | soft | Move the branch; the commits' changes become staged changes |
+
+**Rebase** (`b`, `i`, `:rebase`, `Ctrl-b` in the picker, and the rewrites that replay
+commits: reword, drop, fixup, `:pull!`). Each starts with `--autostash`, so uncommitted
+changes are set aside and put back when it finishes, including after `:continue` or `:abort`.
+
+**Undo.** After a reset or a history rewrite the status bar says where the branch was;
+`:undo` puts it back there, and brings back what a hard reset discarded. `:undo` again
+reverses that. It only acts while HEAD is still where the move left it; otherwise `:undo`
+takes the last commit back as before.
+
+When stashed changes do not fit the code they are put back onto, git leaves conflict
+markers and keeps the stash entry. The status bar says so; `:merge` resolves the files, and
+the stash entry can then be dropped from `:stashes`.
+
+A file that cannot be put back at all stays in the stash list untouched, and the status bar
+says that instead: an untracked file of yours, say, where the branch you moved to has a file
+of its own by that name.
 
 ## Interactive rebase
 

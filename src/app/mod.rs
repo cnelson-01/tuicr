@@ -715,6 +715,10 @@ pub enum InputMode {
 }
 
 pub use blame::{BLAME_WIDTH, BlameState, overlay_label};
+pub use branch_moves::{
+    BranchMove, ChoiceOption, ChoicePrompt, ChoiceThen, HeadMove, HeadMoveKind, HeadPosition,
+    MoveWatch,
+};
 pub use branches::{BranchPicker, BranchPickerPurpose};
 pub use changes_pane::{ChangesPane, ChangesRow};
 pub use console::ConsoleView;
@@ -940,6 +944,9 @@ pub enum ConfirmAction {
     /// Delete the session under the cursor on the Sessions tab. Unlike
     /// `CopyAndQuit` this returns to the selector instead of quitting.
     DeleteSession,
+    /// Answer `App::pending_choice` with one of its keys (how to reset,
+    /// what to do with changes in the way of a move).
+    Choice,
 }
 
 impl ConfirmAction {
@@ -954,7 +961,8 @@ impl ConfirmAction {
             | ConfirmAction::DiscardChanges
             | ConfirmAction::DropStash
             | ConfirmAction::HistoryRewrite
-            | ConfirmAction::GitCommand => InputMode::Normal,
+            | ConfirmAction::GitCommand
+            | ConfirmAction::Choice => InputMode::Normal,
         }
     }
 
@@ -970,6 +978,7 @@ impl ConfirmAction {
             ConfirmAction::DropStash => "Drop this stash? This cannot be undone.",
             ConfirmAction::HistoryRewrite => "Rewrite history?",
             ConfirmAction::GitCommand => "Run this git command?",
+            ConfirmAction::Choice => "Choose",
         }
     }
 }
@@ -1850,8 +1859,21 @@ pub struct App {
     >,
     /// A re-read status waiting for the selector's rows to be on screen.
     pub status_probe_pending: Option<crate::vcs::traits::VcsChangeStatus>,
-    /// A drop or reset waiting on its prompt, with the mode to return to.
+    /// A drop waiting on its prompt, with the mode to return to.
     pub pending_history: Option<(HistoryAction, InputMode)>,
+    /// The prompt behind `ConfirmAction::Choice`.
+    pub pending_choice: Option<ChoicePrompt>,
+    /// The last reset or history rewrite, which `:undo` puts back while
+    /// HEAD is still where it left it.
+    pub last_branch_move: Option<BranchMove>,
+    /// Where the branch was when a rebase that stopped on conflicts began,
+    /// and what started it, for the record made once it finishes.
+    pub move_in_flight: Option<(HeadPosition, String)>,
+    /// HEAD and the stash list before the `:pull!` on the worker thread.
+    pub remote_move_watch: Option<MoveWatch>,
+    /// Where `after_head_moved` reopens the repository. `None` is the
+    /// process's working directory; tests point it at their fixture.
+    pub vcs_reopen_root: Option<PathBuf>,
     /// Display order for the inline commit selector (presentation only).
     pub commit_order: CommitOrder,
     /// Which commits are selected when a multi-commit review first opens.
@@ -2280,6 +2302,7 @@ impl AppStartupOptions<'_> {
 
 mod annotations;
 mod blame;
+mod branch_moves;
 mod branches;
 mod changes_pane;
 mod coloring;

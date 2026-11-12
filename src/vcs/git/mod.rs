@@ -451,7 +451,13 @@ impl VcsBackend for GitBackend {
     }
 
     fn rebase_onto(&self, commit_id: &str) -> Result<()> {
-        let result = run_git_command(&self.info().root_path, &["rebase", commit_id]).map(|_| ());
+        // `--autostash` on every rebase tuicr starts: uncommitted changes
+        // are set aside and put back, instead of git refusing to start.
+        let result = run_git_command(
+            &self.info().root_path,
+            &["rebase", "--autostash", commit_id],
+        )
+        .map(|_| ());
         self.refresh_after_cli_op(result)
     }
 
@@ -761,6 +767,7 @@ impl VcsBackend for GitBackend {
             ResetMode::Soft => "--soft",
             ResetMode::Mixed => "--mixed",
             ResetMode::Hard => "--hard",
+            ResetMode::Keep => "--keep",
         };
         let result =
             run_git_command(&self.info().root_path, &["reset", "-q", flag, target]).map(|_| ());
@@ -882,11 +889,15 @@ impl VcsBackend for GitBackend {
         let before = run_git_command(root, &["rev-parse", "HEAD"])?
             .trim()
             .to_string();
-        let mode = if rebase { "--rebase" } else { "--ff-only" };
-        let args: Vec<String> = ["pull", mode, "--no-recurse-submodules", "--quiet"]
+        let mut args: Vec<String> = ["pull", "--no-recurse-submodules", "--quiet"]
             .iter()
             .map(|s| s.to_string())
             .collect();
+        if rebase {
+            args.extend(["--rebase".to_string(), "--autostash".to_string()]);
+        } else {
+            args.push("--ff-only".to_string());
+        }
         let envs = non_interactive_git_env(root);
         let result = run_git_env(root, &args, &envs).and_then(|_| {
             let after = run_git_command(root, &["rev-parse", "HEAD"])?
@@ -1143,7 +1154,11 @@ fn rebase_with_todo(root: &Path, target: &str, action: TodoAction<'_>) -> Result
             .map_err(|e| TuicrError::VcsCommand(format!("Failed to write the message: {e}")))?;
         envs[1] = ("GIT_EDITOR", format!("cp '{}'", message_path.display()));
     }
-    let mut args: Vec<String> = vec!["rebase".to_string(), "-i".to_string()];
+    let mut args: Vec<String> = vec![
+        "rebase".to_string(),
+        "--autostash".to_string(),
+        "-i".to_string(),
+    ];
     args.extend(base_args);
     run_git_env(root, &args, &envs).map(|_| ())
 }
@@ -1199,7 +1214,11 @@ fn rebase_with_steps(root: &Path, base: Option<&str>, steps: &[RebaseStep]) -> R
         ),
         ("GIT_EDITOR", format!("sh '{}'", editor_path.display())),
     ];
-    let mut args: Vec<String> = vec!["rebase".to_string(), "-i".to_string()];
+    let mut args: Vec<String> = vec![
+        "rebase".to_string(),
+        "--autostash".to_string(),
+        "-i".to_string(),
+    ];
     match base {
         Some(base) => args.push(base.to_string()),
         None => args.push("--root".to_string()),

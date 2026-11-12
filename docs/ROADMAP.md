@@ -22,7 +22,7 @@ window. Phases land in order, each as its own commit(s). Tick items as they ship
 
 - [x] Switch branch (`:checkout <name>` and a picker); checkout a commit (detached)
 - [x] Create a branch at the cursor commit
-- [x] Dirty-tree guard: stash-and-switch or refuse with a clear message
+- [x] Local changes come along on a switch; only the files in the way are stashed, after asking
 - [x] Abort an in-progress cherry-pick / rebase / merge / revert
 - [x] Graph shows remote-tracking branches, tags, and a HEAD marker
 
@@ -35,7 +35,7 @@ window. Phases land in order, each as its own commit(s). Tick items as they ship
 ## Phase 3c: commit context actions
 
 - [x] Revert, reword (amend or todo-driven rebase), drop, fixup into parent
-- [x] Reset soft / mixed / hard to a commit (hard asks first); `:undo` last commit
+- [x] Reset keep / hard / mixed / soft to a commit (one-key chooser; hard stashes what it discards); `:undo` puts a reset or rewrite back, else the last commit
 - [x] Tag at a commit; copy hash
 
 ## Phase 4: log filter

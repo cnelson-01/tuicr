@@ -628,6 +628,33 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  x         ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(
+                "Reset the branch to the cursor commit: k keep (uncommitted changes stay), h hard (discards them, saved as a stash), m mixed, s soft",
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :undo     ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(
+                "Put the branch back after a reset or rebase (again reverses it); otherwise undo the last commit",
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "            ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(
+                "Uncommitted changes come along on a switch, reset or rebase; files in the way are stashed and put back (it asks first)",
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  n         ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),

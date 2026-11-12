@@ -47,12 +47,14 @@ impl App {
         self.repo_status = self.read_repo_status();
     }
 
-    fn read_repo_status(&self) -> Option<RepoStatus> {
-        let git = |args: &[&str]| self.vcs.run_git(args, false).ok();
-        let git_dir = git(&["rev-parse", "--git-dir"])?;
-        let git_dir = self.vcs_info.root_path.join(git_dir.trim());
+    fn git_dir(&self) -> Option<std::path::PathBuf> {
+        let git_dir = self.vcs.run_git(&["rev-parse", "--git-dir"], false).ok()?;
+        Some(self.vcs_info.root_path.join(git_dir.trim()))
+    }
+
+    fn operation_in(git_dir: &std::path::Path) -> Option<&'static str> {
         let exists = |name: &str| git_dir.join(name).exists();
-        let operation = if exists("MERGE_HEAD") {
+        if exists("MERGE_HEAD") {
             Some("merge")
         } else if exists("rebase-merge") || exists("rebase-apply") {
             Some("rebase")
@@ -62,7 +64,18 @@ impl App {
             Some("revert")
         } else {
             None
-        };
+        }
+    }
+
+    /// The merge, rebase, cherry-pick or revert that is stopped part-way,
+    /// read from the git directory rather than the cached [`RepoStatus`].
+    pub(in crate::app) fn operation_in_progress(&self) -> Option<&'static str> {
+        Self::operation_in(&self.git_dir()?)
+    }
+
+    fn read_repo_status(&self) -> Option<RepoStatus> {
+        let git = |args: &[&str]| self.vcs.run_git(args, false).ok();
+        let operation = Self::operation_in(&self.git_dir()?);
         let upstream = git(&["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
             .map(|u| u.trim().to_string())
             .filter(|u| !u.is_empty());
@@ -140,15 +153,27 @@ impl App {
             self.set_warning("HEAD is detached; check out a branch to rebase");
             return;
         };
-        self.run_git_op(
-            &["-c", "core.editor=true", "rebase", onto],
-            &format!("Rebased {current} onto {onto}"),
-        );
+        // `--autostash`: uncommitted changes are set aside and put back
+        // rather than stopping the rebase before it starts.
+        self.tracking_branch_move("rebase", |app| {
+            app.run_git_op(
+                &["-c", "core.editor=true", "rebase", "--autostash", onto],
+                &format!("Rebased {current} onto {onto}"),
+            );
+        });
     }
 
     /// `:continue` — finish the merge / rebase / cherry-pick / revert in
     /// progress once its conflicts are resolved and staged.
     pub fn continue_operation(&mut self) {
+        // Finishing a rebase is what moves the branch, and what puts its
+        // autostash back.
+        let watch = self.watch_branch_move();
+        self.continue_operation_inner();
+        self.settle_branch_move("rebase", watch);
+    }
+
+    fn continue_operation_inner(&mut self) {
         match self.vcs.continue_merge_operation() {
             Ok(op) => {
                 self.after_head_moved();
@@ -178,10 +203,12 @@ impl App {
         let op = self.repo_status.as_ref().and_then(|s| s.operation);
         match op {
             Some(op @ ("rebase" | "cherry-pick" | "revert")) => {
-                self.run_git_op(
-                    &["-c", "core.editor=true", op, "--skip"],
-                    &format!("Skipped the commit; {op} continues"),
-                );
+                self.tracking_branch_move(op, |app| {
+                    app.run_git_op(
+                        &["-c", "core.editor=true", op, "--skip"],
+                        &format!("Skipped the commit; {op} continues"),
+                    );
+                });
             }
             Some("merge") => self.set_warning("A merge can't skip; :abort it instead"),
             _ => self.set_warning("No rebase, cherry-pick, or revert in progress"),

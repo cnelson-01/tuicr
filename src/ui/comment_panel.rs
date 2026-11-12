@@ -701,6 +701,89 @@ pub fn render_confirm_dialog_with_detail(
     );
 }
 
+/// A prompt answered with one key out of several: the question, the facts
+/// under it, then one row per answer (key, name, what it does). Enter takes
+/// the marked default.
+pub fn render_choice_dialog(frame: &mut Frame, app: &App, choice: &crate::app::ChoicePrompt) {
+    let theme = &app.theme;
+    let screen = frame.area();
+    let label_width = choice
+        .options
+        .iter()
+        .map(|o| o.label.chars().count())
+        .max()
+        .unwrap_or(0);
+    let option_text = |o: &crate::app::ChoiceOption| {
+        let enter = if o.key == choice.default {
+            "  (Enter)"
+        } else {
+            ""
+        };
+        format!(
+            "{:<label_width$}  {}{enter}",
+            o.label,
+            o.description,
+            label_width = label_width
+        )
+    };
+    let widest = choice
+        .options
+        .iter()
+        .map(|o| option_text(o).chars().count() + 5)
+        .chain(choice.detail.iter().map(|l| l.chars().count()))
+        .chain(std::iter::once(choice.title.chars().count()))
+        .max()
+        .unwrap_or(0) as u16;
+    let width = (widest + 6).clamp(40, screen.width.saturating_sub(4).max(40));
+    let rows = choice.detail.len() + choice.options.len();
+    let height = (rows as u16 + 8).min(screen.height.saturating_sub(2));
+    let area = Rect {
+        x: screen.x + screen.width.saturating_sub(width) / 2,
+        y: screen.y + screen.height.saturating_sub(height) / 2,
+        width: width.min(screen.width),
+        height,
+    };
+    frame.render_widget(Clear, area);
+    let block = Block::default()
+        .title(choice.heading)
+        .borders(Borders::ALL)
+        .style(styles::popup_style(theme))
+        .border_style(styles::border_style(theme, true));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let bold = Style::default().add_modifier(Modifier::BOLD);
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(format!(" {}", choice.title), bold)),
+    ];
+    // The answers are what must stay on screen: when the dialog is short
+    // of rows, the facts give way first.
+    let room = (inner.height as usize).saturating_sub(choice.options.len() + 6);
+    for line in choice.detail.iter().take(room) {
+        lines.push(Line::from(Span::styled(
+            format!(" {line}"),
+            Style::default().fg(theme.fg_secondary),
+        )));
+    }
+    lines.push(Line::from(""));
+    for option in &choice.options {
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {}  ", option.key), bold),
+            Span::raw(option_text(option)),
+        ]));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  Esc cancels",
+        Style::default().fg(theme.fg_dim),
+    )));
+    frame.render_widget(
+        Paragraph::new(lines).style(styles::popup_style(theme)),
+        inner,
+    );
+}
+
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     let vertical = Layout::vertical([Constraint::Percentage(percent_y)]).flex(Flex::Center);
     let horizontal = Layout::horizontal([Constraint::Percentage(percent_x)]).flex(Flex::Center);

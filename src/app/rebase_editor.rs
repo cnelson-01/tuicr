@@ -288,12 +288,14 @@ impl App {
         let base = editor.base.clone();
         let label = editor.base_label.clone();
         self.close_rebase_editor();
-        match self.vcs.rebase_interactive(base.as_deref(), &steps) {
-            Ok(()) => {
-                self.after_head_moved();
-                self.set_message(format!("Rebased onto {label}: {summary}"));
+        self.tracking_branch_move("rebase", |app| {
+            match app.vcs.rebase_interactive(base.as_deref(), &steps) {
+                Ok(()) => {
+                    app.after_head_moved();
+                    app.set_message(format!("Rebased onto {label}: {summary}"));
+                }
+                Err(err) => app.handle_history_op_failure("rebase", err),
             }
-            Err(err) => self.handle_history_op_failure("rebase", err),
-        }
+        });
     }
 }

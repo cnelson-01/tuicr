@@ -108,6 +108,8 @@ pub enum Action {
     // Confirm dialog
     ConfirmYes,
     ConfirmNo,
+    /// Any other key on a prompt: one of the answers of a choice prompt.
+    ConfirmKey(char),
 
     // Commit selection
     CommitSelectUp,
@@ -279,7 +281,7 @@ pub enum Action {
     BranchPickerUp,
     /// Check out the highlighted branch (Enter).
     BranchPickerConfirm,
-    /// Stash, check out, and pop (Ctrl-s).
+    /// Check out, stashing what is in the way without asking (Ctrl-s).
     BranchPickerConfirmSmart,
     /// Pick / unpick the highlighted branch for a compare or log (Tab).
     BranchPickerPick,
@@ -638,6 +640,7 @@ fn map_confirm_mode(key: KeyEvent) -> Action {
     match key.code {
         KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => Action::ConfirmYes,
         KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => Action::ConfirmNo,
+        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => Action::ConfirmKey(c),
         _ => Action::None,
     }
 }
@@ -759,7 +762,7 @@ fn map_stash_picker_mode(key: KeyEvent) -> Action {
 }
 
 /// Branch picker: printable keys filter, arrows (or Ctrl-n / Ctrl-p) move,
-/// Enter checks out, Ctrl-s stashes around the checkout.
+/// Enter checks out, Ctrl-s does so without asking about changes in the way.
 fn map_branch_picker_mode(key: KeyEvent) -> Action {
     match (key.code, key.modifiers) {
         (KeyCode::Down, _) => Action::BranchPickerDown,

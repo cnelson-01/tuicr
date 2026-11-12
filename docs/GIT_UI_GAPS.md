@@ -84,6 +84,9 @@ screen, and the status-bar hints for most panes are partial or truncated.
 - [x] No `:merge <branch>` (`:merge` opens only the conflict view)
 - [x] No `:rebase <branch>`, `:continue`, `:skip`. You can abort an
       in-progress operation, but you can't finish one from the TUI
+- [x] Uncommitted changes block a switch (any change at all, untracked
+      files included) and every rebase. Carry them along, and ask only
+      about the files that are actually in the way
 
 ### Commits
 
@@ -91,6 +94,10 @@ screen, and the status-bar hints for most panes are partial or truncated.
       Here"): reorder, pick, reword, squash, fixup, drop, then run
 - [x] Tags can be created but not deleted or pushed (`:tag -d`,
       `:push --tags`)
+- [x] Reset makes you type a mode, defaults to the one that leaves a dirty
+      tree, and `hard` cannot be taken back. Ask with one key per mode,
+      say what each does, default to `keep`, stash what `hard` discards,
+      and let `:undo` put a reset or rebase back
 
 ### Remote
 

@@ -1,10 +1,13 @@
 //! Commit context actions on the log pane and the fullscreen selector:
-//! revert, reset (soft / mixed / hard) and undo-last-commit, reword, drop,
-//! fixup into the parent, tag, and copy hash. History rewrites run through
-//! git's own interactive rebase with a prepared todo list, so a conflict
-//! stop lands in the merge view exactly like a cherry-pick's would and
-//! `a` / `:abort` backs out.
+//! revert, reset and undo-last-commit, reword, drop, fixup into the parent,
+//! tag, and copy hash. History rewrites run through git's own interactive
+//! rebase with a prepared todo list, so a conflict stop lands in the merge
+//! view exactly like a cherry-pick's would and `a` / `:abort` backs out.
+//! They start with `--autostash`, so uncommitted changes do not block them,
+//! and `:undo` puts the branch back (see `branch_moves.rs`, which also has
+//! the reset chooser).
 
+use super::branch_moves::short;
 use super::*;
 use crate::output::copy_text_to_clipboard;
 use crate::vcs::ResetMode;
@@ -12,15 +15,7 @@ use crate::vcs::ResetMode;
 /// A history rewrite waiting on the y/n prompt, with the mode to return to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HistoryAction {
-    Drop {
-        id: String,
-        summary: String,
-    },
-    Reset {
-        id: String,
-        summary: String,
-        mode: ResetMode,
-    },
+    Drop { id: String, summary: String },
 }
 
 impl HistoryAction {
@@ -31,33 +26,15 @@ impl HistoryAction {
                 "Drop commit {} \"{summary}\"? Later commits are replayed without it.",
                 short(id)
             ),
-            Self::Reset { id, summary, mode } => match mode {
-                ResetMode::Hard => format!(
-                    "Reset to {} \"{summary}\" and DISCARD every working tree change? This cannot be undone.",
-                    short(id)
-                ),
-                ResetMode::Mixed => format!(
-                    "Reset to {} \"{summary}\"? Later commits become unstaged changes.",
-                    short(id)
-                ),
-                ResetMode::Soft => format!(
-                    "Reset to {} \"{summary}\"? Later commits become staged changes.",
-                    short(id)
-                ),
-            },
         }
     }
-}
-
-fn short(id: &str) -> &str {
-    &id[..7.min(id.len())]
 }
 
 impl App {
     /// The commit an action applies to: the row under the cursor in the
     /// fullscreen selector, or in the log pane. Pseudo rows and the overflow
     /// row do not count.
-    fn action_commit(&mut self) -> Option<(String, String)> {
+    pub(in crate::app) fn action_commit(&mut self) -> Option<(String, String)> {
         let pick = |app: &App| {
             app.commit_list
                 .get(app.commit_list_cursor)
@@ -87,7 +64,7 @@ impl App {
     }
 
     /// The mode a prompt or composer should hand back to.
-    fn history_return_mode(&self) -> InputMode {
+    pub(in crate::app) fn history_return_mode(&self) -> InputMode {
         match self.input_mode {
             InputMode::CommitSelect => InputMode::CommitSelect,
             InputMode::Command => self.command_return_mode,
@@ -153,14 +130,14 @@ impl App {
             self.set_error("Commit message cannot be empty");
             return;
         }
-        match self.vcs.reword_commit(id, message) {
+        self.tracking_branch_move("reword", |app| match app.vcs.reword_commit(id, message) {
             Ok(()) => {
-                self.after_head_moved();
+                app.after_head_moved();
                 let summary = message.lines().next().unwrap_or_default();
-                self.set_message(format!("Reworded {}: {summary}", short(id)));
+                app.set_message(format!("Reworded {}: {summary}", short(id)));
             }
-            Err(err) => self.handle_history_op_failure("reword", err),
-        }
+            Err(err) => app.handle_history_op_failure("reword", err),
+        });
     }
 
     /// `D` / `:drop`: ask, then replay history without the cursor commit.
@@ -179,72 +156,88 @@ impl App {
         let Some((id, summary)) = self.require_commit("fix up") else {
             return;
         };
-        match self.vcs.fixup_commit(&id) {
+        self.tracking_branch_move("fixup", |app| match app.vcs.fixup_commit(&id) {
             Ok(()) => {
-                self.after_head_moved();
-                self.set_message(format!(
+                app.after_head_moved();
+                app.set_message(format!(
                     "Squashed {} \"{summary}\" into its parent",
                     short(&id)
                 ));
             }
-            Err(err) => self.handle_history_op_failure("fixup", err),
-        }
+            Err(err) => app.handle_history_op_failure("fixup", err),
+        });
     }
 
-    /// `x`: the command line opens with `reset ` so the mode (soft, mixed,
-    /// hard) can be typed; the cursor commit is remembered as the target.
+    /// `x`: ask how to reset the branch to the cursor commit.
     pub fn start_reset_prompt(&mut self) {
         let Some((id, _)) = self.require_commit("reset to") else {
             return;
         };
-        self.pending_branch_start = Some(id);
-        self.enter_command_mode();
-        self.command_buffer = "reset ".to_string();
-        self.set_message("Reset: type soft, mixed, or hard, then Enter (mixed when left empty)");
+        self.open_reset_chooser(id);
     }
 
-    /// `:reset [soft|mixed|hard] [commit]`. Without a commit it targets the
-    /// log cursor (or the one `x` was pressed on). Hard resets ask first.
+    /// `:reset [keep|hard|mixed|soft] [commit]`. Without a commit it targets
+    /// the log cursor; without a mode it asks, saying what each one does.
     pub fn reset_command(&mut self, args: &str) {
-        let mut mode = ResetMode::Mixed;
+        let mut mode: Option<ResetMode> = None;
         let mut target: Option<String> = None;
         for word in args.split_whitespace() {
             match word {
-                "soft" | "--soft" => mode = ResetMode::Soft,
-                "mixed" | "--mixed" => mode = ResetMode::Mixed,
-                "hard" | "--hard" => mode = ResetMode::Hard,
+                "keep" | "--keep" => mode = Some(ResetMode::Keep),
+                "soft" | "--soft" => mode = Some(ResetMode::Soft),
+                "mixed" | "--mixed" => mode = Some(ResetMode::Mixed),
+                "hard" | "--hard" => mode = Some(ResetMode::Hard),
                 other => target = Some(other.to_string()),
             }
         }
-        let id = match target
-            .or_else(|| self.pending_branch_start.take())
-            .or_else(|| self.action_commit().map(|(id, _)| id))
-        {
-            Some(id) => id,
-            None => {
-                self.set_error(
-                    "Usage: :reset [soft|mixed|hard] <commit>  (or press x on a log row)",
-                );
-                return;
-            }
+        let id = match target {
+            // A branch or tag name is as good as a hash here.
+            Some(rev) => match self
+                .vcs
+                .run_git(
+                    &[
+                        "rev-parse",
+                        "--verify",
+                        "--quiet",
+                        &format!("{rev}^{{commit}}"),
+                    ],
+                    false,
+                )
+                .map(|out| out.trim().to_string())
+            {
+                Ok(id) if !id.is_empty() => id,
+                _ => {
+                    self.set_error(format!("{rev} does not name a commit"));
+                    return;
+                }
+            },
+            None => match self.action_commit() {
+                Some((id, _)) => id,
+                None => {
+                    self.set_error(
+                        "Usage: :reset [keep|hard|mixed|soft] <commit>  (or press x on a log row)",
+                    );
+                    return;
+                }
+            },
         };
-        let summary = self
-            .vcs
-            .commit_message(&id)
-            .ok()
-            .and_then(|m| m.lines().next().map(str::to_string))
-            .unwrap_or_default();
-        let return_mode = self.history_return_mode();
-        if mode == ResetMode::Hard {
-            self.pending_history = Some((HistoryAction::Reset { id, summary, mode }, return_mode));
-            self.enter_confirm_mode(ConfirmAction::HistoryRewrite);
-            return;
+        match mode {
+            Some(mode) => {
+                let summary = self
+                    .vcs
+                    .commit_message(&id)
+                    .ok()
+                    .and_then(|m| m.lines().next().map(str::to_string))
+                    .unwrap_or_default();
+                self.reset_to_commit(&id, &summary, mode);
+            }
+            None => self.open_reset_chooser(id),
         }
-        self.run_reset(&id, mode, &summary);
     }
 
-    /// `:undo`: take the last commit back, keeping its changes staged.
-    pub fn undo_last_commit(&mut self) {
+    /// `:undo` with no branch move to put back: take the last commit back,
+    /// keeping its changes staged.
+    pub(in crate::app) fn undo_last_commit(&mut self) {
         match self.vcs.reset_to("HEAD~1", ResetMode::Soft) {
             Ok(()) => {
                 self.after_head_moved();
@@ -253,24 +246,6 @@ impl App {
             Err(e) => {
                 let err = e.to_string();
                 self.set_error(format!("Undo failed: {}", err.trim()));
-            }
-        }
-    }
-
-    fn run_reset(&mut self, id: &str, mode: ResetMode, summary: &str) {
-        match self.vcs.reset_to(id, mode) {
-            Ok(()) => {
-                self.after_head_moved();
-                let what = match mode {
-                    ResetMode::Soft => "soft",
-                    ResetMode::Mixed => "mixed",
-                    ResetMode::Hard => "hard",
-                };
-                self.set_message(format!("Reset ({what}) to {} \"{summary}\"", short(id)));
-            }
-            Err(e) => {
-                let err = e.to_string();
-                self.set_error(format!("Reset failed: {}", err.trim()));
             }
         }
     }
@@ -284,14 +259,15 @@ impl App {
         self.pending_confirm = None;
         self.input_mode = return_mode;
         match action {
-            HistoryAction::Drop { id, summary } => match self.vcs.drop_commit(&id) {
-                Ok(()) => {
-                    self.after_head_moved();
-                    self.set_message(format!("Dropped {} \"{summary}\"", short(&id)));
-                }
-                Err(err) => self.handle_history_op_failure("drop", err),
-            },
-            HistoryAction::Reset { id, summary, mode } => self.run_reset(&id, mode, &summary),
+            HistoryAction::Drop { id, summary } => {
+                self.tracking_branch_move("drop", |app| match app.vcs.drop_commit(&id) {
+                    Ok(()) => {
+                        app.after_head_moved();
+                        app.set_message(format!("Dropped {} \"{summary}\"", short(&id)));
+                    }
+                    Err(err) => app.handle_history_op_failure("drop", err),
+                });
+            }
         }
     }
 

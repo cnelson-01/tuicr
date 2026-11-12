@@ -74,6 +74,9 @@ impl App {
             ));
             return;
         }
+        // `pull --rebase` runs with `--autostash` and moves the branch:
+        // note where things are, to settle it when the worker answers.
+        self.remote_move_watch = (op == RemoteOp::PullRebase).then(|| self.watch_branch_move());
         let options = self.vcs_open_options.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         self.remote_op = Some(RemoteOpInFlight { op, rx });
@@ -129,6 +132,9 @@ impl App {
                 let err = e.to_string();
                 self.set_error(format!("{} failed: {}", answer.op.name(), err.trim()));
             }
+        }
+        if let Some(watch) = self.remote_move_watch.take() {
+            self.settle_branch_move("pull", watch);
         }
         true
     }

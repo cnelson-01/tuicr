@@ -753,17 +753,17 @@ impl App {
             self.set_message("Move the cursor onto a commit to rebase onto");
             return;
         };
-        match self.vcs.rebase_onto(&commit_id) {
+        self.tracking_branch_move("rebase", |app| match app.vcs.rebase_onto(&commit_id) {
             Ok(()) => {
-                self.refresh_commit_selector_rows();
-                self.set_message(format!(
+                app.refresh_commit_selector_rows();
+                app.set_message(format!(
                     "Rebased {} onto {}",
-                    self.vcs_info.branch_name.as_deref().unwrap_or("HEAD"),
+                    app.vcs_info.branch_name.as_deref().unwrap_or("HEAD"),
                     &commit_id[..7.min(commit_id.len())],
                 ));
             }
-            Err(err) => self.handle_history_op_failure("rebase", err),
-        }
+            Err(err) => app.handle_history_op_failure("rebase", err),
+        });
     }
 
     /// Squash the selected commits (space-selected range) into one commit.
@@ -773,17 +773,17 @@ impl App {
             self.set_message("Select at least two commits to squash (space, then s)");
             return;
         }
-        match self.vcs.squash_commits(&ids) {
+        self.tracking_branch_move("squash", |app| match app.vcs.squash_commits(&ids) {
             Ok(()) => {
                 let count = ids.len();
-                self.refresh_commit_selector_rows();
-                self.set_message(format!("Squashed {count} commits into one"));
+                app.refresh_commit_selector_rows();
+                app.set_message(format!("Squashed {count} commits into one"));
             }
             Err(err) => {
                 let err = err.to_string();
-                self.set_error(format!("Squash failed: {}", err.trim()));
+                app.set_error(format!("Squash failed: {}", err.trim()));
             }
-        }
+        });
     }
 
     /// A failed history operation either stopped on conflicts (open the
@@ -1118,9 +1118,25 @@ impl App {
                     file.staged = true;
                 }
                 if self.merge_all_resolved_and_staged() {
-                    // Hand off to the Y/N prompt; the dialog renders on
-                    // top of the merge view.
-                    self.enter_confirm_mode(ConfirmAction::ContinueMergeOperation);
+                    // Conflicts left by putting stashed changes back
+                    // (a switch, a reset, a rebase autostash) belong to
+                    // no operation: there is nothing to commit or
+                    // continue, the resolved files are simply staged.
+                    self.refresh_repo_status();
+                    if self
+                        .repo_status
+                        .as_ref()
+                        .is_some_and(|status| status.operation.is_none())
+                    {
+                        self.close_merge_view();
+                        self.set_message(
+                            "Conflicts resolved and staged \u{00b7} the copy in the stash list can go (:stashes)",
+                        );
+                    } else {
+                        // Hand off to the Y/N prompt; the dialog renders
+                        // on top of the merge view.
+                        self.enter_confirm_mode(ConfirmAction::ContinueMergeOperation);
+                    }
                 } else {
                     self.set_message(format!(
                         "Wrote {} \u{00b7} resolved and staged",

@@ -599,6 +599,13 @@ fn mode_hints(app: &App) -> Vec<Hint> {
             hint("\u{21b5} jump"),
             pinned("q/esc close"),
         ],
+        InputMode::Confirm if app.pending_choice.is_some() => app
+            .pending_choice
+            .iter()
+            .flat_map(|choice| choice.options.iter())
+            .map(|option| pinned(format!("{} {}", option.key, option.label)))
+            .chain([pinned("\u{21b5} default"), pinned("esc cancel")])
+            .collect(),
         InputMode::Confirm => vec![pinned("y yes"), pinned("n no")],
         InputMode::FindResults => vec![
             hint("j/k move"),

@@ -890,7 +890,8 @@ pub fn handle_command_action(app: &mut App, action: Action) {
                 CommandAfterDispatch::KeepMode
             } else if let Some((target, smart)) = parse_checkout_command(&cmd) {
                 app.checkout_target(target, smart);
-                CommandAfterDispatch::ExitCommandMode
+                // Changes in the way open a prompt, which stays up.
+                history_after_dispatch(app)
             } else if let Some(name) = cmd.strip_prefix("branch ") {
                 let name = name.to_string();
                 app.create_branch(&name);
@@ -1330,8 +1331,8 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
             history_after_dispatch(app)
         }
         CommandKind::UndoCommit => {
-            app.undo_last_commit();
-            CommandAfterDispatch::ExitCommandMode
+            app.undo();
+            history_after_dispatch(app)
         }
         CommandKind::ResetPrompt => {
             app.reset_command("");
@@ -1916,6 +1917,17 @@ pub fn handle_confirm_action(app: &mut App, action: Action) {
             match action {
                 Action::ConfirmYes => app.confirm_history_action(),
                 Action::ConfirmNo => app.cancel_history_action(),
+                _ => {}
+            }
+            return;
+        }
+        Some(app::ConfirmAction::Choice) => {
+            // Enter (or `y`) takes the default answer, Esc (or `n`)
+            // cancels, and each answer has a key of its own.
+            match action {
+                Action::ConfirmYes => app.choose_default(),
+                Action::ConfirmNo => app.cancel_choice(),
+                Action::ConfirmKey(key) => app.choose(key),
                 _ => {}
             }
             return;
