@@ -243,6 +243,144 @@ fn confirm_refuses_non_contiguous_picks_for_review() {
     assert!(app.message.is_some());
 }
 
+/// A commit row as git reports it: with its parents, first parent first.
+fn commit_on(id: &str, parents: &[&str]) -> CommitInfo {
+    CommitInfo {
+        parent_ids: parents.iter().map(|p| p.to_string()).collect(),
+        ..normal_commit(id)
+    }
+}
+
+/// The log as it looks with two branches forked from `base`: date order
+/// puts `main-1` between the feature branch's commits.
+fn interleaved_branches() -> Vec<CommitInfo> {
+    vec![
+        commit_on("feat-3", &["feat-2"]),
+        commit_on("feat-2", &["feat-1"]),
+        commit_on("main-1", &["base"]),
+        commit_on("feat-1", &["base"]),
+        commit_on("base", &[]),
+    ]
+}
+
+fn some_range_diff() -> Vec<DiffFile> {
+    vec![commit_only_file(
+        Path::new("src/feature.rs"),
+        vec![one_line_hunk()],
+    )]
+}
+
+#[test]
+fn confirm_reviews_a_branch_whose_rows_are_split_by_another_branch() {
+    // given a feature branch whose three commits are consecutive in git,
+    // with a commit from main listed between them
+    let mut app = build_app_with_range_diff(interleaved_branches(), some_range_diff());
+    app.commit_picks.extend([0, 1, 3]);
+
+    // when confirming
+    app.confirm_commit_selection()
+        .expect("confirm should not error");
+
+    // then the branch is reviewed, oldest first, without the other
+    // branch's commit
+    assert_eq!(app.input_mode, InputMode::Normal);
+    match &app.diff_source {
+        DiffSource::CommitRange(ids) => assert_eq!(ids, &["feat-1", "feat-2", "feat-3"]),
+        other => panic!("expected a commit range review, got {other:?}"),
+    }
+}
+
+#[test]
+fn confirm_refuses_a_gap_in_git_history() {
+    // given picks that skip the middle commit of the branch
+    let mut app = build_app_with_range_diff(interleaved_branches(), some_range_diff());
+    app.commit_picks.extend([0, 3]);
+
+    // when confirming
+    app.confirm_commit_selection()
+        .expect("confirm should not error");
+
+    // then nothing is loaded
+    assert_eq!(app.input_mode, InputMode::CommitSelect);
+    assert!(app.message.is_some());
+}
+
+#[test]
+fn confirm_refuses_neighbouring_rows_from_unrelated_branches() {
+    // given picks that are neighbours in the list but on different
+    // branches: the diff from one's parent to the other is not a review
+    // of those two commits
+    let mut app = build_app_with_range_diff(interleaved_branches(), some_range_diff());
+    app.commit_picks.extend([1, 2]);
+
+    // when confirming
+    app.confirm_commit_selection()
+        .expect("confirm should not error");
+
+    // then nothing is loaded
+    assert_eq!(app.input_mode, InputMode::CommitSelect);
+    assert!(app.message.is_some());
+}
+
+#[test]
+fn a_merge_continues_a_run_only_through_its_first_parent() {
+    // given a merge of `side` into the line `merge` -> `mainline`
+    let app = build_app(vec![
+        commit_on("merge", &["mainline", "side"]),
+        commit_on("side", &["base"]),
+        commit_on("mainline", &["base"]),
+        commit_on("base", &[]),
+    ]);
+
+    // then the merge runs on into its first parent, and not into the
+    // branch it merged: that diff would take in `mainline` as well
+    assert!(app.picks_are_one_run_of_history(&[0, 2]));
+    assert!(!app.picks_are_one_run_of_history(&[0, 1]));
+}
+
+#[test]
+fn working_tree_rows_continue_into_head_wherever_it_is_listed() {
+    // given HEAD listed below a newer commit of another branch
+    let head = CommitInfo {
+        is_head: true,
+        ..commit_on("head", &["base"])
+    };
+    let app = build_app(vec![
+        App::staged_commit_entry(),
+        App::unstaged_commit_entry(),
+        commit_on("ahead", &["base"]),
+        head,
+        commit_on("base", &[]),
+    ]);
+
+    // then staged and unstaged changes run on into HEAD and its parent
+    assert!(app.picks_are_one_run_of_history(&[0, 1]));
+    assert!(app.picks_are_one_run_of_history(&[0, 1, 3, 4]));
+    assert!(app.picks_are_one_run_of_history(&[1, 3]));
+    // and not into the commit that merely sits under them
+    assert!(!app.picks_are_one_run_of_history(&[1, 2]));
+}
+
+#[test]
+fn a_filter_that_hides_commits_keeps_the_row_rule() {
+    // given rows whose linking commits an author filter left out
+    let mut app = build_app(vec![
+        commit_on("c5", &["c4"]),
+        commit_on("c3", &["c2"]),
+        commit_on("c1", &[]),
+    ]);
+    app.commit_filter_shown = crate::vcs::CommitQuery::parse("author:kim");
+
+    // then neighbouring rows are a run and a skipped row is a gap
+    assert!(app.picks_are_one_run_of_history(&[0, 1]));
+    assert!(!app.picks_are_one_run_of_history(&[0, 2]));
+
+    // and a filter that only chooses which branch to walk hides nothing,
+    // so its rows are judged by their parents
+    app.commit_filter_shown = crate::vcs::CommitQuery::parse("ref:feature");
+    assert!(!app.picks_are_one_run_of_history(&[0, 1]));
+}
+
 #[test]
 fn merge_resolve_marks_dirty_and_advances_to_next_unresolved() {
     // given a merge view with two unresolved conflicts

@@ -1611,9 +1611,7 @@ impl App {
         // Reviewing materializes one diff from the oldest pick's parent to
         // the newest pick, so gaps would silently include unpicked commits.
         // History ops have no such constraint (`p` cherry-picks any set).
-        let min = *picks.first().expect("picks not empty");
-        let max = *picks.last().expect("picks not empty");
-        if max - min + 1 != picks.len() {
+        if !self.picks_are_one_run_of_history(&picks) {
             self.set_message(
                 "Review needs a contiguous selection \u{2014} p cherry-picks the exact set",
             );
@@ -1645,6 +1643,51 @@ impl App {
         }
 
         self.load_commit_range_selection(selected_ids, selected_commits)
+    }
+
+    /// Whether the picked rows (ascending index, so newest first) are one
+    /// unbroken run of history, which is what a review can show as a single
+    /// diff.
+    ///
+    /// The log lists every branch in date order, so row positions say
+    /// little about ancestry: a run of commits on one branch is split up by
+    /// other branches' rows, and neighbouring rows are often unrelated.
+    /// Where the backend reports parents, each pick must therefore be the
+    /// first parent of the pick above it, and staged / unstaged changes
+    /// must sit on HEAD. Rows in between that belong to other branches
+    /// don't count as gaps.
+    ///
+    /// Row adjacency is still the rule where parents can't answer: backends
+    /// that report none (hg, jj) list one line of history, and a message /
+    /// author / path filter hides the commits that link its rows.
+    pub(in crate::app) fn picks_are_one_run_of_history(&self, picks: &[usize]) -> bool {
+        let reports_parents = self.commit_list.iter().any(|c| !c.parent_ids.is_empty());
+        let rows_are_sparse = self.commit_filter_shown.as_ref().is_some_and(|query| {
+            !query.text.is_empty() || query.author.is_some() || query.path.is_some()
+        });
+        let by_ancestry = reports_parents && !rows_are_sparse;
+
+        picks.windows(2).all(|pair| {
+            let (newer_row, older_row) = (pair[0], pair[1]);
+            if !by_ancestry {
+                return older_row == newer_row + 1;
+            }
+            let (Some(newer), Some(older)) = (
+                self.commit_list.get(newer_row),
+                self.commit_list.get(older_row),
+            ) else {
+                return false;
+            };
+            match (
+                Self::is_special_commit(newer),
+                Self::is_special_commit(older),
+            ) {
+                (true, true) => true,
+                (true, false) => older.is_head,
+                (false, true) => false,
+                (false, false) => newer.parent_ids.first() == Some(&older.id),
+            }
+        })
     }
 
     /// Load a commit-range review from ids ordered oldest-to-newest, together

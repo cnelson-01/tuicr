@@ -535,7 +535,7 @@ with `<leader>+` / `<leader>-`, `:set logheight N`, or `log_height = N`.
 |-----|--------|
 | `j` / `k`, `g` / `G`, `Ctrl-d` / `Ctrl-u` | Move the cursor; the highlighted commit is previewed after a short pause |
 | `Space` | Toggle the cursor commit in the pick set (non-contiguous picks allowed); on the overflow row, load more history |
-| `Enter` | Load the picks (or the cursor commit) as the review; opens the merge view from the conflicts row |
+| `Enter` | Load the picks (or the cursor commit) as the review; the picks must be one unbroken run of history, though rows of other branches may sit between them. Opens the merge view from the conflicts row |
 | `p` | Cherry-pick the picks (or cursor commit) onto the current branch |
 | `b` | Rebase the current branch onto the cursor commit |
 | `s` | Squash the picks into one commit |
@@ -665,7 +665,7 @@ first, with children always above their parents so the graph stays coherent.
 | `Tab` / `Shift-Tab` | Switch between Local, Pull Requests, and Sessions tabs |
 | `j` / `k` | Move selection |
 | `Space` | Toggle the commit under the cursor in the pick set (non-contiguous picks allowed — pull in single commits from other branches; consecutive presses still sweep a run) |
-| `Enter` | Review the picked commits (must be a contiguous run), open PR, load more PRs, resume a saved review, or open merge conflicts |
+| `Enter` | Review the picked commits (must be one unbroken run of history: each pick the first parent of the one above it; rows of other branches listed in between are not gaps), open PR, load more PRs, resume a saved review, or open merge conflicts |
 | `p` | Cherry-pick the picked (or cursor) commits onto the current branch — works with non-contiguous picks |
 | `b` | Rebase the current branch onto the cursor commit |
 | `s` | Squash the selected range (must end at HEAD) into one commit |
