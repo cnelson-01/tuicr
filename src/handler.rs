@@ -2036,10 +2036,8 @@ fn handle_sessions_target_action(app: &mut App, action: Action) {
         Action::SessionsTabToggleShowEmpty | Action::AbortOperation => {
             app.sessions_tab_toggle_show_empty()
         }
-        Action::SessionsTabDelete => {
-            if app.sessions_tab.cursor_session().is_some() {
-                app.enter_confirm_mode(app::ConfirmAction::DeleteSession);
-            }
+        Action::SessionsTabDelete if app.sessions_tab.cursor_session().is_some() => {
+            app.enter_confirm_mode(app::ConfirmAction::DeleteSession);
         }
         // Space is a no-op: sessions are picked, not multi-selected.
         Action::ToggleCommitSelect => {}
