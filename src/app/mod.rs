@@ -1457,6 +1457,10 @@ pub struct App {
     pub focused_panel: FocusedPanel,
     pub diff_view_mode: DiffViewMode,
     pub relative_line_numbers: bool,
+    /// Side-by-side change colours by what happened to a line (modified,
+    /// added, removed) and not by side, the way an IDE diff shows them.
+    /// `:set idecolors!`, config `ide_colors`.
+    pub ide_change_colors: bool,
     pub wrap_style: WrapStyle,
     /// Which side the cursor targets in side-by-side view (old/left vs
     /// new/right). Drives the `▶` caret placement and the side a new line
@@ -1730,6 +1734,11 @@ pub struct App {
     /// so that they aren't re-colored.
     /// Cleared by `rebuild_annotations`, which runs whenever the diff is replaced.
     pub colored_hunks: HashSet<(usize, usize)>,
+    /// Side-by-side change blocks whose lines do not pair by position, keyed
+    /// by `(file_idx, hunk_idx, first removed line)`: `intraline::align_block`'s
+    /// answer. Written by `rebuild_annotations` and read back by the
+    /// renderer, so both lay a block out the same way.
+    pub sbs_pairing: HashMap<(usize, usize, usize), Vec<usize>>,
     /// Output to stdout instead of clipboard when exporting
     pub output_to_stdout: bool,
     /// Pending output to print to stdout after TUI exits

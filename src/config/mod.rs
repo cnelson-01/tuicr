@@ -218,6 +218,9 @@ pub struct AppConfig {
     /// `"gutter"`.
     pub wrap_style: Option<String>,
     pub relative_line_numbers: Option<bool>,
+    /// Side-by-side change colours by kind of change (modified / added /
+    /// removed) and not by side. Default on.
+    pub ide_colors: Option<bool>,
     pub export_legend: Option<bool>,
     pub cursor_line: Option<bool>,
     pub search_highlight: Option<bool>,
@@ -304,6 +307,7 @@ const KNOWN_KEYS: &[&str] = &[
     "wrap",
     "wrap_style",
     "relative_line_numbers",
+    "ide_colors",
     "export_legend",
     "cursor_line",
     "search_highlight",
@@ -658,6 +662,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
             &mut warnings,
         ),
         relative_line_numbers: read_bool(table, "relative_line_numbers", &mut warnings),
+        ide_colors: read_bool(table, "ide_colors", &mut warnings),
         commit_order: read_enum(
             table,
             "commit_order",
@@ -1284,6 +1289,16 @@ mod tests {
             None
         );
         assert_eq!(outcome.warnings.len(), 1);
+    }
+
+    #[test]
+    fn should_parse_ide_colors() {
+        let outcome = parse_config("ide_colors = false\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.ide_colors),
+            Some(false)
+        );
+        assert!(outcome.warnings.is_empty());
     }
 
     #[test]

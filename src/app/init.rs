@@ -548,6 +548,7 @@ impl App {
             focused_panel: FocusedPanel::Diff,
             diff_view_mode: DiffViewMode::Unified,
             relative_line_numbers: false,
+            ide_change_colors: true,
             // Wrapped code continues under the code, not under the line
             // number (`wrap_style = "flow"` opts out).
             wrap_style: WrapStyle::Gutter,
@@ -667,6 +668,7 @@ impl App {
             file_line_count_cache: HashMap::new(),
             line_annotations: Vec::new(),
             colored_hunks: HashSet::new(),
+            sbs_pairing: HashMap::new(),
             output_to_stdout,
             pending_stdout_output: None,
             comment_cursor_screen_pos: None,

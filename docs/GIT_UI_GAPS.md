@@ -27,6 +27,16 @@ splitter and the tool-window edges, and hide every tool window to read a diff.
       divider: a band joining each removed line to its replacement, and a
       rule across the shorter side at the point the rest of the change folds
       into
+- [x] Side-by-side colours say which side a line is on (old red, new green),
+      not what happened to it. Colour by change: a removed line and its
+      replacement share one colour on both sides with the changed words
+      brighter, a line that was only added is green, one that was only removed
+      is neutral, and the colour runs through the line-number gutters so a
+      change is one band from edge to edge (`ide_colors`, `:set idecolors!`)
+- [x] Inside a change block the k-th removed line sits beside the k-th added
+      line, so one edited line under ten inserted ones is shown against the
+      first inserted line. Seat each line of the shorter side beside the line
+      most like it, keeping order and the block's row count
 - [x] The side-by-side split is fixed at 50/50. Add keys to move it, a
       `:set split N` command, a reset key, and mouse drag on the divider
 - [x] The file tree is fixed at 20% width. Add keys to resize it, a

@@ -344,6 +344,7 @@ and its keys, or `?` for the full reference.
 | `:theme` | Open a live-preview theme picker (`/` to filter); `:theme <name>` applies directly. Session-only; set `theme` in `config.toml` to keep it |
 | `Tab` in `:` prompt | Complete or cycle commands |
 | `;<` / `;>`, `;[` / `;]` | Move the side-by-side divider, resize the file tree (or drag them) |
+| `:set idecolors!` | Side-by-side colours by change (modified blue, added green, removed grey) or by side (old red, new green) |
 | `;z` | Zen mode: diff only |
 | `;g` / `;b` | Log pane (commit graph) / branch picker |
 | `F` / `S` in the log | Fetch every remote / show one branch, picked from the branch list |

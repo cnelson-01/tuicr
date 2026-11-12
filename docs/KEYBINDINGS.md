@@ -72,14 +72,28 @@ Long lines don't wrap by default. Both side-by-side columns pan together
 a column's right edge means the line continues past it, and a `‹` in the
 gutter means text has scrolled off the left. File and hunk headers stay put.
 
-In side-by-side view the divider joins each change across the two columns. A
-removed line and the line that replaced it share a band, the old side's colour
-meeting the new side's at the centre. When one side of a change has more lines
-than the other, the shorter side is padded with blank rows. The first of them
-is where the change folds: the longer side's band steps across the divider and
-runs on as a thin rule over the blank row. The rule sits between the two lines
-on that side where the extra lines were removed or will be added. On the rows
-below it the band stays on its own side.
+In side-by-side view a change is coloured by what happened to the line. A
+removed line and the line that replaced it share one colour on both sides
+(blue in most themes), with the words that differ brighter. A line that was
+only added is green, and one that was only removed is grey. The colour runs
+through the line-number gutters, so a change is one band from edge to edge.
+On the cursor line the code takes the cursor-line tint and the gutters keep
+the change colour.
+`:set noidecolors` (config `ide_colors = false`) colours by side instead: the
+old column red, the new one green, each with a `▌` marker.
+
+Inside a change, each line sits beside the line most like it. When one edited
+line comes with ten new ones, the old line is shown against its edit, not
+against whatever was inserted first. Lines with no likely counterpart pair
+from the top, and order is always kept.
+
+The divider joins each change across the two columns. A removed line and the
+line that replaced it share a band. When one side of a change has more lines
+than the other, the shorter side is padded with blank rows. The first blank
+row of a run is where the change folds: the longer side's band steps across
+the divider and runs on as a thin rule over the blank row. The rule sits
+between the two lines on that side where the extra lines were removed or will
+be added. On the rows below it the band stays on its own side.
 
 To give the code more room:
 
@@ -339,6 +353,8 @@ remote-tracking ones. `:compare ma`, `↓`, `↓`, `Enter` picks the second matc
 | `:zen` | Toggle zen mode (diff only) |
 | `:set mouse!` | Toggle mouse capture for this session: off hands the mouse to the terminal, so a plain drag selects text; `:set mouse` / `:set nomouse` set it. Config `mouse` sets the start-up value |
 | `:ignorews` / `:set ignorews!` | Toggle ignoring whitespace in the diff; `:set ignorews` / `:set noignorews` set it |
+| `:set idecolors` / `:set noidecolors` | Colour side-by-side changes by kind of change (modified, added, removed) / by side (old red, new green) |
+| `:set idecolors!` | Toggle between the two |
 | `:set relativenumber` / `:set norelativenumber` | Enable / disable relative rendered-row numbers |
 | `:set relativenumber!` | Toggle relative rendered-row numbers |
 | `:set commits` | Show inline commit selector |

@@ -47,6 +47,7 @@ split = 50
 tree_width = 20
 wrap_style = "gutter"
 relative_line_numbers = false
+ide_colors = true
 cursor_line = true
 search_highlight = true
 transparent_background = true
@@ -119,6 +120,7 @@ session_header = true
 | `tree_width`               | `20`         | File tree width, in percent of the area beside it (8–60). Adjust with `<leader>[` / `<leader>]`, `:set treewidth N`, or by dragging its border.         |
 | `wrap_style`               | `gutter`     | Where wrapped unified diff rows continue: `gutter` (default) keeps wrapped content after the line-number gutter, leaving continuation rows without a line number or change bar; `flow` wraps from the left edge. |
 | `relative_line_numbers`    | `false`      | Show gutter numbers as rendered-row distances from the cursor; the cursor line keeps its own line number. Toggle with `:set relativenumber!`.              |
+| `ide_colors`               | `true`       | Side-by-side change colours by kind of change, as an IDE diff shows them: a removed line and the line that replaced it share the theme's edit colour (blue in most themes) with the changed words brighter, a line that was only added is green, one that was only removed is neutral grey, and the colour runs through the line-number gutter. `false` colours by side: old red, new green, with a `▌` marker. Toggle with `:set idecolors!`. |
 | `cursor_line`              | `true`       | Highlight the current cursor line and visual selection.                                                                                                    |
 | `search_highlight`         | `true`       | Highlight `/` search matches in the diff view. Clear at runtime with `Esc`; a new `/` search shows them again.                                             |
 | `transparent_background`   | `true`       | Let the terminal background show through panels. `false` paints the theme's `panel_bg`.                                                                    |

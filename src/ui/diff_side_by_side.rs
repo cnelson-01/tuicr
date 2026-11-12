@@ -1,7 +1,7 @@
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
 };
@@ -51,7 +51,104 @@ struct SbsRowMeta {
     right_prefix: Vec<Span<'static>>,
     left_pad_style: Style,
     right_pad_style: Style,
+    /// Background of each side's line-number gutter when the row's colour
+    /// runs through it (IDE change colours); `None` leaves it plain.
+    left_gutter_bg: Option<Color>,
+    right_gutter_bg: Option<Color>,
+    /// The colour each side's connector band leans toward.
+    left_accent: Color,
+    right_accent: Color,
     link: SbsLink,
+}
+
+/// What one column shows on a changed row, which decides its colours.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CellKind {
+    /// A new line with nothing removed beside it.
+    Added,
+    /// A removed line with nothing added beside it.
+    Removed,
+    /// The old side of a removed line and the line that replaced it.
+    ModifiedOld,
+    /// The new side of that pair.
+    ModifiedNew,
+}
+
+/// Colours of one changed cell: its code, the padding after it, its gutter
+/// and its change marker.
+struct CellPaint {
+    /// Row background, laid under syntax colours and the padding.
+    bg: Color,
+    /// Text without syntax colours, and the padding.
+    plain: Style,
+    /// Background of the changed words of a modified line.
+    word_bg: Color,
+    /// Colour the connector band leans toward.
+    accent: Color,
+    marker: &'static str,
+    marker_style: Style,
+    /// Line-number style. Carries the row background when the row's colour
+    /// runs through the gutter.
+    gutter: Style,
+    gutter_bg: Option<Color>,
+}
+
+/// Colours for a changed cell. Git colours (`ide` off) go by side: the old
+/// column red, the new one green, each with a `▌` marker beside a plain
+/// gutter. IDE change colours go by what happened to the line: a modified
+/// pair takes the theme's third diff colour on both sides, a line that was
+/// only added stays green, one that was only removed turns neutral; the row
+/// colour runs through the gutter in place of the marker, so a change reads
+/// as one band from edge to edge.
+fn cell_paint(theme: &Theme, ide: bool, kind: CellKind, syntax: bool) -> CellPaint {
+    let new_side = matches!(kind, CellKind::Added | CellKind::ModifiedNew);
+    let dim = styles::dim_style(theme);
+    if !ide {
+        let (bg, plain_bg, accent) = if new_side {
+            (theme.syntax_add_bg, theme.diff_add_bg, theme.diff_add)
+        } else {
+            (theme.syntax_del_bg, theme.diff_del_bg, theme.diff_del)
+        };
+        let bg = if syntax { bg } else { plain_bg };
+        return CellPaint {
+            bg,
+            plain: Style::default().fg(accent).bg(bg),
+            word_bg: theme.intraline_bg(new_side, syntax),
+            accent,
+            marker: "▌",
+            marker_style: Style::default().fg(accent).bg(plain_bg),
+            gutter: dim,
+            gutter_bg: None,
+        };
+    }
+    let (bg, word_bg, accent) = match kind {
+        CellKind::Added => (
+            if syntax {
+                theme.syntax_add_bg
+            } else {
+                theme.diff_add_bg
+            },
+            theme.intraline_bg(true, syntax),
+            theme.diff_add,
+        ),
+        CellKind::Removed => (theme.diff_gone_bg(), theme.diff_gone_bg(), theme.fg_dim),
+        CellKind::ModifiedOld | CellKind::ModifiedNew => (
+            theme.diff_mod_bg(),
+            theme.diff_mod_word_bg(),
+            theme.diff_edit,
+        ),
+    };
+    let plain = Style::default().fg(theme.diff_context).bg(bg);
+    CellPaint {
+        bg,
+        plain,
+        word_bg,
+        accent,
+        marker: " ",
+        marker_style: plain,
+        gutter: dim.bg(bg),
+        gutter_bg: Some(bg),
+    }
 }
 
 type WrappedRows = Vec<Vec<Span<'static>>>;
@@ -98,36 +195,31 @@ fn sbs_row_height(
     }
 }
 
+/// A code cell's spans. `paint` is the cell's change colours, `None` for an
+/// unchanged line.
 fn content_spans_for_diff_line(
     theme: &Theme,
     dl: &DiffLine,
-    origin: LineOrigin,
+    paint: Option<&CellPaint>,
     search: Option<(&crate::ui::text_utils::SearchPattern, Style)>,
     emphasis: Option<&[std::ops::Range<usize>]>,
 ) -> Vec<Span<'static>> {
-    let base = match origin {
-        LineOrigin::Context => styles::diff_context_style(theme),
-        LineOrigin::Addition => styles::diff_add_style(theme),
-        LineOrigin::Deletion => styles::diff_del_style(theme),
-    };
     let mut spans: Vec<Span<'static>> = if let Some(ref h) = dl.highlighted_spans {
         h.iter()
             .map(|(s, t)| {
-                Span::styled(
-                    t.clone(),
-                    styles::patch_highlighted_span_bg(*s, theme, origin),
-                )
+                let style = match paint {
+                    Some(paint) => s.bg(paint.bg),
+                    None => *s,
+                };
+                Span::styled(t.clone(), style)
             })
             .collect()
     } else {
+        let base = paint.map_or_else(|| styles::diff_context_style(theme), |p| p.plain);
         vec![Span::styled(dl.content.clone(), base)]
     };
-    if let Some(ranges) = emphasis {
-        let bg = theme.intraline_bg(
-            origin == LineOrigin::Addition,
-            dl.highlighted_spans.is_some(),
-        );
-        spans = crate::ui::intraline::emphasize(spans, ranges, bg);
+    if let (Some(ranges), Some(paint)) = (emphasis, paint) {
+        spans = crate::ui::intraline::emphasize(spans, ranges, paint.word_bg);
     }
     match search {
         Some((needle, hl)) => apply_search_highlight_spans(spans, needle, hl),
@@ -161,26 +253,6 @@ fn plain_cell_spans(
         return truncate_or_pad_pairs_by_chars(&highlighted, width, style);
     }
     vec![Span::styled(truncate_or_pad(content, width), style)]
-}
-
-fn column_pad_style(theme: &Theme, dl: &DiffLine, origin: LineOrigin) -> Style {
-    match origin {
-        LineOrigin::Context => styles::diff_context_style(theme),
-        LineOrigin::Addition => {
-            if dl.highlighted_spans.is_some() {
-                Style::default().fg(theme.diff_add).bg(theme.syntax_add_bg)
-            } else {
-                styles::diff_add_style(theme)
-            }
-        }
-        LineOrigin::Deletion => {
-            if dl.highlighted_spans.is_some() {
-                Style::default().fg(theme.diff_del).bg(theme.syntax_del_bg)
-            } else {
-                styles::diff_del_style(theme)
-            }
-        }
-    }
 }
 
 fn pad_spans_to_width(
@@ -255,7 +327,7 @@ fn pan_sbs_row(
 
 /// Repaint the new side of a row for a line changed in `$EDITOR`. The
 /// metadata is enough: code rows are always drawn from it.
-fn mark_local_edit(meta: &mut SbsRowMeta, mark: Option<LocalEditMark>, theme: &Theme) {
+fn mark_local_edit(meta: &mut SbsRowMeta, mark: Option<LocalEditMark>, theme: &Theme, ide: bool) {
     let Some(mark) = mark else {
         return;
     };
@@ -264,6 +336,15 @@ fn mark_local_edit(meta: &mut SbsRowMeta, mark: Option<LocalEditMark>, theme: &T
     }
     if mark == LocalEditMark::Edited {
         meta.right_pad_style = styles::diff_edit_span_style(meta.right_pad_style, theme);
+        // With the row colour running through the gutter, the edit tint
+        // does too: the number sits between the divider and the marker.
+        if ide {
+            meta.right_gutter_bg = Some(theme.diff_edit_bg);
+            let number = meta.right_prefix.len().checked_sub(2);
+            if let Some(number) = number.and_then(|i| meta.right_prefix.get_mut(i)) {
+                number.style = number.style.bg(theme.diff_edit_bg);
+            }
+        }
     }
 }
 
@@ -273,6 +354,22 @@ struct SideSpec {
     blame: Option<String>,
     marker: &'static str,
     marker_style: Style,
+    /// Line-number style: dim, over the row colour when it runs through
+    /// the gutter.
+    gutter: Style,
+}
+
+impl SideSpec {
+    /// A side with no line on this row.
+    fn blank(theme: &Theme) -> Self {
+        Self {
+            lineno: None,
+            blame: None,
+            marker: " ",
+            marker_style: Style::default(),
+            gutter: styles::dim_style(theme),
+        }
+    }
 }
 
 fn sbs_row_prefixes(
@@ -296,12 +393,12 @@ fn sbs_row_prefixes(
 
     let left_prefix = vec![
         Span::styled(indicator, styles::current_line_indicator_style(theme)),
-        Span::styled(format!("{old_num} "), dim),
+        Span::styled(format!("{old_num} "), left.gutter),
         Span::styled(left.marker.to_string(), left.marker_style),
     ];
     let right_prefix = vec![
         Span::styled(" │ ", dim),
-        Span::styled(format!("{new_num} "), dim),
+        Span::styled(format!("{new_num} "), right.gutter),
         Span::styled(right.marker.to_string(), right.marker_style),
     ];
     (left_prefix, right_prefix)
@@ -464,8 +561,12 @@ fn paint_sbs_connectors(
         };
         // Each side's colour follows its own row background, so a line tinted
         // as a local edit gets a band to match.
-        let old = theme.sbs_link_color(meta.left_pad_style.bg, false);
-        let new = theme.sbs_link_color(meta.right_pad_style.bg, true);
+        let band = |pad: Style, accent: Color| match pad.bg {
+            Some(bg) => theme.sbs_link_color_toward(bg, accent),
+            None => accent,
+        };
+        let old = band(meta.left_pad_style, meta.left_accent);
+        let new = band(meta.right_pad_style, meta.right_accent);
         for (k, y) in rows.enumerate() {
             // A wrapped line folds on its first row only.
             let first_row = k == 0;
@@ -505,16 +606,72 @@ fn paint_sbs_connectors(
     }
 }
 
-/// Continuation-row prefixes shared by every wrapped line: blank in place of
-/// the line numbers (same width, so columns stay aligned) with the center
-/// divider preserved.
-fn sbs_blank_prefixes(theme: &Theme, lw: usize) -> (Vec<Span<'static>>, Vec<Span<'static>>) {
+/// Put each side's row colour back in its gutter where the cursor-line tint
+/// painted over it. The IDE change colours have no `▌` marker to say what
+/// happened to a line, so on the cursor row the gutters keep saying it while
+/// the code between them takes the tint. Rows whose gutter has no colour of
+/// its own (unchanged lines, colours by side) are left as they are.
+#[allow(clippy::too_many_arguments)]
+fn repaint_sbs_cursor_row_gutters(
+    frame: &mut Frame,
+    inner: Rect,
+    theme: &Theme,
+    sbs_meta: &std::collections::HashMap<usize, SbsRowMeta>,
+    scroll_offset: usize,
+    row_heights: &[usize],
+    lw: usize,
+    left_width: usize,
+) {
+    let right_edge = inner.x + inner.width;
+    let divider = inner.x + crate::app::sbs_left_gutter(lw) + left_width as u16;
+    // Line number, the space after it, and the marker cell.
+    let gutter = lw as u16 + 2;
+    let old_gutter = (inner.x + 1).min(right_edge)..(inner.x + 1 + gutter).min(right_edge);
+    let new_gutter = (divider + 3).min(right_edge)..(divider + 3 + gutter).min(right_edge);
+
+    let bottom = inner.y + inner.height;
+    let buf = frame.buffer_mut();
+    let mut y = inner.y;
+    for (i, &height) in row_heights.iter().enumerate() {
+        let rows = y..(y + height as u16).min(bottom);
+        y = rows.end;
+        let Some(meta) = sbs_meta.get(&(scroll_offset + i)) else {
+            continue;
+        };
+        for y in rows {
+            for (cells, bg) in [
+                (&old_gutter, meta.left_gutter_bg),
+                (&new_gutter, meta.right_gutter_bg),
+            ] {
+                let Some(bg) = bg else {
+                    continue;
+                };
+                for x in cells.clone() {
+                    let cell = &mut buf[(x, y)];
+                    if cell.bg == theme.cursor_line_bg {
+                        cell.set_bg(bg);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Continuation-row prefixes of a wrapped line: blank in place of the line
+/// numbers (same width, so columns stay aligned) with the center divider
+/// preserved. A gutter the row colour runs through keeps that colour.
+fn sbs_blank_prefixes(
+    theme: &Theme,
+    lw: usize,
+    meta: &SbsRowMeta,
+) -> (Vec<Span<'static>>, Vec<Span<'static>>) {
     let dim = styles::dim_style(theme);
-    let left = vec![Span::styled(" ".repeat(lw + 3), Style::default())];
-    let right = vec![
-        Span::styled(" │ ", dim),
-        Span::styled(" ".repeat(lw + 2), Style::default()),
-    ];
+    let gutter = |bg: Option<Color>| {
+        let style = bg.map_or_else(Style::default, |bg| Style::default().bg(bg));
+        Span::styled(" ".repeat(lw + 2), style)
+    };
+    let left = vec![Span::raw(" "), gutter(meta.left_gutter_bg)];
+    let right = vec![Span::styled(" │ ", dim), gutter(meta.right_gutter_bg)];
     (left, right)
 }
 
@@ -569,6 +726,20 @@ impl SideBySideContext<'_> {
     ) -> Option<(&crate::ui::text_utils::SearchPattern, Style)> {
         let needle = self.app.search_paint_at(line_idx)?;
         Some((needle, self.search_style))
+    }
+
+    /// Whether changes take the IDE change colours (`:set idecolors`).
+    fn ide(&self) -> bool {
+        self.app.ide_change_colors
+    }
+
+    fn cell_paint(&self, kind: CellKind, line: &DiffLine) -> CellPaint {
+        cell_paint(
+            self.theme,
+            self.ide(),
+            kind,
+            line.highlighted_spans.is_some(),
+        )
     }
 
     fn display_lineno(&self, source_line: Option<u32>, line_idx: usize) -> Option<u32> {
@@ -1143,7 +1314,7 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                     &hunk.lines,
                     line_comments,
                     &ctx,
-                    file_idx,
+                    (file_idx, hunk_idx),
                     line_idx,
                     &mut lines,
                 );
@@ -1314,7 +1485,6 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
     {
         let mut heights = Vec::with_capacity(visible_lines_unscrolled_for_overlay.len());
         let mut out: Vec<Line> = Vec::new();
-        let (left_prefix_blank, right_prefix_blank) = sbs_blank_prefixes(&app.theme, lw);
         for (i, line) in visible_lines_unscrolled_for_overlay.iter().enumerate() {
             let logical_idx = scroll_offset + i;
             match sbs_meta.get(&logical_idx) {
@@ -1322,6 +1492,8 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
                     let (left_rows, right_rows) = sbs_wrapped_sides(m, left_width, right_width);
                     let n = left_rows.len().max(right_rows.len());
                     heights.push(n);
+                    let (left_prefix_blank, right_prefix_blank) =
+                        sbs_blank_prefixes(&app.theme, lw, m);
                     let empty_row: Vec<Span> = Vec::new();
                     for k in 0..n {
                         let left_content_row = left_rows.get(k).unwrap_or(&empty_row).clone();
@@ -1432,6 +1604,18 @@ pub(super) fn render_side_by_side_diff(frame: &mut Frame, app: &mut App, area: R
         &visible_lines_unscrolled_for_overlay,
         &row_heights,
         app,
+    );
+
+    // The cursor row's gutters keep their change colour under the tint.
+    repaint_sbs_cursor_row_gutters(
+        frame,
+        inner,
+        &app.theme,
+        &sbs_meta,
+        scroll_offset,
+        &row_heights,
+        lw,
+        left_width,
     );
 
     // Change-block connectors in the divider: after the cursor-line tint, so
@@ -1572,12 +1756,13 @@ fn render_sbs_expanded_context_line(
         right_prefix,
         left_pad_style: ec_style,
         right_pad_style: ec_style,
-        link: SbsLink::None,
+        ..SbsRowMeta::default()
     };
     mark_local_edit(
         &mut meta,
         ctx.app.local_edit_mark(file_idx, expanded_line.new_lineno),
         theme,
+        ctx.ide(),
     );
     ctx.sbs_meta.borrow_mut().insert(*line_idx, meta);
     *line_idx += 1;
@@ -1589,7 +1774,7 @@ fn render_hunk_lines_side_by_side(
     hunk_lines: &[crate::model::DiffLine],
     line_comments: &std::collections::HashMap<u32, Vec<crate::model::Comment>>,
     ctx: &SideBySideContext,
-    file_idx: usize,
+    (file_idx, hunk_idx): (usize, usize),
     mut line_idx: usize,
     lines: &mut Vec<Line>,
 ) -> (usize, Option<SideBySideCursorInfo>) {
@@ -1647,7 +1832,7 @@ fn render_hunk_lines_side_by_side(
                         i,
                         line_comments,
                         ctx,
-                        file_idx,
+                        (file_idx, hunk_idx),
                         line_idx,
                         lines,
                     );
@@ -1752,23 +1937,20 @@ fn render_context_line_side_by_side(
 
         lines.push(Line::from(spans));
 
-        let content =
-            content_spans_for_diff_line(ctx.theme, diff_line, LineOrigin::Context, search, None);
+        let content = content_spans_for_diff_line(ctx.theme, diff_line, None, search, None);
         let ctx_style = styles::diff_context_style(ctx.theme);
         let (lp, rp) = sbs_row_prefixes(
             ctx.theme,
             indicator,
             SideSpec {
                 lineno: ctx.display_lineno(diff_line.old_lineno, line_idx),
-                blame: None,
-                marker: " ",
                 marker_style: ctx_style,
+                ..SideSpec::blank(ctx.theme)
             },
             SideSpec {
                 lineno: ctx.display_lineno(diff_line.new_lineno, line_idx),
-                blame: None,
-                marker: " ",
                 marker_style: ctx_style,
+                ..SideSpec::blank(ctx.theme)
             },
             w,
         );
@@ -1779,12 +1961,13 @@ fn render_context_line_side_by_side(
             right_prefix: rp,
             left_pad_style: ctx_style,
             right_pad_style: ctx_style,
-            link: SbsLink::None,
+            ..SbsRowMeta::default()
         };
         mark_local_edit(
             &mut meta,
             ctx.app.local_edit_mark(file_idx, diff_line.new_lineno),
             ctx.theme,
+            ctx.ide(),
         );
         ctx.sbs_meta.borrow_mut().insert(line_idx, meta);
     } else {
@@ -1828,7 +2011,7 @@ fn render_deletion_addition_pair_side_by_side(
     start_idx: usize,
     line_comments: &std::collections::HashMap<u32, Vec<crate::model::Comment>>,
     ctx: &SideBySideContext,
-    file_idx: usize,
+    (file_idx, hunk_idx): (usize, usize),
     mut line_idx: usize,
     lines: &mut Vec<Line>,
 ) -> (usize, usize, Option<SideBySideCursorInfo>) {
@@ -1847,13 +2030,19 @@ fn render_deletion_addition_pair_side_by_side(
 
     let del_count = del_end - start_idx;
     let add_count = add_end - add_start;
-    let max_lines = del_count.max(add_count);
     let mut cursor_info_out: Option<SideBySideCursorInfo> = None;
 
+    // The block's rows, laid out the way `rebuild_annotations` paired its
+    // lines: by likeness where it recorded an answer, else by position.
+    let assign = ctx.app.sbs_pairing.get(&(file_idx, hunk_idx, start_idx));
+    let rows =
+        crate::ui::intraline::BlockRows::new(del_count, add_count, assign.map(Vec::as_slice));
+
     // Render each pair of deletion/addition
-    for offset in 0..max_lines {
-        let del_opt = (offset < del_count).then(|| &hunk_lines[start_idx + offset]);
-        let add_opt = (offset < add_count).then(|| &hunk_lines[add_start + offset]);
+    for row in 0..rows.count() {
+        let (del_offset, add_offset) = rows.row(row);
+        let del_opt = del_offset.map(|o| &hunk_lines[start_idx + o]);
+        let add_opt = add_offset.map(|o| &hunk_lines[add_start + o]);
         if ctx.is_visible(line_idx) {
             let indicator = cursor_indicator(line_idx, ctx.current_line_idx);
 
@@ -1907,83 +2096,89 @@ fn render_deletion_addition_pair_side_by_side(
             };
 
             let w = ctx.lineno_width;
-            let (left_content, left_pad, left_marker, left_lineno, left_marker_style) =
-                match del_opt {
-                    Some(dl) => (
-                        content_spans_for_diff_line(
-                            ctx.theme,
-                            dl,
-                            LineOrigin::Deletion,
-                            ctx.search_for(line_idx),
-                            emphasis.as_ref().map(|(old, _)| old.as_slice()),
-                        ),
-                        column_pad_style(ctx.theme, dl, LineOrigin::Deletion),
-                        "▌",
-                        ctx.display_lineno(dl.old_lineno, line_idx),
-                        styles::diff_del_style(ctx.theme),
-                    ),
-                    None => (Vec::new(), Style::default(), " ", None, Style::default()),
-                };
-            let (right_content, right_pad, right_marker, right_lineno, right_marker_style) =
-                match add_opt {
-                    Some(al) => (
-                        content_spans_for_diff_line(
-                            ctx.theme,
-                            al,
-                            LineOrigin::Addition,
-                            ctx.search_for(line_idx),
-                            emphasis.as_ref().map(|(_, new)| new.as_slice()),
-                        ),
-                        column_pad_style(ctx.theme, al, LineOrigin::Addition),
-                        "▌",
-                        ctx.display_lineno(al.new_lineno, line_idx),
-                        styles::diff_add_style(ctx.theme),
-                    ),
-                    None => (Vec::new(), Style::default(), " ", None, Style::default()),
-                };
+            let search = ctx.search_for(line_idx);
+            let (del_kind, add_kind) = match (del_opt, add_opt) {
+                (Some(_), Some(_)) => (CellKind::ModifiedOld, CellKind::ModifiedNew),
+                _ => (CellKind::Removed, CellKind::Added),
+            };
+            let left = del_opt.map(|dl| {
+                let paint = ctx.cell_paint(del_kind, dl);
+                let content = content_spans_for_diff_line(
+                    ctx.theme,
+                    dl,
+                    Some(&paint),
+                    search,
+                    emphasis.as_ref().map(|(old, _)| old.as_slice()),
+                );
+                (content, paint, ctx.display_lineno(dl.old_lineno, line_idx))
+            });
+            let right = add_opt.map(|al| {
+                let paint = ctx.cell_paint(add_kind, al);
+                let content = content_spans_for_diff_line(
+                    ctx.theme,
+                    al,
+                    Some(&paint),
+                    search,
+                    emphasis.as_ref().map(|(_, new)| new.as_slice()),
+                );
+                (content, paint, ctx.display_lineno(al.new_lineno, line_idx))
+            });
+            let side_spec = |side: &Option<(Vec<Span<'static>>, CellPaint, Option<u32>)>,
+                             blame: Option<String>| match side {
+                Some((_, paint, lineno)) => SideSpec {
+                    lineno: *lineno,
+                    blame,
+                    marker: paint.marker,
+                    marker_style: paint.marker_style,
+                    gutter: paint.gutter,
+                },
+                None => SideSpec::blank(ctx.theme),
+            };
             let (lp, rp) = sbs_row_prefixes(
                 ctx.theme,
                 indicator,
-                SideSpec {
-                    lineno: left_lineno,
-                    blame: None,
-                    marker: left_marker,
-                    marker_style: left_marker_style,
-                },
-                SideSpec {
-                    lineno: right_lineno,
-                    blame: ctx
-                        .app
+                side_spec(&left, None),
+                side_spec(
+                    &right,
+                    ctx.app
                         .blame_label_for(file_idx, add_opt.and_then(|al| al.new_lineno)),
-                    marker: right_marker,
-                    marker_style: right_marker_style,
-                },
+                ),
                 w,
             );
             let mut meta = SbsRowMeta {
-                left_content,
-                right_content,
                 left_prefix: lp,
                 right_prefix: rp,
-                left_pad_style: left_pad,
-                right_pad_style: right_pad,
-                // Offsets past the shorter side are one-sided; the first of
-                // them is where that side closes.
+                // The first row of a run of one-sided rows is where the
+                // other side closes.
                 link: match (del_opt, add_opt) {
                     (Some(_), Some(_)) => SbsLink::Both,
                     (Some(_), None) => SbsLink::OldOnly {
-                        fold: offset == add_count,
+                        fold: rows.starts_one_sided_run(row),
                     },
                     (None, Some(_)) => SbsLink::NewOnly {
-                        fold: offset == del_count,
+                        fold: rows.starts_one_sided_run(row),
                     },
                     (None, None) => SbsLink::None,
                 },
+                ..SbsRowMeta::default()
             };
+            if let Some((content, paint, _)) = left {
+                meta.left_content = content;
+                meta.left_pad_style = paint.plain;
+                meta.left_gutter_bg = paint.gutter_bg;
+                meta.left_accent = paint.accent;
+            }
+            if let Some((content, paint, _)) = right {
+                meta.right_content = content;
+                meta.right_pad_style = paint.plain;
+                meta.right_gutter_bg = paint.gutter_bg;
+                meta.right_accent = paint.accent;
+            }
             mark_local_edit(
                 &mut meta,
                 add_opt.and_then(|al| ctx.app.local_edit_mark(file_idx, al.new_lineno)),
                 ctx.theme,
+                ctx.ide(),
             );
             ctx.sbs_meta.borrow_mut().insert(line_idx, meta);
         } else {
@@ -2086,44 +2281,42 @@ fn render_standalone_addition_side_by_side(
         lines.push(Line::from(spans));
 
         let w = ctx.lineno_width;
+        let paint = ctx.cell_paint(CellKind::Added, diff_line);
         let right_content = content_spans_for_diff_line(
             ctx.theme,
             diff_line,
-            LineOrigin::Addition,
+            Some(&paint),
             ctx.search_for(line_idx),
             None,
         );
-        let right_pad = column_pad_style(ctx.theme, diff_line, LineOrigin::Addition);
         let (lp, rp) = sbs_row_prefixes(
             ctx.theme,
             indicator,
-            SideSpec {
-                lineno: None,
-                blame: None,
-                marker: " ",
-                marker_style: Style::default(),
-            },
+            SideSpec::blank(ctx.theme),
             SideSpec {
                 lineno: ctx.display_lineno(diff_line.new_lineno, line_idx),
                 blame: None,
-                marker: "▌",
-                marker_style: styles::diff_add_style(ctx.theme),
+                marker: paint.marker,
+                marker_style: paint.marker_style,
+                gutter: paint.gutter,
             },
             w,
         );
         let mut meta = SbsRowMeta {
-            left_content: Vec::new(),
             right_content,
             left_prefix: lp,
             right_prefix: rp,
-            left_pad_style: Style::default(),
-            right_pad_style: right_pad,
+            right_pad_style: paint.plain,
+            right_gutter_bg: paint.gutter_bg,
+            right_accent: paint.accent,
             link: SbsLink::NewOnly { fold: starts_block },
+            ..SbsRowMeta::default()
         };
         mark_local_edit(
             &mut meta,
             ctx.app.local_edit_mark(file_idx, diff_line.new_lineno),
             ctx.theme,
+            ctx.ide(),
         );
         ctx.sbs_meta.borrow_mut().insert(line_idx, meta);
     } else {
@@ -3281,6 +3474,7 @@ mod remote_comments_side_by_side_snapshot_tests {
     #[test]
     fn should_join_a_changed_pair_across_the_divider() {
         let mut app = make_pr_app();
+        app.ide_change_colors = false;
         app.diff_files = vec![diff_file_with_lines(&[
             (LineOrigin::Context, "BEFORE"),
             (LineOrigin::Deletion, "OLDSIDE"),
@@ -3313,6 +3507,7 @@ mod remote_comments_side_by_side_snapshot_tests {
     #[test]
     fn should_fold_extra_deletions_into_a_rule_on_the_new_side() {
         let mut app = make_pr_app();
+        app.ide_change_colors = false;
         app.diff_files = vec![diff_file_with_lines(&[
             (LineOrigin::Deletion, "GONE1"),
             (LineOrigin::Deletion, "GONE2"),
@@ -3419,6 +3614,7 @@ mod remote_comments_side_by_side_snapshot_tests {
     #[test]
     fn should_keep_the_connector_on_the_cursor_row() {
         let mut app = make_pr_app();
+        app.ide_change_colors = false;
         app.diff_files = vec![diff_file_with_pair("OLDSIDE", "NEWSIDE")];
         app.set_diff_wrap(false);
         app.rebuild_annotations();
@@ -3444,6 +3640,39 @@ mod remote_comments_side_by_side_snapshot_tests {
             buf[(x + 2, row)].bg,
             app.theme.sbs_link_color(Some(app.theme.diff_add_bg), true)
         );
+    }
+
+    #[test]
+    fn should_keep_the_row_colour_in_the_gutters_on_the_cursor_row() {
+        let mut app = make_pr_app();
+        app.diff_files = vec![diff_file_with_pair("OLDSIDE", "NEWSIDE")];
+        app.set_diff_wrap(false);
+        app.rebuild_annotations();
+        app.diff_state.cursor_line = app
+            .line_annotations
+            .iter()
+            .position(|a| matches!(a, crate::app::AnnotatedLine::SideBySideLine { .. }))
+            .expect("code row");
+
+        let buf = draw_sbs(&mut app, 120, 20);
+
+        let row = row_containing(&buf, "OLDSIDE");
+        let (x, _) = divider_cells(&app, &buf, 120, row);
+        let lw = app.lineno_width() as u16;
+        let modified = app.theme.diff_mod_bg();
+        // The code takes the cursor-line tint on both sides.
+        assert_eq!(buf[(x - 1, row)].bg, app.theme.cursor_line_bg);
+        assert_eq!(buf[(x + 3 + lw + 2, row)].bg, app.theme.cursor_line_bg);
+        // No `▌` marker says what happened to the line, so the gutters keep
+        // saying it, from the number to the cell before the code.
+        for gx in 2..2 + lw + 2 {
+            assert_eq!(buf[(gx, row)].bg, modified, "old gutter, x {gx}");
+        }
+        for gx in x + 3..x + 3 + lw + 2 {
+            assert_eq!(buf[(gx, row)].bg, modified, "new gutter, x {gx}");
+        }
+        // The cursor indicator's own cell is left alone.
+        assert_eq!(buf[(1, row)].bg, app.theme.cursor_line_bg);
     }
 
     #[test]
@@ -3522,6 +3751,7 @@ mod remote_comments_side_by_side_snapshot_tests {
     #[test]
     fn should_emphasize_only_the_changed_tokens_of_a_pair() {
         let mut app = make_pr_app();
+        app.ide_change_colors = false;
         app.diff_files = vec![diff_file_with_pair(
             "return alpha * 10 + beta",
             "return alpha * 1000 + beta",
@@ -3550,6 +3780,196 @@ mod remote_comments_side_by_side_snapshot_tests {
             emph_add,
             "unchanged token emphasized"
         );
+    }
+
+    #[test]
+    fn should_colour_a_modified_pair_alike_on_both_sides() {
+        let mut app = make_pr_app();
+        app.diff_files = vec![diff_file_with_pair(
+            "return alpha * 10 + beta",
+            "return alpha * 1000 + beta",
+        )];
+        app.set_diff_wrap(false);
+        app.rebuild_annotations();
+
+        let buf = draw_sbs(&mut app, 120, 20);
+        let row = row_containing(&buf, "1000");
+        let text: String = (0..120).map(|x| char_at(&buf, x, row)).collect();
+        let theme = &app.theme;
+        let (modified, word) = (theme.diff_mod_bg(), theme.diff_mod_word_bg());
+        let col_of = |needle: &str, from: usize| {
+            text[from..]
+                .find(needle)
+                .map(|i| text[..from + i].chars().count() as u16)
+                .unwrap_or_else(|| panic!("{needle:?} not in {text:?}"))
+        };
+        let ten = col_of("10 ", 0);
+        let thousand = col_of("1000", 0);
+        let alpha_old = col_of("alpha", 0);
+        let alpha_new = col_of("alpha", thousand as usize - 12);
+
+        // Both sides share the modified colour; only the changed number is
+        // brighter.
+        assert_eq!(buf[(alpha_old, row)].bg, modified);
+        assert_eq!(buf[(alpha_new, row)].bg, modified);
+        assert_eq!(buf[(ten, row)].bg, word);
+        assert_eq!(buf[(thousand, row)].bg, word);
+
+        // The colour runs through both line-number gutters, and no `▌`
+        // marker stands between a number and its code.
+        let (x, cells) = divider_cells(&app, &buf, 120, row);
+        assert_eq!(buf[(2, row)].bg, modified, "old gutter");
+        assert_eq!(buf[(x + 3, row)].bg, modified, "new gutter");
+        assert_eq!(text.matches('▌').count(), 1, "{text:?}");
+
+        // One band across the divider, in one colour.
+        let band = theme.sbs_link_color_toward(modified, theme.diff_edit);
+        assert_eq!(cells, " ▌ ");
+        assert_eq!(buf[(x, row)].bg, band);
+        assert_eq!((buf[(x + 1, row)].fg, buf[(x + 1, row)].bg), (band, band));
+        assert_eq!(buf[(x + 2, row)].bg, band);
+    }
+
+    #[test]
+    fn should_colour_one_sided_rows_by_what_happened() {
+        let mut app = make_pr_app();
+        app.diff_files = vec![diff_file_with_lines(&[
+            (LineOrigin::Context, "BEFORE"),
+            (LineOrigin::Deletion, "GONE1"),
+            (LineOrigin::Context, "BETWEEN"),
+            (LineOrigin::Addition, "FRESH1"),
+        ])];
+        app.set_diff_wrap(false);
+        app.rebuild_annotations();
+
+        let buf = draw_sbs(&mut app, 120, 20);
+        let theme = &app.theme;
+        let col = |row: u16, needle: &str| {
+            let text: String = (0..120).map(|x| char_at(&buf, x, row)).collect();
+            text.find(needle)
+                .map(|i| text[..i].chars().count() as u16)
+                .expect("needle")
+        };
+
+        // Removed with nothing beside it: neutral, through the gutter.
+        let gone = row_containing(&buf, "GONE1");
+        let (x, _) = divider_cells(&app, &buf, 120, gone);
+        assert_eq!(buf[(col(gone, "GONE1"), gone)].bg, theme.diff_gone_bg());
+        assert_eq!(buf[(2, gone)].bg, theme.diff_gone_bg());
+        assert_eq!(
+            buf[(x, gone)].bg,
+            theme.sbs_link_color_toward(theme.diff_gone_bg(), theme.fg_dim)
+        );
+        // The blank new side stays plain.
+        assert_ne!(buf[(x + 3, gone)].bg, theme.diff_gone_bg());
+
+        // Added with nothing beside it: still green.
+        let fresh = row_containing(&buf, "FRESH1");
+        assert_eq!(buf[(col(fresh, "FRESH1"), fresh)].bg, theme.diff_add_bg);
+        assert_eq!(buf[(x + 3, fresh)].bg, theme.diff_add_bg);
+        assert_ne!(buf[(2, fresh)].bg, theme.diff_add_bg);
+
+        // Unchanged rows have no row colour.
+        let context = row_containing(&buf, "BETWEEN");
+        assert_ne!(buf[(2, context)].bg, theme.diff_gone_bg());
+        assert_ne!(buf[(x + 3, context)].bg, theme.diff_add_bg);
+    }
+
+    #[test]
+    fn should_carry_the_row_colour_through_wrapped_gutters() {
+        let mut app = make_pr_app();
+        app.diff_files = vec![diff_file_with_pair(&"L".repeat(200), &"R".repeat(200))];
+        app.set_diff_wrap(true);
+        app.rebuild_annotations();
+
+        let buf = draw_sbs(&mut app, 160, 20);
+        let rows: Vec<u16> = (0..buf.area.height)
+            .filter(|&y| {
+                let row: String = (0..buf.area.width).map(|x| char_at(&buf, x, y)).collect();
+                row.contains("LLLLLLLLLL")
+            })
+            .collect();
+        assert!(rows.len() >= 2, "expected wrapped rows, got {rows:?}");
+        let modified = app.theme.diff_mod_bg();
+        for &y in &rows {
+            let (x, _) = divider_cells(&app, &buf, 160, y);
+            assert_eq!(buf[(2, y)].bg, modified, "old gutter, row {y}");
+            assert_eq!(buf[(x + 3, y)].bg, modified, "new gutter, row {y}");
+        }
+    }
+
+    #[test]
+    fn should_seat_a_removed_line_beside_the_line_that_replaced_it() {
+        let mut app = make_pr_app();
+        app.diff_files = vec![diff_file_with_lines(&[
+            (LineOrigin::Context, "BEFORE"),
+            (LineOrigin::Deletion, "let total = compute(alpha, beta);"),
+            (LineOrigin::Addition, "// widen the sum"),
+            (LineOrigin::Addition, "let extra = 1;"),
+            (
+                LineOrigin::Addition,
+                "let total = compute(alpha, beta, extra);",
+            ),
+        ])];
+        app.set_diff_wrap(false);
+        app.rebuild_annotations();
+
+        // The annotations pair the removed line (hunk line 1) with the last
+        // added line (hunk line 4), two rows down.
+        let pairs: Vec<(Option<usize>, Option<usize>)> = app
+            .line_annotations
+            .iter()
+            .filter_map(|a| match a {
+                crate::app::AnnotatedLine::SideBySideLine {
+                    del_line_idx,
+                    add_line_idx,
+                    ..
+                } => Some((*del_line_idx, *add_line_idx)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            pairs,
+            vec![
+                (Some(0), Some(0)),
+                (None, Some(2)),
+                (None, Some(3)),
+                (Some(1), Some(4)),
+            ]
+        );
+
+        // The renderer draws the same rows.
+        let buf = draw_sbs(&mut app, 140, 20);
+        let old = row_containing(&buf, "beta);");
+        assert_eq!(old, row_containing(&buf, "beta, extra);"));
+        let comment = row_containing(&buf, "// widen the sum");
+        assert_eq!(comment + 2, old);
+        // The inserted lines above it fold onto the old side once, at the
+        // top; the pair is a full band.
+        assert_eq!(divider_cells(&app, &buf, 140, comment).1, "▀▜ ");
+        assert_eq!(divider_cells(&app, &buf, 140, comment + 1).1, " ▐ ");
+        assert_eq!(divider_cells(&app, &buf, 140, old).1, " ▌ ");
+        let (old_text, _) = side_texts(&app, &buf, 140, comment + 1);
+        assert!(old_text.trim().is_empty(), "{old_text:?}");
+    }
+
+    #[test]
+    fn should_colour_by_side_when_ide_colours_are_off() {
+        let mut app = make_pr_app();
+        app.ide_change_colors = false;
+        app.diff_files = vec![diff_file_with_pair("OLDSIDE", "NEWSIDE")];
+        app.set_diff_wrap(false);
+        app.rebuild_annotations();
+
+        let buf = draw_sbs(&mut app, 120, 20);
+        let row = row_containing(&buf, "OLDSIDE");
+        let text: String = (0..120).map(|x| char_at(&buf, x, row)).collect();
+        let col = |needle: &str| text[..text.find(needle).unwrap()].chars().count() as u16;
+        assert_eq!(buf[(col("OLDSIDE"), row)].bg, app.theme.diff_del_bg);
+        assert_eq!(buf[(col("NEWSIDE"), row)].bg, app.theme.diff_add_bg);
+        // Markers beside plain gutters: one per side, plus the divider's.
+        assert_eq!(text.matches('▌').count(), 3, "{text:?}");
+        assert_ne!(buf[(2, row)].bg, app.theme.diff_del_bg);
     }
 
     #[test]

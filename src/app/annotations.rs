@@ -63,6 +63,7 @@ impl App {
 
         self.line_annotations.clear();
         self.colored_hunks.clear();
+        self.sbs_pairing.clear();
 
         // Pre-index remote threads by (path, line, side) for quick lookup
         // during the file/hunk walk. Threads whose visibility is
@@ -317,6 +318,7 @@ impl App {
                         DiffViewMode::SideBySide => {
                             Self::build_side_by_side_annotations(
                                 &mut self.line_annotations,
+                                &mut self.sbs_pairing,
                                 file_idx,
                                 hunk_idx,
                                 &hunk.lines,
@@ -574,6 +576,7 @@ impl App {
     #[allow(clippy::too_many_arguments)]
     fn build_side_by_side_annotations(
         annotations: &mut Vec<AnnotatedLine>,
+        pairing: &mut std::collections::HashMap<(usize, usize, usize), Vec<usize>>,
         file_idx: usize,
         hunk_idx: usize,
         lines: &[crate::model::DiffLine],
@@ -637,21 +640,23 @@ impl App {
                         add_end += 1;
                     }
 
-                    let del_count = del_end - del_start;
-                    let add_count = add_end - add_start;
-                    let max_lines = del_count.max(add_count);
+                    // Each removed line sits beside the added line most
+                    // like it. The renderer reads the same answer back, so
+                    // rows and annotations cannot disagree.
+                    let assign = crate::ui::intraline::align_block(
+                        &lines[del_start..del_end],
+                        &lines[add_start..add_end],
+                    );
+                    let rows = crate::ui::intraline::BlockRows::new(
+                        del_end - del_start,
+                        add_end - add_start,
+                        assign.as_deref(),
+                    );
 
-                    for offset in 0..max_lines {
-                        let del_idx = if offset < del_count {
-                            Some(del_start + offset)
-                        } else {
-                            None
-                        };
-                        let add_idx = if offset < add_count {
-                            Some(add_start + offset)
-                        } else {
-                            None
-                        };
+                    for row in 0..rows.count() {
+                        let (del_offset, add_offset) = rows.row(row);
+                        let del_idx = del_offset.map(|o| del_start + o);
+                        let add_idx = add_offset.map(|o| add_start + o);
 
                         let old_lineno = del_idx.and_then(|idx| lines[idx].old_lineno);
                         let new_lineno = add_idx.and_then(|idx| lines[idx].new_lineno);
@@ -705,6 +710,9 @@ impl App {
                         }
                     }
 
+                    if let Some(assign) = assign {
+                        pairing.insert((file_idx, hunk_idx, del_start), assign);
+                    }
                     i = add_end;
                 }
                 LineOrigin::Addition => {

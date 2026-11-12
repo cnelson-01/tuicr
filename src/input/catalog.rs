@@ -131,6 +131,7 @@ pub const ENTRIES: &[Entry] = &[
     e(Global, "Layout", "<leader><", "Move the side-by-side divider left", Keys("<leader><")),
     e(Global, "Layout", "<leader>>", "Move the side-by-side divider right", Keys("<leader>>")),
     e(Global, "Layout", ":set split N", "Old side's share of the width (15-85%)", Prompt("set split ")),
+    e(Global, "Layout", ":set idecolors!", "Side-by-side colours by change (modified / added / removed) or by side", Cmd("set idecolors!")),
     e(Global, "Layout", "<leader>[", "Narrow the file tree", Keys("<leader>[")),
     e(Global, "Layout", "<leader>]", "Widen the file tree", Keys("<leader>]")),
     e(Global, "Layout", ":set treewidth N", "File tree width (8-60%)", Prompt("set treewidth ")),

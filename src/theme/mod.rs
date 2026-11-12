@@ -198,12 +198,56 @@ impl Theme {
     /// row tinted as a local edit takes the edit accent. Palette (non-RGB)
     /// themes get the bare accent.
     pub fn sbs_link_color(&self, row_bg: Option<Color>, addition: bool) -> Color {
-        let (plain_bg, accent) = match (row_bg, addition) {
-            (Some(bg), _) if bg == self.diff_edit_bg => (bg, self.diff_edit),
-            (_, true) => (self.diff_add_bg, self.diff_add),
-            (_, false) => (self.diff_del_bg, self.diff_del),
+        let (plain_bg, accent) = if addition {
+            (self.diff_add_bg, self.diff_add)
+        } else {
+            (self.diff_del_bg, self.diff_del)
         };
-        blend(row_bg.unwrap_or(plain_bg), accent, 45)
+        self.sbs_link_color_toward(row_bg.unwrap_or(plain_bg), accent)
+    }
+
+    /// `sbs_link_color` for a row whose change accent the caller already
+    /// knows (the IDE change colours have three, not two).
+    pub fn sbs_link_color_toward(&self, row_bg: Color, accent: Color) -> Color {
+        let accent = if row_bg == self.diff_edit_bg {
+            self.diff_edit
+        } else {
+            accent
+        };
+        blend(row_bg, accent, 45)
+    }
+
+    /// IDE change colours: the row background of a modified line, on both
+    /// sides. The theme's third diff colour (the edit one), greyed toward
+    /// the cursor-line background so a line changed in `$EDITOR` still reads
+    /// apart from it. `panel_bg` is no base to mix from: it is `Reset`
+    /// whenever the terminal background shows through.
+    pub fn diff_mod_bg(&self) -> Color {
+        match (self.diff_edit_bg, self.cursor_line_bg, self.diff_edit) {
+            (Color::Rgb(..), Color::Rgb(..), Color::Rgb(..)) => blend(
+                blend(self.diff_edit_bg, self.cursor_line_bg, 50),
+                self.diff_edit,
+                12,
+            ),
+            _ => self.diff_edit_bg,
+        }
+    }
+
+    /// IDE change colours: the changed words inside a modified line.
+    pub fn diff_mod_word_bg(&self) -> Color {
+        match (self.diff_mod_bg(), self.diff_edit) {
+            (bg @ Color::Rgb(..), Color::Rgb(..)) => blend(bg, self.diff_edit, 30),
+            _ => self.bg_highlight,
+        }
+    }
+
+    /// IDE change colours: a removed line with nothing beside it. Neutral,
+    /// so red is left to mean an error.
+    pub fn diff_gone_bg(&self) -> Color {
+        match (self.cursor_line_bg, self.fg_dim) {
+            (Color::Rgb(..), Color::Rgb(..)) => blend(self.cursor_line_bg, self.fg_dim, 15),
+            _ => self.bg_highlight,
+        }
     }
 
     /// The added-token emphasis of `intraline_bg` on a line changed in
@@ -2972,6 +3016,44 @@ mode_bg = "#82aaff"
                 "{name}: an edited line's connector should take the edit accent"
             );
         }
+    }
+
+    #[test]
+    fn ide_change_colors_stand_apart_in_every_bundled_theme() {
+        for (name, arg) in ThemeArg::choices() {
+            let theme = resolve_theme(*arg);
+            let (modified, word, gone) = (
+                theme.diff_mod_bg(),
+                theme.diff_mod_word_bg(),
+                theme.diff_gone_bg(),
+            );
+            assert_ne!(modified, word, "{name}: changed words merge into the line");
+            for (key, other) in [
+                ("diff_edit_bg", theme.diff_edit_bg),
+                ("diff_add_bg", theme.diff_add_bg),
+                ("syntax_add_bg", theme.syntax_add_bg),
+                ("cursor_line_bg", theme.cursor_line_bg),
+            ] {
+                assert_ne!(modified, other, "{name}: modified rows equal {key}");
+                assert_ne!(gone, other, "{name}: removed rows equal {key}");
+            }
+            assert_ne!(modified, gone, "{name}: modified rows equal removed rows");
+            let band = theme.sbs_link_color_toward(modified, theme.diff_edit);
+            assert_ne!(band, modified, "{name}: connector merges into its row");
+        }
+    }
+
+    #[test]
+    fn ide_change_colors_survive_a_transparent_panel() {
+        // main.rs resets `panel_bg` so the terminal background shows through;
+        // the change colours must not be mixed from it.
+        let opaque = Theme::dark();
+        let mut transparent = Theme::dark();
+        transparent.panel_bg = Color::Reset;
+        assert_eq!(transparent.diff_mod_bg(), opaque.diff_mod_bg());
+        assert_eq!(transparent.diff_mod_word_bg(), opaque.diff_mod_word_bg());
+        assert_eq!(transparent.diff_gone_bg(), opaque.diff_gone_bg());
+        assert!(matches!(transparent.diff_mod_bg(), Color::Rgb(..)));
     }
 
     #[test]

@@ -56,6 +56,9 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         &["set relativenumber!"],
         CommandKind::ToggleRelativeLineNumbers,
     ),
+    CommandSpec::new(&["set idecolors"], CommandKind::SetIdeColors(Some(true))),
+    CommandSpec::new(&["set noidecolors"], CommandKind::SetIdeColors(Some(false))),
+    CommandSpec::new(&["set idecolors!"], CommandKind::SetIdeColors(None)),
     CommandSpec::new(&["vim", "set vim!"], CommandKind::ToggleVim),
     CommandSpec::new(&["set vim"], CommandKind::SetVim(true)),
     CommandSpec::new(&["novim", "set novim"], CommandKind::SetVim(false)),
@@ -222,6 +225,9 @@ enum CommandKind {
     ToggleWrap,
     SetRelativeLineNumbers(bool),
     ToggleRelativeLineNumbers,
+    /// `:set idecolors` / `noidecolors` / `idecolors!` (`None` toggles):
+    /// side-by-side change colours by kind of change or by side.
+    SetIdeColors(Option<bool>),
     ToggleVim,
     SetVim(bool),
     SetCommitsVisible(bool),
@@ -1220,6 +1226,15 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
         }
         CommandKind::ToggleRelativeLineNumbers => {
             app.relative_line_numbers = !app.relative_line_numbers;
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::SetIdeColors(enabled) => {
+            app.ide_change_colors = enabled.unwrap_or(!app.ide_change_colors);
+            app.set_message(if app.ide_change_colors {
+                "Side-by-side colours: by change (modified / added / removed)"
+            } else {
+                "Side-by-side colours: by side (removed / added)"
+            });
             CommandAfterDispatch::ExitCommandMode
         }
         CommandKind::ToggleVim => {
@@ -3032,6 +3047,23 @@ mod command_tests {
         // Creating a branch or tag is not a git-op command.
         assert_eq!(parse_git_op_command("branch topic"), None);
         assert_eq!(parse_git_op_command("tag v2"), None);
+    }
+
+    #[test]
+    fn parses_ide_colour_commands() {
+        let kind = |cmd: &str| command_spec_for(cmd).map(|spec| spec.kind);
+        assert_eq!(
+            kind("set idecolors"),
+            Some(CommandKind::SetIdeColors(Some(true)))
+        );
+        assert_eq!(
+            kind("set noidecolors"),
+            Some(CommandKind::SetIdeColors(Some(false)))
+        );
+        assert_eq!(
+            kind("set idecolors!"),
+            Some(CommandKind::SetIdeColors(None))
+        );
     }
 
     #[test]

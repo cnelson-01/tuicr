@@ -2,9 +2,13 @@
 //!
 //! A deletion paired with the addition that replaced it usually differs in a
 //! few tokens. IDE diff viewers paint just those tokens a stronger shade so the
-//! eye lands on `10` → `1000` instead of re-reading both lines. Pairing
-//! follows the side-by-side layout: the k-th deletion of a run pairs with
-//! the k-th addition that follows it.
+//! eye lands on `10` → `1000` instead of re-reading both lines.
+//!
+//! Which lines pair is decided here too. The unified view pairs by position
+//! (`pair_partners`: the k-th deletion of a run with the k-th addition that
+//! follows it). The side-by-side view first looks for the likeliest
+//! counterpart of each line (`align_block`) and lays its rows out from that
+//! (`BlockRows`).
 
 use std::ops::Range;
 
@@ -48,6 +52,198 @@ pub fn pair_partners(lines: &[DiffLine]) -> Vec<Option<usize>> {
         }
     }
     partners
+}
+
+/// Line pairs a change block may weigh before it falls back to pairing by
+/// position. Keeps a pathological block (hundreds of lines replaced by
+/// hundreds) from stalling a reload.
+const MAX_ALIGN_PAIRS: usize = 900;
+
+/// Words compared per line when scoring a pair; the tail of a longer line
+/// is ignored.
+const MAX_ALIGN_WORDS: usize = 48;
+
+/// Below this share of common words two lines are not the same line edited,
+/// and score nothing.
+const MIN_PAIR_SIMILARITY: f32 = 0.4;
+
+/// How much likelier than pairing by position an alignment has to be, in
+/// total, before it is used. Lines that share only boilerplate score alike
+/// with several candidates; moving them around for a sliver of likeness
+/// would scatter blank rows through the block for nothing.
+const MIN_ALIGN_GAIN: f32 = 0.2;
+
+/// Which line of the longer side each line of the shorter side sits beside
+/// in a side-by-side change block of `dels` removed and `adds` added lines:
+/// offsets into the longer side, strictly increasing, one per line of the
+/// shorter side. `None` means by position (the k-th with the k-th), which
+/// is also the answer whenever no line has a likelier counterpart.
+///
+/// An IDE diff matches the lines inside a changed block a second time, so a
+/// line that was edited sits beside its edit and not beside whatever was
+/// inserted above it. This does the same within the block's own row count:
+/// every line of the shorter side keeps a partner, order is kept, and the
+/// total likeness of the pairs is the largest possible. Ties go to the
+/// earliest lines, and an alignment barely likelier than pairing by position
+/// is not worth the blank rows it would scatter.
+pub fn align_block(dels: &[DiffLine], adds: &[DiffLine]) -> Option<Vec<usize>> {
+    let (short, long) = if dels.len() <= adds.len() {
+        (dels, adds)
+    } else {
+        (adds, dels)
+    };
+    let (n, m) = (short.len(), long.len());
+    if n == 0 || n == m || n * m > MAX_ALIGN_PAIRS {
+        return None;
+    }
+    let words = |lines: &[DiffLine]| -> Vec<(String, Vec<Range<usize>>)> {
+        lines
+            .iter()
+            .map(|l| {
+                let text = l.content.trim().to_string();
+                let mut tokens = tokenize(&text);
+                tokens.retain(|t| text[t.clone()].starts_with(|c| class(c) == Class::Word));
+                tokens.truncate(MAX_ALIGN_WORDS);
+                (text, tokens)
+            })
+            .collect()
+    };
+    let (short_words, long_words) = (words(short), words(long));
+    let score = |i: usize, j: usize| {
+        let s = similarity(&short_words[i], &long_words[j]);
+        if s >= MIN_PAIR_SIMILARITY { s } else { 0.0 }
+    };
+
+    // best[i][j]: the most likeness the first `i` short lines can collect
+    // from the first `j` long ones (`i <= j`, every short line placed).
+    let at = |i: usize, j: usize| i * (m + 1) + j;
+    let mut best = vec![0.0_f32; (n + 1) * (m + 1)];
+    let mut scores = vec![0.0_f32; n * m];
+    for i in 1..=n {
+        for j in i..=m - (n - i) {
+            let s = score(i - 1, j - 1);
+            scores[(i - 1) * m + (j - 1)] = s;
+            let paired = best[at(i - 1, j - 1)] + s;
+            best[at(i, j)] = if j > i {
+                paired.max(best[at(i, j - 1)])
+            } else {
+                paired
+            };
+        }
+    }
+    let by_position: f32 = (0..n).map(|i| scores[i * m + i]).sum();
+    if best[at(n, m)] < by_position + MIN_ALIGN_GAIN {
+        return None;
+    }
+    // Walk back, leaving a long line unpaired whenever that costs nothing,
+    // so equal scores settle on the earliest lines.
+    let mut assign = vec![0; n];
+    let (mut i, mut j) = (n, m);
+    while i > 0 {
+        if j > i && best[at(i, j - 1)] >= best[at(i - 1, j - 1)] + scores[(i - 1) * m + (j - 1)] {
+            j -= 1;
+        } else {
+            assign[i - 1] = j - 1;
+            i -= 1;
+            j -= 1;
+        }
+    }
+    let by_position = assign.iter().enumerate().all(|(i, j)| i == *j);
+    (!by_position).then_some(assign)
+}
+
+/// The rows of a side-by-side change block, top to bottom: the longer side
+/// has a line on every row, the shorter side on the rows `align_block`
+/// assigned (or the first ones, by position).
+#[derive(Clone, Copy)]
+pub struct BlockRows<'a> {
+    dels: usize,
+    adds: usize,
+    assign: Option<&'a [usize]>,
+}
+
+impl<'a> BlockRows<'a> {
+    /// `assign` is `align_block`'s answer for the block. One that does not
+    /// fit it is dropped in favour of pairing by position, so a stale
+    /// answer can never index out of range.
+    pub fn new(dels: usize, adds: usize, assign: Option<&'a [usize]>) -> Self {
+        let (short, long) = (dels.min(adds), dels.max(adds));
+        let fits = |a: &&[usize]| {
+            a.len() == short
+                && a.windows(2).all(|w| w[0] < w[1])
+                && a.last().is_none_or(|j| *j < long)
+        };
+        Self {
+            dels,
+            adds,
+            assign: assign.filter(fits),
+        }
+    }
+
+    /// Number of rows: every line of the longer side gets one.
+    pub fn count(&self) -> usize {
+        self.dels.max(self.adds)
+    }
+
+    /// Row `row` as offsets into the block's removed and added lines.
+    pub fn row(&self, row: usize) -> (Option<usize>, Option<usize>) {
+        let short = self.dels.min(self.adds);
+        let partner = match self.assign {
+            Some(assign) => assign.binary_search(&row).ok(),
+            None => (row < short).then_some(row),
+        };
+        if self.dels <= self.adds {
+            (partner, Some(row))
+        } else {
+            (Some(row), partner)
+        }
+    }
+
+    /// Whether `row` has a line on one side only and starts a run of such
+    /// rows: where the other side folds.
+    pub fn starts_one_sided_run(&self, row: usize) -> bool {
+        let sides = |r: usize| {
+            let (del, add) = self.row(r);
+            (del.is_some(), add.is_some())
+        };
+        let here = sides(row);
+        here != (true, true) && (row == 0 || sides(row - 1) != here)
+    }
+}
+
+/// How alike two lines are, 0 to 1: the share of the longer line's word
+/// characters that a longest common subsequence of words keeps. Identical
+/// non-blank lines score 1 even without a word (`}` beside `}`).
+fn similarity(a: &(String, Vec<Range<usize>>), b: &(String, Vec<Range<usize>>)) -> f32 {
+    let ((a_text, a_words), (b_text, b_words)) = (a, b);
+    if a_text.is_empty() || b_text.is_empty() {
+        return 0.0;
+    }
+    if a_text == b_text {
+        return 1.0;
+    }
+    let (n, m) = (a_words.len(), b_words.len());
+    if n == 0 || m == 0 {
+        return 0.0;
+    }
+    let wa = |i: usize| &a_text[a_words[i].clone()];
+    let wb = |j: usize| &b_text[b_words[j].clone()];
+    // Rolling rows of the weighted LCS table.
+    let mut prev = vec![0usize; m + 1];
+    let mut row = vec![0usize; m + 1];
+    for i in 1..=n {
+        for j in 1..=m {
+            row[j] = if wa(i - 1) == wb(j - 1) {
+                prev[j - 1] + wa(i - 1).len()
+            } else {
+                prev[j].max(row[j - 1])
+            };
+        }
+        std::mem::swap(&mut prev, &mut row);
+    }
+    let total = |words: &[Range<usize>]| words.iter().map(|w| w.len()).sum::<usize>();
+    let longest = total(a_words).max(total(b_words)).max(1);
+    prev[m] as f32 / longest as f32
 }
 
 /// The text a diff line renders: its highlighted spans joined, else its
@@ -321,6 +517,140 @@ mod tests {
             pair_partners(&lines),
             vec![None, Some(3), None, Some(1), None, None]
         );
+    }
+
+    fn lines(origin: LineOrigin, contents: &[&str]) -> Vec<DiffLine> {
+        contents.iter().map(|c| line(origin, c)).collect()
+    }
+
+    #[test]
+    fn a_removed_line_sits_beside_the_added_line_most_like_it() {
+        let dels = lines(
+            LineOrigin::Deletion,
+            &["    let total = compute(alpha, beta);"],
+        );
+        let adds = lines(
+            LineOrigin::Addition,
+            &[
+                "    // widen the sum",
+                "    let extra = 1;",
+                "    let total = compute(alpha, beta, extra);",
+            ],
+        );
+        assert_eq!(align_block(&dels, &adds), Some(vec![2]));
+        // The same holds with the sides swapped: the lone added line picks
+        // its counterpart among the removed ones.
+        assert_eq!(align_block(&adds, &dels), Some(vec![2]));
+    }
+
+    #[test]
+    fn unlike_lines_pair_by_position() {
+        let dels = lines(LineOrigin::Deletion, &["GONE1"]);
+        let adds = lines(LineOrigin::Addition, &["KEPT1", "KEPT2"]);
+        assert_eq!(align_block(&dels, &adds), None);
+        // Equal counts leave nothing to choose.
+        let adds = lines(LineOrigin::Addition, &["GONE1 again"]);
+        assert_eq!(align_block(&dels, &adds), None);
+        // A match that is already first is by position too.
+        let adds = lines(LineOrigin::Addition, &["GONE1", "KEPT2"]);
+        assert_eq!(align_block(&dels, &adds), None);
+        // Blank lines never count as a match.
+        let dels = lines(LineOrigin::Deletion, &[""]);
+        let adds = lines(LineOrigin::Addition, &["first", ""]);
+        assert_eq!(align_block(&dels, &adds), None);
+    }
+
+    #[test]
+    fn a_slightly_likelier_pairing_does_not_beat_position() {
+        // Every line shares the same boilerplate; the second added line is
+        // a touch closer to the third removed one than to the second.
+        let dels = lines(
+            LineOrigin::Deletion,
+            &[
+                "fn step_28(x: u32) -> u32 { x + 28 }",
+                "fn step_29(x: u32) -> u32 { x + 29 }",
+                "fn step_30(x: u32) -> u32 { x + 30 }",
+            ],
+        );
+        let adds = lines(
+            LineOrigin::Addition,
+            &[
+                "fn merged_a(x: u32) -> u32 { x + 28 + 29 }",
+                "fn merged_b(x: u32) -> u32 { x + 30 + 31 }",
+            ],
+        );
+        assert_eq!(align_block(&dels, &adds), None);
+    }
+
+    #[test]
+    fn alignment_keeps_line_order() {
+        // The second removed line is most like the first added line, but
+        // pairing them would cross the first pair.
+        let dels = lines(
+            LineOrigin::Deletion,
+            &["alpha one two three", "gamma four five six"],
+        );
+        let adds = lines(
+            LineOrigin::Addition,
+            &[
+                "gamma four five six seven",
+                "unrelated",
+                "alpha one two three four",
+                "trailing",
+            ],
+        );
+        let assign = align_block(&dels, &adds).expect("alignment");
+        assert!(assign[0] < assign[1], "{assign:?}");
+        // One of the two likely pairs is kept; which one, the scores decide.
+        assert!(assign == [0, 1] || assign == [2, 3], "{assign:?}");
+    }
+
+    #[test]
+    fn oversized_blocks_pair_by_position() {
+        let dels = lines(LineOrigin::Deletion, &["let needle = 1;"; 10]);
+        let mut contents = vec!["filler"; 100];
+        contents[99] = "let needle = 2;";
+        let adds = lines(LineOrigin::Addition, &contents);
+        assert!(dels.len() * adds.len() > MAX_ALIGN_PAIRS);
+        assert_eq!(align_block(&dels, &adds), None);
+    }
+
+    #[test]
+    fn block_rows_follow_the_alignment() {
+        let rows = BlockRows::new(1, 3, Some(&[2]));
+        assert_eq!(rows.count(), 3);
+        let all: Vec<_> = (0..3).map(|r| rows.row(r)).collect();
+        assert_eq!(
+            all,
+            vec![(None, Some(0)), (None, Some(1)), (Some(0), Some(2))]
+        );
+        assert!(rows.starts_one_sided_run(0));
+        assert!(!rows.starts_one_sided_run(1));
+        assert!(!rows.starts_one_sided_run(2));
+
+        // More removed than added: the old side has a line on every row.
+        let rows = BlockRows::new(3, 1, Some(&[1]));
+        let all: Vec<_> = (0..3).map(|r| rows.row(r)).collect();
+        assert_eq!(
+            all,
+            vec![(Some(0), None), (Some(1), Some(0)), (Some(2), None)]
+        );
+        assert!(rows.starts_one_sided_run(0));
+        assert!(rows.starts_one_sided_run(2));
+    }
+
+    #[test]
+    fn block_rows_ignore_an_alignment_that_does_not_fit() {
+        let by_position = vec![(Some(0), Some(0)), (None, Some(1)), (None, Some(2))];
+        for stale in [&[3][..], &[0, 1][..], &[][..]] {
+            let rows = BlockRows::new(1, 3, Some(stale));
+            let all: Vec<_> = (0..3).map(|r| rows.row(r)).collect();
+            assert_eq!(all, by_position, "{stale:?}");
+        }
+        let rows = BlockRows::new(1, 3, None);
+        assert!(!rows.starts_one_sided_run(0));
+        assert!(rows.starts_one_sided_run(1));
+        assert!(!rows.starts_one_sided_run(2));
     }
 
     #[test]

@@ -1347,6 +1347,20 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  :set idecolors[!]",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  Side-by-side colours by change: modified, added, removed"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :set noidecolors",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  Side-by-side colours by side: old red, new green"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  :set relativenumber[!]",
                 Style::default().add_modifier(Modifier::BOLD),
             ),

@@ -35,11 +35,17 @@ pub fn diff_edit_marker_style(theme: &Theme) -> Style {
 pub fn diff_edit_span_style(style: Style, theme: &Theme) -> Style {
     match style.bg {
         None | Some(Color::Reset) => style.bg(theme.diff_edit_bg),
-        Some(bg) if bg == theme.diff_add_bg || bg == theme.syntax_add_bg => {
+        Some(bg)
+            if bg == theme.diff_add_bg
+                || bg == theme.syntax_add_bg
+                || bg == theme.diff_mod_bg() =>
+        {
             style.bg(theme.diff_edit_bg)
         }
         Some(bg)
-            if bg == theme.intraline_bg(true, true) || bg == theme.intraline_bg(true, false) =>
+            if bg == theme.intraline_bg(true, true)
+                || bg == theme.intraline_bg(true, false)
+                || bg == theme.diff_mod_word_bg() =>
         {
             style.bg(theme.edit_intraline_bg())
         }

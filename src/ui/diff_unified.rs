@@ -2139,18 +2139,26 @@ mod remote_comments_snapshot_tests {
                     let inner = app.diff_inner_area.unwrap();
                     let cursor_bg = app.theme.cursor_line_bg;
                     // The side-by-side divider keeps its change-block
-                    // connector on the cursor row.
-                    let divider = (mode == DiffViewMode::SideBySide).then(|| {
-                        let start = app.pane_geometry(inner, LineSide::Old).content_x_end;
-                        start..start + 3
-                    });
+                    // connector on the cursor row, and the gutters keep the
+                    // row colour that runs through them (IDE change colours).
+                    let kept: Vec<std::ops::Range<u16>> = if mode == DiffViewMode::SideBySide {
+                        let divider = app.pane_geometry(inner, LineSide::Old).content_x_end;
+                        let gutter = app.lineno_width() as u16 + 2;
+                        vec![
+                            divider..divider + 3,
+                            inner.x + 1..inner.x + 1 + gutter,
+                            divider + 3..divider + 3 + gutter,
+                        ]
+                    } else {
+                        Vec::new()
+                    };
                     let mut cursor_rows = 0;
                     for (row, &idx) in app.diff_row_to_annotation.iter().enumerate() {
                         if idx == indices[0] {
                             cursor_rows += 1;
                             let y = inner.y + row as u16;
                             for x in inner.x..inner.right() {
-                                if divider.as_ref().is_some_and(|d| d.contains(&x)) {
+                                if kept.iter().any(|cells| cells.contains(&x)) {
                                     continue;
                                 }
                                 assert_eq!(
@@ -3152,9 +3160,20 @@ mod remote_comments_snapshot_tests {
         assert_eq!(new_y, y);
         assert_eq!(buffer[(new_x - 1, y)].symbol(), "\u{258c}");
         assert_eq!(buffer[(new_x, y)].bg, theme.diff_edit_bg);
+        // The row colour runs through the gutter with the IDE change
+        // colours, and the edit tint with it: the line number is tinted too.
+        assert_eq!(buffer[(new_x - 3, y)].bg, theme.diff_edit_bg);
         let (old_x, _) = find_text_from(&buffer, "four", 0);
         let (new_x, y) = find_text_from(&buffer, "four", old_x + 4);
         assert_eq!(buffer[(new_x - 1, y)].symbol(), "\u{25b4}");
+
+        // Colours by side keep a plain gutter beside the marker.
+        app.ide_change_colors = false;
+        let buffer = draw_diff(&mut app);
+        let (old_x, _) = find_text_from(&buffer, "one", 0);
+        let (new_x, y) = find_text_from(&buffer, "one", old_x + 3);
+        assert_eq!(buffer[(new_x, y)].bg, theme.diff_edit_bg);
+        assert_ne!(buffer[(new_x - 3, y)].bg, theme.diff_edit_bg);
     }
 
     #[test]
