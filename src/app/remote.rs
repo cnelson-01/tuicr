@@ -8,7 +8,6 @@ use std::sync::mpsc::Receiver;
 
 use super::{App, InputMode};
 use crate::error::Result;
-use crate::vcs::detect_vcs;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RemoteOp {
@@ -25,7 +24,7 @@ pub enum RemoteOp {
 }
 
 impl RemoteOp {
-    fn verb(self) -> &'static str {
+    pub(in crate::app) fn verb(self) -> &'static str {
         match self {
             Self::Fetch => "Fetching",
             Self::Pull | Self::PullRebase => "Pulling",
@@ -35,7 +34,7 @@ impl RemoteOp {
         }
     }
 
-    fn name(self) -> &'static str {
+    pub(in crate::app) fn name(self) -> &'static str {
         match self {
             Self::Fetch => "fetch",
             Self::Pull => "pull",
@@ -65,13 +64,20 @@ impl App {
     }
 
     /// Start `op` on a worker thread. One at a time: a second request while
-    /// one is running is refused with a message.
+    /// one is running is refused with a message, and so is one made while
+    /// fetch-all has yet to finish with this repository.
     pub fn start_remote_op(&mut self, op: RemoteOp) {
         if let Some(running) = self.remote_op_running() {
             self.set_warning(format!(
                 "{} already \u{2014} wait for it to finish",
                 running.verb()
             ));
+            return;
+        }
+        // Fetch-all fetches into this repository's refs too, and two
+        // writers collide over the ref locks.
+        if self.fetch_all_busy_here() {
+            self.set_warning("Fetch-all is still working on this repository");
             return;
         }
         // `pull --rebase` runs with `--autostash` and moves the branch:
@@ -82,25 +88,24 @@ impl App {
         self.remote_op = Some(RemoteOpInFlight { op, rx });
         self.set_sticky_warning(format!("{}\u{2026}", op.verb()));
         std::thread::spawn(move || {
-            let result = detect_vcs(options.git_backend_preference, options.diff_whitespace_mode)
-                .and_then(|vcs| match op {
-                    RemoteOp::Fetch => vcs.fetch(),
-                    RemoteOp::Pull => vcs.pull(false),
-                    RemoteOp::PullRebase => vcs.pull(true),
-                    RemoteOp::Push => vcs.push(),
-                    RemoteOp::ForcePush => vcs
-                        .run_git(
-                            &["push", "--force-with-lease", "--recurse-submodules=no"],
-                            true,
-                        )
-                        .map(|_| {
-                            let branch = vcs.info().branch_name.clone().unwrap_or_default();
-                            format!("Force-pushed {branch} (with lease)")
-                        }),
-                    RemoteOp::PushTags => vcs
-                        .run_git(&["push", "--tags", "--recurse-submodules=no"], true)
-                        .map(|_| "Pushed tags".to_string()),
-                });
+            let result = options.open().and_then(|vcs| match op {
+                RemoteOp::Fetch => vcs.fetch(),
+                RemoteOp::Pull => vcs.pull(false),
+                RemoteOp::PullRebase => vcs.pull(true),
+                RemoteOp::Push => vcs.push(),
+                RemoteOp::ForcePush => vcs
+                    .run_git(
+                        &["push", "--force-with-lease", "--recurse-submodules=no"],
+                        true,
+                    )
+                    .map(|_| {
+                        let branch = vcs.info().branch_name.clone().unwrap_or_default();
+                        format!("Force-pushed {branch} (with lease)")
+                    }),
+                RemoteOp::PushTags => vcs
+                    .run_git(&["push", "--tags", "--recurse-submodules=no"], true)
+                    .map(|_| "Pushed tags".to_string()),
+            });
             let _ = tx.send(RemoteOpAnswer { op, result });
         });
     }
@@ -141,7 +146,7 @@ impl App {
 
     /// Refresh the branch picker's rows after a fetch without losing the
     /// filter or cursor.
-    fn reopen_branch_picker_in_place(&mut self) {
+    pub(in crate::app) fn reopen_branch_picker_in_place(&mut self) {
         let Ok(branches) = self.vcs.list_branches() else {
             return;
         };

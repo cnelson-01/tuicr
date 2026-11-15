@@ -307,15 +307,37 @@ fn header_source_chunk(app: &App) -> Option<String> {
     }
 }
 
+/// ` Fetching 3/12 `: how far a running fetch-all (`:fetchall`) has got,
+/// for the right-hand slot of the status bar and of the selector's footer.
+pub(crate) fn build_fetch_all_span(
+    (done, total): (usize, usize),
+    theme: &Theme,
+) -> (Span<'static>, usize) {
+    let content = format!(" Fetching {done}/{total} ");
+    let width = content.chars().count();
+    (
+        Span::styled(
+            content,
+            Style::default()
+                .fg(theme.message_info_fg)
+                .bg(theme.message_info_bg)
+                .add_modifier(Modifier::BOLD),
+        ),
+        width,
+    )
+}
+
 pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
 
-    // Right-aligned slot priority: active message > pr-flow spinners
-    // (submit/reload/range) > remote-comments loading hint > modified
-    // indicator. Surfaces the most important transient state without
-    // crowding the hints on the left.
+    // Right-aligned slot priority: active message > fetch-all count >
+    // pr-flow spinners (submit/reload/range) > remote-comments loading hint
+    // > modified indicator. Surfaces the most important transient state
+    // without crowding the hints on the left.
     let (right_span, right_width) = if app.message.is_some() {
         build_message_span(app.message.as_ref(), theme)
+    } else if let Some(progress) = app.fetch_all_progress() {
+        build_fetch_all_span(progress, theme)
     } else if let Some(submit) = app.pr_submit_state.as_ref() {
         use crate::forge::submit::SubmitEvent;
         let glyph = crate::ui::selector::pr_open_spinner_glyph(submit.started_at.elapsed());
@@ -436,6 +458,7 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             InputMode::SubmitConfirm => " SUBMIT ".to_string(),
             InputMode::SubmitActionPicker => " SUBMIT ".to_string(),
             InputMode::BranchPicker => "BRANCHES".to_string(),
+            InputMode::RepoPicker => " REPOS ".to_string(),
             InputMode::StashPicker => "STASHES".to_string(),
             InputMode::FindResults => " FIND ".to_string(),
             InputMode::MergeConflict => " MERGE ".to_string(),
@@ -507,7 +530,7 @@ pub(crate) fn pinned(text: impl Into<String>) -> Hint {
 /// The keys worth knowing in the current mode and pane, most useful first.
 /// Normal-mode panes end with the palette and help keys, so every key is
 /// one search away even when the bar can't list it.
-fn mode_hints(app: &App) -> Vec<Hint> {
+pub(crate) fn mode_hints(app: &App) -> Vec<Hint> {
     let leader = crate::input::catalog::display_leader(app.leader_key);
     let actions = || pinned("^p actions");
     if app.file_tree_prompt_editing() || app.commit_filter_editing() {
@@ -575,6 +598,7 @@ fn mode_hints(app: &App) -> Vec<Hint> {
             hint("s/S stage"),
             hint(format!("{leader}g log")),
             hint(format!("{leader}b branches")),
+            hint(format!("{leader}r repos")),
             hint(format!("{leader} more")),
             actions(),
             pinned("? help"),
@@ -635,6 +659,13 @@ fn mode_hints(app: &App) -> Vec<Hint> {
             hint("^d compare"),
             hint("^o log"),
             hint("^f fetch"),
+            pinned("esc close"),
+        ],
+        InputMode::RepoPicker => vec![
+            hint("type to filter"),
+            hint("^x remove"),
+            hint("^f fetch all"),
+            pinned("\u{21b5} switch"),
             pinned("esc close"),
         ],
         InputMode::CommitSelect => vec![

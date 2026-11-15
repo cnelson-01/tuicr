@@ -475,7 +475,7 @@ fn upsert_session_manifest(
     manifest::save_manifest(reviews_dir, &manifest)
 }
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(super) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     let parent = path.parent().ok_or_else(|| {
         TuicrError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,

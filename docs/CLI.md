@@ -167,6 +167,13 @@ still open, or after it exits. `tuicr-summary:` is printed on exit, always —
 including with zero comments, so a watcher can tell "reviewed everything, found
 nothing" apart from "quit without looking".
 
+Both describe one repository. If the user switches repositories inside the TUI
+(`<leader>r`, `:repo <path>`), `tuicr-session:` still names the session tuicr
+was launched on, and `tuicr-summary:` reports the review that was on screen at
+exit, which belongs to the last repository switched to. `tuicr review list`
+marks whichever session is open at the moment with `active: true`. Under
+`--stdout` switching is refused, so the launch session is the one exported.
+
 `--stdout` prints the export markdown to stdout when the TUI exits, with the
 TUI itself rendered to `/dev/tty`. Combined with the two stderr markers, that
 keeps stdout clean for a pipe.

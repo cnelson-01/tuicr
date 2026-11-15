@@ -338,6 +338,15 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
         ]),
         Line::from(vec![
             Span::styled(
+                format!("  {leader}r        "),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(
+                "Repo switcher: jump to a recently opened repository (also `:repos`; Enter flips to the previous one)",
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  h/l       ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
@@ -797,6 +806,74 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Return to the diff"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                format!("  {leader}r {leader}b {leader}p  "),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Repo switcher / branch picker / command palette, over the selector"),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("Repo Switcher ({leader}r, `:repos`)"),
+            Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                "  type      ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(
+                "Filter by name or path: words in any order, letters in order (`tcr` finds tuicr)",
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  Up/Down   ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Move (also Ctrl-p / Ctrl-n; PageUp / PageDown move ten)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  Enter     ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(
+                "Switch to the repository, as if tuicr were quit and started there (the review is saved first)",
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  Ctrl-x    ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Remove the repository from the list (the repository is not touched)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  Ctrl-f    ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(
+                "Fetch all: every remote of every listed repository, in the background (also `:fetchall`)",
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  Ctrl-u    ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Clear the filter (Backspace deletes a character)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  Esc       ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Clear the filter, then close"),
         ]),
         Line::from(""),
         Line::from(Span::styled(
@@ -1279,6 +1356,31 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw("Open the selector on Pull Requests"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :repos    ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(format!(
+                "Repo switcher: jump to a recently opened repository (alias `:repo`, {leader}r)"
+            )),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :repo <path>",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" Open the repository at a path (`~` works, Tab completes directories)"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  :fetchall ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(
+                "Fetch every remote of every recent repository in the background; failures are in `:console`",
+            ),
         ]),
         Line::from(vec![
             Span::styled(

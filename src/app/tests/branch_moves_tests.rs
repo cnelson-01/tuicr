@@ -139,7 +139,7 @@ impl Fixture {
             None,
         )
         .expect("failed to build test app");
-        app.vcs_reopen_root = Some(PathBuf::from(self.root()));
+        app.vcs_open_options.root = Some(PathBuf::from(self.root()));
         app
     }
 }

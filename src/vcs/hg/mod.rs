@@ -46,10 +46,24 @@ pub struct HgBackend {
 impl HgBackend {
     /// Discover a Mercurial repository from the current directory
     pub fn discover(whitespace_mode: DiffWhitespaceMode) -> Result<Self> {
+        Self::discover_in(None, whitespace_mode)
+    }
+
+    /// Discover the Mercurial repository containing `dir`, whatever the
+    /// process's working directory is.
+    pub(crate) fn discover_from(dir: &Path, whitespace_mode: DiffWhitespaceMode) -> Result<Self> {
+        Self::discover_in(Some(dir), whitespace_mode)
+    }
+
+    fn discover_in(dir: Option<&Path>, whitespace_mode: DiffWhitespaceMode) -> Result<Self> {
         // Use `hg root` to find the repository root
         // This handles being called from subdirectories
-        let root_output = Command::new("hg")
-            .args(["root"])
+        let mut command = Command::new("hg");
+        command.args(["root"]);
+        if let Some(dir) = dir {
+            command.current_dir(dir);
+        }
+        let root_output = command
             .output()
             .map_err(|e| TuicrError::VcsCommand(format!("Failed to run hg: {}", e)))?;
 

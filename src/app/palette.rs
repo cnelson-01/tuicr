@@ -27,6 +27,7 @@ impl App {
             // The fullscreen selector takes the log pane's commit keys.
             InputMode::CommitSelect => return Scope::Log,
             InputMode::BranchPicker => return Scope::Branches,
+            InputMode::RepoPicker => return Scope::Repos,
             InputMode::StashPicker => return Scope::Stashes,
             InputMode::MergeConflict => return Scope::Merge,
             _ => {}
@@ -161,7 +162,7 @@ impl App {
                     self.focused_panel = FocusedPanel::Changes;
                 }
             }
-            Scope::Global | Scope::Branches | Scope::Stashes | Scope::Merge => {}
+            Scope::Global | Scope::Branches | Scope::Repos | Scope::Stashes | Scope::Merge => {}
         }
     }
 }

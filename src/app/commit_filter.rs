@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use super::{App, CommitFilterAnswer, InputMode, initial_commit_limit};
 use crate::error::Result;
-use crate::vcs::{CommitInfo, CommitQuery, detect_vcs};
+use crate::vcs::{CommitInfo, CommitQuery};
 
 /// How long the prompt must rest before its text is searched.
 const LIVE_FILTER_DELAY: Duration = Duration::from_millis(200);
@@ -139,7 +139,8 @@ impl App {
         self.commit_filter_rx = Some(rx);
         self.commit_filter_shown = query.clone();
         std::thread::spawn(move || {
-            let result = detect_vcs(options.git_backend_preference, options.diff_whitespace_mode)
+            let result = options
+                .open()
                 .and_then(|vcs| match &query {
                     Some(q) => vcs.search_commits(q, 0, limit),
                     None => vcs.get_recent_commits(0, limit),

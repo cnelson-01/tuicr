@@ -208,8 +208,8 @@ impl App {
         } else {
             DiffWhitespaceMode::Normal
         };
-        self.vcs_open_options.diff_whitespace_mode = mode.clone();
-        match crate::vcs::detect_vcs(self.vcs_open_options.git_backend_preference, mode) {
+        self.vcs_open_options.diff_whitespace_mode = mode;
+        match self.vcs_open_options.open() {
             Ok(vcs) => {
                 self.vcs_info = vcs.info().clone();
                 self.vcs = vcs;

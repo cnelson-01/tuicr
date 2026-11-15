@@ -20,6 +20,8 @@ pub enum Scope {
     Log,
     /// Inside the branch picker.
     Branches,
+    /// Inside the repo switcher.
+    Repos,
     /// Inside the stash picker.
     Stashes,
     /// Inside the merge conflict view.
@@ -36,6 +38,7 @@ impl Scope {
             Scope::Tree => "tree",
             Scope::Log => "log",
             Scope::Branches => "branches",
+            Scope::Repos => "repos",
             Scope::Stashes => "stashes",
             Scope::Merge => "merge",
             Scope::Changes => "changes",
@@ -82,7 +85,7 @@ const fn e(
 }
 
 use Run::{Command as Cmd, Keys, Prompt};
-use Scope::{Branches, Changes, Diff, Global, Log, Merge, Stashes, Tree};
+use Scope::{Branches, Changes, Diff, Global, Log, Merge, Repos, Stashes, Tree};
 
 #[rustfmt::skip]
 pub const ENTRIES: &[Entry] = &[
@@ -271,6 +274,14 @@ pub const ENTRIES: &[Entry] = &[
     e(Global, "Remote", ":push", "Push: review the outgoing commits first", Cmd("push")),
     e(Global, "Remote", ":push!", "Force-push with lease (after rewriting history)", Cmd("push!")),
     e(Global, "Remote", ":push --tags", "Push every tag", Cmd("push --tags")),
+    e(Global, "Remote", ":fetchall", "Fetch all recent repositories", Cmd("fetchall")),
+    // ── Repositories ─────────────────────────────────────────────────────
+    e(Global, "Repos", "<leader>r", "Switch repository (recently opened)", Keys("<leader>r")),
+    e(Global, "Repos", ":repos", "Repo switcher: jump to a recently opened repository", Cmd("repos")),
+    e(Global, "Repos", ":repo PATH", "Open a repository by path", Prompt("repo ")),
+    e(Repos, "Repos", "Enter", "Switch to the repository", Cmd("repos")),
+    e(Repos, "Repos", "Ctrl-x", "Remove the repository from the list", Cmd("repos")),
+    e(Repos, "Repos", "Ctrl-f", "Fetch all recent repositories", Cmd("repos")),
     e(Global, "Help", ":console", "Git console: the commands tuicr ran", Cmd("console")),
     // ── Search ───────────────────────────────────────────────────────────
     e(Global, "Find", "<leader>F", "Find in files (from any pane)", Keys("<leader>F")),
@@ -478,6 +489,49 @@ mod tests {
     fn commands_have_descriptions() {
         assert_eq!(command_description("fetch"), Some("Fetch every remote"));
         assert!(command_description("set split").is_some());
+    }
+
+    #[test]
+    fn repo_commands_describe_themselves_not_the_picker_rows() {
+        // The in-picker rows also run `:repos`; the global row has to come
+        // first, because the first match is the description shown.
+        assert_eq!(
+            command_description("repos"),
+            Some("Repo switcher: jump to a recently opened repository")
+        );
+        assert_eq!(
+            command_description("repo"),
+            Some("Open a repository by path")
+        );
+    }
+
+    #[test]
+    fn fetch_all_is_a_command_of_its_own_beside_fetch() {
+        // `:fetch` keeps the description its completion and the palette
+        // search for it rely on; `:fetchall` is described by its global row,
+        // not by the picker's Ctrl-f row.
+        assert_eq!(command_description("fetch"), Some("Fetch every remote"));
+        assert_eq!(
+            command_description("fetchall"),
+            Some("Fetch all recent repositories")
+        );
+        let global: Vec<&Entry> = ENTRIES
+            .iter()
+            .filter(|entry| entry.run == Cmd("fetchall"))
+            .collect();
+        assert_eq!(global.len(), 1);
+        assert_eq!(global[0].scope, Global);
+        // Not one of its words is in "fetch every remote", so searching
+        // the palette for that still finds `:fetch` alone.
+        assert!(match_score("fetch every remote", global[0].desc).is_none());
+    }
+
+    #[test]
+    fn leader_r_is_listed_once_among_the_leader_continuations() {
+        let next = continuations(Prefix::Leader);
+        let repos: Vec<_> = next.iter().filter(|(key, _)| key == "r").collect();
+        assert_eq!(repos.len(), 1, "{repos:?}");
+        assert_eq!(repos[0].1, "Switch repository (recently opened)");
     }
 
     #[test]

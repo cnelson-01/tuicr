@@ -26,6 +26,8 @@
   write, and stage — straight from the commit selector or `:merge`.
 - Cherry-pick or rebase from the commit selector (`p` / `b`); conflicts drop you straight
   into the resolution view.
+- Repo switcher (`;r`): fuzzy-jump to any repository you opened before without leaving
+  tuicr, and `:fetchall` fetches every one of them in the background.
 - Works with git, jj, and mercurial. Reviews uncommitted changes, commit ranges, or any GitHub PR,
   GitLab MR, Gitea PR, Bitbucket PR, Azure DevOps PR, or Gerrit change.
 
@@ -347,6 +349,8 @@ and its keys, or `?` for the full reference.
 | `:set idecolors!` | Side-by-side colours by change (modified blue, added green, removed grey) or by side (old red, new green) |
 | `;z` | Zen mode: diff only |
 | `;g` / `;b` | Log pane (commit graph) / branch picker |
+| `;r` | Repo switcher: type to fuzzy-filter the repositories you opened before, `Enter` switches (`;r` `Enter` flips between the last two); `:repo <path>` opens a new one |
+| `:fetchall` | Fetch every remote of every repository on the switcher's list in the background (`Ctrl-f` in the switcher) |
 | `F` / `S` in the log | Fetch every remote / show one branch, picked from the branch list |
 | `:set mouse!` | Hand the mouse to the terminal (a plain drag selects text) or take it back |
 | `;t` | Changes window: working tree status with staging, discard and commit (submodules nested) |

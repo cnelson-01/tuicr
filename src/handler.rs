@@ -90,8 +90,10 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         &["branches", "branch", "compare", "select"],
         CommandKind::BranchPicker,
     ),
+    CommandSpec::new(&["repos", "repo"], CommandKind::RepoPicker),
     CommandSpec::new(&["abort"], CommandKind::AbortOperation),
     CommandSpec::new(&["fetch"], CommandKind::Remote(RemoteOp::Fetch)),
+    CommandSpec::new(&["fetchall"], CommandKind::FetchAll),
     CommandSpec::new(&["revert"], CommandKind::RevertCommit),
     CommandSpec::new(&["reword"], CommandKind::RewordCommit),
     CommandSpec::new(&["drop"], CommandKind::DropCommit),
@@ -248,8 +250,13 @@ enum CommandKind {
     /// captures the mouse or leaves it to the terminal.
     SetMouse(Option<bool>),
     BranchPicker,
+    /// `:repos` / bare `:repo`: the repo switcher. `:repo <path>` is parsed
+    /// with the other commands that take an argument.
+    RepoPicker,
     AbortOperation,
     Remote(RemoteOp),
+    /// `:fetchall`: fetch every remote of every recent repository.
+    FetchAll,
     RevertCommit,
     RewordCommit,
     DropCommit,
@@ -365,6 +372,9 @@ pub fn handle_mouse_event(app: &mut App, event: MouseEvent) {
                 InputMode::Normal if over_changes => handle_changes_pane_action(app, action),
                 InputMode::ThemePicker => {
                     app.move_theme_picker_selection(if scroll_up { -1 } else { 1 });
+                }
+                InputMode::RepoPicker => {
+                    app.repo_picker_move(if scroll_up { -1 } else { 1 });
                 }
                 InputMode::CommitSelect | InputMode::Normal if over_commit_list => {
                     wheel_commit_list(app, scroll_up);
@@ -749,7 +759,8 @@ pub fn paste_target_open(app: &App) -> bool {
         | InputMode::Command
         | InputMode::Search
         | InputMode::Palette
-        | InputMode::BranchPicker => true,
+        | InputMode::BranchPicker
+        | InputMode::RepoPicker => true,
         InputMode::CommitSelect => {
             app.pr_filter_editing()
                 || (app.target_tab == TargetTab::Local && app.commit_filter_editing())
@@ -946,6 +957,13 @@ pub fn handle_command_action(app: &mut App, action: Action) {
                     app.apply_theme(name);
                 }
                 CommandAfterDispatch::ExitCommandMode
+            } else if let Some(path) = cmd.strip_prefix("repo ") {
+                // The switch itself happens in the main loop, once this
+                // handler has returned.
+                let path = path.to_string();
+                app.exit_command_mode();
+                app.open_repo_by_path(&path);
+                CommandAfterDispatch::KeepMode
             } else {
                 app.set_message(format!("Unknown command: {cmd}"));
                 CommandAfterDispatch::ExitCommandMode
@@ -1321,8 +1339,20 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
                 CommandAfterDispatch::ExitCommandMode
             }
         }
+        CommandKind::RepoPicker => {
+            app.open_repo_picker();
+            if app.input_mode == InputMode::RepoPicker {
+                CommandAfterDispatch::KeepMode
+            } else {
+                CommandAfterDispatch::ExitCommandMode
+            }
+        }
         CommandKind::Remote(op) => {
             app.start_remote_op(op);
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::FetchAll => {
+            app.start_fetch_all();
             CommandAfterDispatch::ExitCommandMode
         }
         CommandKind::RevertCommit => {
@@ -1585,17 +1615,21 @@ fn set_remote_comments_visibility(app: &mut App, visibility: PrCommentsVisibilit
 
 fn complete_command(app: &mut App, direction: CompletionDirection) {
     let completer = CommandCompleter::new(COMMAND_SPECS);
-    let (result, what) = match complete_branch_argument(app, &completer, direction) {
-        Some(result) => (result, "branch"),
-        None => (
+    let argument = complete_branch_argument(app, &completer, direction)
+        .map(|result| (result, "branch"))
+        .or_else(|| {
+            complete_repo_argument(app, &completer, direction).map(|result| (result, "directory"))
+        });
+    let (result, what) = argument.unwrap_or_else(|| {
+        (
             completer.complete(
                 &app.command_buffer,
                 app.command_completion.as_ref(),
                 direction,
             ),
             "command",
-        ),
-    };
+        )
+    });
     match result {
         CompletionResult::NoMatch => {
             app.command_completion = None;
@@ -1637,6 +1671,33 @@ fn complete_branch_argument(
     let matches: Vec<String> = rank_branch_matches(&names, word)
         .into_iter()
         .map(|name| format!("{head}{name}"))
+        .collect();
+    if matches.is_empty() {
+        return Some(CompletionResult::NoMatch);
+    }
+    Some(completer.start_cycle(&buffer, buffer.clone(), matches, direction))
+}
+
+/// `:repo ~/So`, `:repo ../other`: complete the path being typed against
+/// directories. Like branch completion the first press lands on a match and
+/// further presses cycle; each match ends in `/`, so typing on from one and
+/// pressing Tab again descends into it.
+fn complete_repo_argument(
+    app: &mut App,
+    completer: &CommandCompleter<'_>,
+    direction: CompletionDirection,
+) -> Option<CompletionResult> {
+    let buffer = app.command_buffer.clone();
+    let typed = buffer.strip_prefix("repo ")?;
+    if let Some(result) =
+        completer.cycle_existing(&buffer, app.command_completion.as_ref(), direction)
+    {
+        return Some(result);
+    }
+    let base = std::env::current_dir().unwrap_or_default();
+    let matches: Vec<String> = app::complete_repo_path(typed, &base)
+        .into_iter()
+        .map(|dir| format!("repo {dir}"))
         .collect();
     if matches.is_empty() {
         return Some(CompletionResult::NoMatch);
@@ -2360,6 +2421,42 @@ pub fn handle_branch_picker_action(app: &mut App, action: Action) {
     }
 }
 
+/// Keys in the repo switcher: typing filters, Enter asks for the switch (the
+/// main loop performs it), Ctrl-x takes the row off the list, Ctrl-f fetches
+/// every repository on it in the background.
+pub fn handle_repo_picker_action(app: &mut App, action: Action) {
+    match action {
+        Action::RepoPickerDown => app.repo_picker_move(1),
+        Action::RepoPickerUp => app.repo_picker_move(-1),
+        Action::PageDown => app.repo_picker_move(10),
+        Action::PageUp => app.repo_picker_move(-10),
+        Action::RepoPickerConfirm => app.repo_picker_confirm(),
+        Action::RepoPickerRemove => app.repo_picker_remove(),
+        Action::RepoPickerFetchAll => app.start_fetch_all(),
+        Action::InsertChar(c) => app.repo_picker_push(c),
+        Action::Paste(text) => {
+            for c in text.chars().filter(|c| !c.is_control()) {
+                app.repo_picker_push(c);
+            }
+        }
+        Action::DeleteChar => app.repo_picker_pop(),
+        Action::ClearLine => app.repo_picker_clear(),
+        Action::ExitMode => {
+            // Esc clears an active filter first, then closes.
+            if app
+                .repo_picker
+                .as_ref()
+                .is_some_and(|p| !p.filter.is_empty())
+            {
+                app.repo_picker_clear();
+            } else {
+                app.close_repo_picker();
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Keys while the persistent log pane holds focus (Normal mode). Movement
 /// schedules a preview of the cursor commit; Space builds a pick set; Enter
 /// loads it as the review; `p` / `b` / `s` run the history operations.
@@ -3047,6 +3144,29 @@ mod command_tests {
         // Creating a branch or tag is not a git-op command.
         assert_eq!(parse_git_op_command("branch topic"), None);
         assert_eq!(parse_git_op_command("tag v2"), None);
+    }
+
+    #[test]
+    fn parses_repo_switcher_commands() {
+        let kind = |cmd: &str| command_spec_for(cmd).map(|spec| spec.kind);
+        assert_eq!(kind("repos"), Some(CommandKind::RepoPicker));
+        assert_eq!(kind("repo"), Some(CommandKind::RepoPicker));
+        // With a path it is not a registry command: the argument parser in
+        // `handle_command_action` takes it.
+        assert_eq!(kind("repo ~/code/tuicr"), None);
+        // The branch commands keep their own meaning.
+        assert_eq!(kind("branches"), Some(CommandKind::BranchPicker));
+    }
+
+    #[test]
+    fn parses_fetch_all_apart_from_fetch() {
+        let kind = |cmd: &str| command_spec_for(cmd).map(|spec| spec.kind);
+        assert_eq!(kind("fetchall"), Some(CommandKind::FetchAll));
+        assert_eq!(
+            kind("fetch"),
+            Some(CommandKind::Remote(crate::app::RemoteOp::Fetch))
+        );
+        assert_eq!(kind("fetch all"), None);
     }
 
     #[test]

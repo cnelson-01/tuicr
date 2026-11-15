@@ -1230,9 +1230,9 @@ impl App {
         };
         // `PullRequest` has its own reload path (`reload_pull_request`).
         // `is_pristine_mode` (`--all-files`) and `VcsType::File` (`--file`)
-        // both back onto `FileBackend`, which the worker cannot reopen: it
-        // resolves a backend via `detect_vcs`, which only ever discovers a
-        // real git/jj/hg repository at the process cwd.
+        // both back onto `FileBackend`, which the worker cannot reopen:
+        // `VcsOpenOptions::open` only ever discovers a real git/jj/hg
+        // repository.
         if matches!(self.diff_source, DiffSource::PullRequest(_))
             || self.is_pristine_mode
             || self.vcs_info.vcs_type == VcsType::File
@@ -1262,10 +1262,11 @@ impl App {
     }
 
     /// Kicks off a background diff-watch fetch. The worker opens its own VCS
-    /// backend via `detect_vcs` rather than sharing `self.vcs`, because
-    /// `git2::Repository` is `Send` but not `Sync`. `detect_vcs` resolves the
-    /// repository from the process's current working directory; tuicr never
-    /// changes cwd at runtime, so calling it off the main thread is safe.
+    /// backend (`VcsOpenOptions::open`) rather than sharing `self.vcs`,
+    /// because `git2::Repository` is `Send` but not `Sync`. The options carry
+    /// this app's repository root, so the worker opens this repository even
+    /// if the repo switcher has since replaced the app and moved the
+    /// process's working directory.
     ///
     /// `review_commits` is cloned in here (rather than sent as part of
     /// `request`) because it only feeds `narrowed_fetch_source` on the worker
@@ -1322,10 +1323,7 @@ impl App {
         highlighter: &SyntaxHighlighter,
         current: u64,
     ) -> Result<DiffWatchFetched> {
-        let vcs = detect_vcs(
-            vcs_open_options.git_backend_preference,
-            vcs_open_options.diff_whitespace_mode,
-        )?;
+        let vcs = vcs_open_options.open()?;
         let root_path = &vcs.info().root_path;
         let fetch_source = Self::narrowed_fetch_source(
             &request.diff_source,
@@ -2099,6 +2097,7 @@ mod tests {
             commit_selection: CommitSelectionStart::All,
             pr_target: None,
             repo_url_override: None,
+            repo_root: None,
         };
         let captured = options.vcs_open_options();
         assert_eq!(captured.git_backend_preference, GitBackendPreference::Cli);
@@ -2116,6 +2115,7 @@ mod tests {
         let captured = VcsOpenOptions {
             git_backend_preference: GitBackendPreference::Libgit2,
             diff_whitespace_mode: mode.clone(),
+            root: None,
         };
         let vcs = policy_vcs(repo, captured.diff_whitespace_mode.clone());
         let highlighter = SyntaxHighlighter::default();

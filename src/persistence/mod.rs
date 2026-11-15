@@ -1,4 +1,5 @@
 pub mod manifest;
+pub mod recent_repos;
 pub mod storage;
 
 pub use storage::{

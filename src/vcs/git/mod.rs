@@ -1,6 +1,7 @@
 mod cli;
 pub mod context;
 pub mod diff;
+pub(crate) mod fetch;
 mod libgit2;
 pub(crate) mod raw;
 pub mod repository;
@@ -839,49 +840,15 @@ impl VcsBackend for GitBackend {
 
     fn fetch(&self) -> Result<String> {
         let root = &self.info().root_path;
-        let before = remote_ref_tips(root)?;
-        let remotes: Vec<String> = run_git_command(root, &["remote"])?
-            .lines()
-            .map(str::trim)
-            .filter(|r| !r.is_empty())
-            .map(str::to_string)
-            .collect();
-        if remotes.is_empty() {
-            return Err(TuicrError::VcsCommand("No remotes configured".into()));
-        }
-        // One remote at a time, never interactive and never into
-        // submodules, so a remote that wants credentials fails with its name
-        // in the message instead of prompting under the TUI or stalling the
-        // other remotes.
-        let envs = non_interactive_git_env(root);
-        let mut failures: Vec<String> = Vec::new();
-        for remote in &remotes {
-            let args: Vec<String> = ["fetch", "--prune", "--no-recurse-submodules", "--quiet"]
-                .iter()
-                .map(|s| s.to_string())
-                .chain(std::iter::once(remote.clone()))
-                .collect();
-            if let Err(e) = run_git_env(root, &args, &envs) {
-                let reason = e.to_string();
-                let reason = reason
-                    .lines()
-                    .find(|l| !l.trim().is_empty())
-                    .unwrap_or("failed")
-                    .trim()
-                    .to_string();
-                failures.push(format!("{remote} failed: {reason}"));
+        match fetch::fetch_remotes(root, fetch::FetchMode::Current)? {
+            fetch::FetchOutcome::NoRemotes => {
+                Err(TuicrError::VcsCommand("No remotes configured".into()))
             }
+            fetch::FetchOutcome::Done(report) if report.all_failed() => {
+                Err(TuicrError::VcsCommand(report.failure_text()))
+            }
+            fetch::FetchOutcome::Done(report) => Ok(report.summary()),
         }
-        if failures.len() == remotes.len() {
-            return Err(TuicrError::VcsCommand(failures.join(" \u{00b7} ")));
-        }
-        let after = remote_ref_tips(root)?;
-        let mut summary = describe_fetch(root, &before, &after);
-        if !failures.is_empty() {
-            summary.push_str(" \u{00b7} ");
-            summary.push_str(&failures.join(" \u{00b7} "));
-        }
-        Ok(summary)
     }
 
     fn pull(&self, rebase: bool) -> Result<String> {
@@ -1280,77 +1247,6 @@ fn non_interactive_git_env(root: &Path) -> Vec<(&'static str, String)> {
         envs.push(("GIT_SSH_COMMAND", "ssh -o BatchMode=yes".to_string()));
     }
     envs
-}
-
-/// Remote-tracking refs and their tips, `origin/HEAD` aliases excluded.
-/// Names are cut from the full refname: newer git shortens `origin/HEAD`
-/// to plain `origin`, which a `/HEAD` check on the short name would miss.
-fn remote_ref_tips(root: &Path) -> Result<HashMap<String, String>> {
-    let output = run_git_command(
-        root,
-        &[
-            "for-each-ref",
-            "--format=%(refname)%00%(objectname)",
-            "refs/remotes",
-        ],
-    )?;
-    Ok(output
-        .lines()
-        .filter_map(|line| line.split_once('\0'))
-        .filter(|(full, _)| !full.ends_with("/HEAD"))
-        .filter_map(|(full, oid)| {
-            let name = full.strip_prefix("refs/remotes/")?;
-            Some((name.to_string(), oid.to_string()))
-        })
-        .collect())
-}
-
-/// `Fetched: origin/main +3, origin/dev new · 1 pruned`, or `up to date`.
-fn describe_fetch(
-    root: &Path,
-    before: &HashMap<String, String>,
-    after: &HashMap<String, String>,
-) -> String {
-    let mut moved: Vec<String> = Vec::new();
-    let mut names: Vec<&String> = after.keys().collect();
-    names.sort();
-    for name in names {
-        let now = &after[name];
-        match before.get(name) {
-            None => moved.push(format!("{name} new")),
-            Some(old) if old != now => {
-                let count =
-                    run_git_command(root, &["rev-list", "--count", &format!("{old}..{now}")])
-                        .map(|n| n.trim().to_string())
-                        .ok()
-                        .filter(|n| n != "0");
-                match count {
-                    Some(n) => moved.push(format!("{name} +{n}")),
-                    None => moved.push(format!("{name} moved")),
-                }
-            }
-            Some(_) => {}
-        }
-    }
-    let pruned = before
-        .keys()
-        .filter(|name| !after.contains_key(*name))
-        .count();
-    if moved.is_empty() && pruned == 0 {
-        return "Fetched: everything up to date".to_string();
-    }
-    let shown = moved.len().min(5);
-    let mut summary = format!("Fetched: {}", moved[..shown].join(", "));
-    if moved.len() > shown {
-        summary.push_str(&format!(" and {} more", moved.len() - shown));
-    }
-    if moved.is_empty() {
-        summary = "Fetched".to_string();
-    }
-    if pruned > 0 {
-        summary.push_str(&format!(" \u{00b7} {pruned} pruned"));
-    }
-    summary
 }
 
 /// Run git with `input` on stdin (patches for `git apply`).

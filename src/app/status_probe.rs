@@ -10,7 +10,6 @@
 use std::sync::mpsc::TryRecvError;
 
 use super::{App, InputMode, STAGED_SELECTION_ID, TargetTab, UNSTAGED_SELECTION_ID};
-use crate::vcs::detect_vcs;
 use crate::vcs::traits::{VcsChangeStatus, VcsType};
 
 impl App {
@@ -49,8 +48,7 @@ impl App {
         self.status_probe_rx = Some(rx);
         self.status_probe_pending = None;
         std::thread::spawn(move || {
-            let result = detect_vcs(options.git_backend_preference, options.diff_whitespace_mode)
-                .and_then(|vcs| vcs.get_change_status());
+            let result = options.open().and_then(|vcs| vcs.get_change_status());
             let _ = tx.send(result);
         });
     }

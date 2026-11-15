@@ -10,8 +10,10 @@ use std::time::Duration;
 
 use chrono::{DateTime, Local};
 
-/// Entries kept; older ones fall off the front.
-const CAPACITY: usize = 500;
+/// Entries kept; older ones fall off the front. Sized for a fetch-all over
+/// a full recent list (200 repositories, some seven commands each), so the
+/// reason an early repository failed is still there when the run ends.
+const CAPACITY: usize = 2000;
 /// Output lines kept per entry.
 const MAX_OUTPUT_LINES: usize = 40;
 

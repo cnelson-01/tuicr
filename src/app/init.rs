@@ -142,11 +142,16 @@ impl App {
             return Ok(app);
         }
 
-        let vcs = crate::profile::time("startup.detect_vcs", || {
-            detect_vcs(
+        let vcs = crate::profile::time("startup.detect_vcs", || match options.repo_root {
+            Some(root) => detect_vcs_at(
+                root,
                 options.git_backend_preference,
                 options.diff_whitespace_mode.clone(),
-            )
+            ),
+            None => detect_vcs(
+                options.git_backend_preference,
+                options.diff_whitespace_mode.clone(),
+            ),
         })?;
         let vcs_info = vcs.info().clone();
         let highlighter =
@@ -464,10 +469,12 @@ impl App {
         }
     }
 
-    /// Records how `detect_vcs` opened the backend, so the diff-watch worker
-    /// can open its own the same way.
+    /// Records how the backend was opened and where, so every later reopen
+    /// (after HEAD moves, and each worker thread's own handle) lands on this
+    /// repository whatever the process's working directory is by then.
     fn with_vcs_open_options(mut self, vcs_open_options: VcsOpenOptions) -> Self {
         self.vcs_open_options = vcs_open_options;
+        self.vcs_open_options.root = Some(self.vcs_info.root_path.clone());
         self
     }
 
@@ -699,6 +706,9 @@ impl App {
             rebase_original: Vec::new(),
             log_pane_wanted: true,
             branch_picker: None,
+            repo_picker: None,
+            pending_repo_switch: None,
+            recent_repos_path: None,
             pending_branch_start: None,
             commit_filter: None,
             commit_filter_draft: None,
@@ -715,6 +725,7 @@ impl App {
             find: FindState::default(),
             blame: BlameState::default(),
             remote_op: None,
+            fetch_all: None,
             background_status_probe: false,
             last_change_status: None,
             status_probe_rx: None,
@@ -724,7 +735,6 @@ impl App {
             last_branch_move: None,
             move_in_flight: None,
             remote_move_watch: None,
-            vcs_reopen_root: None,
             commit_order: CommitOrder::default(),
             commit_selection_start: CommitSelectionStart::default(),
             initial_comments_visibility: None,

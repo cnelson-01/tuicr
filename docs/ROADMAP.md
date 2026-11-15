@@ -31,6 +31,7 @@ window. Phases land in order, each as its own commit(s). Tick items as they ship
 - [x] `:fetch` (all remotes, pruned) with a per-branch summary; Ctrl-f in the branch picker
 - [x] `:pull` fast-forward only, `:pull!` rebase
 - [x] `:push` to the upstream, setting it on the default remote when missing (never forces)
+- [x] `:fetchall`: every remote of every recent repository in the background, with a per-repository result; Ctrl-f in the repo switcher
 
 ## Phase 3c: commit context actions
 
@@ -60,3 +61,9 @@ window. Phases land in order, each as its own commit(s). Tick items as they ship
 
 - [x] Blame gutter toggle
 - [x] Per-file history view
+
+## Phase 8: several repositories
+
+- [x] Recent-repositories list, kept across runs
+- [x] Repo switcher (`<leader>r`, `:repos`) with fuzzy filter; `:repo <path>` opens one by path
+- [x] Switching replaces the whole session, as a relaunch in the other repository would

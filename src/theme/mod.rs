@@ -2706,6 +2706,18 @@ pub fn resolve_theme_with_config(
 }
 
 impl Theme {
+    /// A clone that shares this theme's syntax highlighter when it is already
+    /// built. The plain `Clone` starts with an empty cache and rebuilds the
+    /// grammar set on first use, which the repo switcher would pay on every
+    /// hop.
+    pub fn clone_sharing_highlighter(&self) -> Theme {
+        let theme = self.clone();
+        if let Some(highlighter) = self.highlighter.get() {
+            let _ = theme.highlighter.set(Arc::clone(highlighter));
+        }
+        theme
+    }
+
     /// Get the syntax highlighter for this theme (lazily initialized, cached)
     pub fn syntax_highlighter(&self) -> &SyntaxHighlighter {
         self.highlighter

@@ -27,7 +27,7 @@ use crate::vcs::traits::{ConflictCommit, VcsType};
 use crate::vcs::{
     ChangeKind, CommitInfo, ConflictFile, ConflictResolution, DiffWhitespaceMode, FileBackend,
     GitBackendPreference, MergeConflictInfo, PrNoopVcs, ResolvedRevisionRange, RevisionDiffTarget,
-    VcsBackend, VcsChangeStatus, VcsInfo, apply_resolutions, detect_vcs,
+    VcsBackend, VcsChangeStatus, VcsInfo, apply_resolutions, detect_vcs, detect_vcs_at,
 };
 
 const VISIBLE_COMMIT_COUNT: usize = 10;
@@ -698,6 +698,9 @@ pub enum InputMode {
     /// Branch picker modal (`<leader>b`, `:branches`): filter by typing,
     /// Enter checks out.
     BranchPicker,
+    /// Repo switcher modal (`<leader>r`, `:repos`): the repositories tuicr
+    /// was opened in, most recent first; typing filters, Enter switches.
+    RepoPicker,
     /// Stash picker modal (`:stashes`): Enter pops, `a` applies, `d` drops.
     StashPicker,
     /// Find-in-files results in place of the diff (`:find <text>`).
@@ -722,15 +725,19 @@ pub use branch_moves::{
 pub use branches::{BranchPicker, BranchPickerPurpose};
 pub use changes_pane::{ChangesPane, ChangesRow};
 pub use console::ConsoleView;
+pub use fetch_all::{FetchAllJob, FetchAllRow, RepoFetchState};
 pub use find::{FIND_MAX_HITS, FindHit, FindState};
 pub use git_ops::{GitThen, PendingGit, RepoStatus};
 pub use history::HistoryAction;
+pub use launch::{LaunchSettings, MIN_WIDTH_FOR_FILE_LIST};
 pub use layout::SPLIT_STEP_PCT;
 pub use local_changes::{CommitComposer, DiscardTarget, StashPicker};
 pub use local_edits::{LocalEditMark, LocalEditedFile, LocalEdits};
 pub use palette::Palette;
 pub use rebase_editor::{RebaseEditor, RebaseRow};
 pub use remote::{RemoteOp, RemoteOpAnswer, RemoteOpInFlight};
+pub(crate) use repos::complete_repo_path;
+pub use repos::{RepoPicker, RepoRow};
 
 /// State for the fullscreen side-by-side merge conflict screen.
 #[derive(Debug)]
@@ -1434,8 +1441,8 @@ pub struct App {
     /// and a snapshot left behind without its channel blocks every future
     /// tick from ever spawning again.
     pub diff_watch_reload: Option<DiffWatchReload>,
-    /// Everything `detect_vcs` needs to open a backend the same way the
-    /// startup one was opened. The diff-watch worker opens its own, because
+    /// Everything it takes to open a backend the same way, and on the same
+    /// repository, as the startup one. Each worker opens its own, because
     /// `git2::Repository` is `Send` but not `Sync` and so cannot share
     /// `App::vcs`, and `AppStartupOptions` is dropped by the end of
     /// `App::new`. Kept as one value so a future setting is added in one
@@ -1821,6 +1828,17 @@ pub struct App {
     pub rebase_original: Vec<String>,
     /// Branch picker modal state; `Some` while `input_mode == BranchPicker`.
     pub branch_picker: Option<BranchPicker>,
+    /// Repo switcher modal state; `Some` while `input_mode == RepoPicker`.
+    pub repo_picker: Option<RepoPicker>,
+    /// The repository the user asked to switch to. A handler only sets it;
+    /// the main loop performs the switch between events
+    /// ([`App::switch_repo`]), so no handler keeps running against a
+    /// replaced `App`.
+    pending_repo_switch: Option<PathBuf>,
+    /// The recent-repositories file (`persistence::recent_repos`). `None`
+    /// means no list is kept, which is what every test gets unless it
+    /// points this at a file of its own.
+    pub recent_repos_path: Option<PathBuf>,
     /// Start point for the next `:branch <name>`, set by `n` in a selector.
     pub pending_branch_start: Option<String>,
     /// Active log filter (`/` in the log pane or selector); `None` shows the
@@ -1856,6 +1874,10 @@ pub struct App {
     pub blame: BlameState,
     /// The fetch / pull / push running on a worker thread, if any.
     pub remote_op: Option<RemoteOpInFlight>,
+    /// The fetch-all run over the recent repositories (`:fetchall`): in
+    /// flight, or finished and kept until the repo switcher has shown its
+    /// results. It belongs to the process, so a repo switch carries it over.
+    pub fetch_all: Option<FetchAllJob>,
     /// Whether the selector may open on the remembered working-tree status
     /// and re-read it on a worker (`status_probe.rs`). The main loop turns
     /// this on; without a loop to poll the worker the status is read first.
@@ -1880,9 +1902,6 @@ pub struct App {
     pub move_in_flight: Option<(HeadPosition, String)>,
     /// HEAD and the stash list before the `:pull!` on the worker thread.
     pub remote_move_watch: Option<MoveWatch>,
-    /// Where `after_head_moved` reopens the repository. `None` is the
-    /// process's working directory; tests point it at their fixture.
-    pub vcs_reopen_root: Option<PathBuf>,
     /// Display order for the inline commit selector (presentation only).
     pub commit_order: CommitOrder,
     /// Which commits are selected when a multi-commit review first opens.
@@ -2251,13 +2270,21 @@ pub struct SummaryState {
     pub(crate) selection_needs_scroll: bool,
 }
 
-/// What `detect_vcs` needs to open a backend. Bundled because these two
-/// always travel together: they are chosen once at startup and then replayed
-/// verbatim by the diff-watch worker when it opens its own backend.
+/// What it takes to open this app's repository again. Bundled because
+/// these always travel together: they are settled once at startup and then
+/// replayed verbatim wherever a backend is reopened (after HEAD moves, and
+/// by every worker thread, which needs a handle of its own).
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct VcsOpenOptions {
     git_backend_preference: GitBackendPreference,
     diff_whitespace_mode: DiffWhitespaceMode,
+    /// The repository root this app was opened on. With it, nothing
+    /// resolves the repository from the process's working directory after
+    /// startup, which is what lets the repo switcher replace the app and
+    /// then move that directory without a late worker opening the wrong
+    /// repository. `None` only for apps not built over a real repository
+    /// (`App::build` in tests, `--file`, `--all-files`, `tuicr pr`).
+    root: Option<PathBuf>,
 }
 
 impl Default for VcsOpenOptions {
@@ -2267,6 +2294,25 @@ impl Default for VcsOpenOptions {
         Self {
             git_backend_preference: GitBackendPreference::Libgit2,
             diff_whitespace_mode: DiffWhitespaceMode::default(),
+            root: None,
+        }
+    }
+}
+
+impl VcsOpenOptions {
+    /// Open the repository again: at the recorded root when there is one,
+    /// else from the process's working directory.
+    fn open(&self) -> Result<Box<dyn VcsBackend>> {
+        match self.root.as_deref() {
+            Some(root) => detect_vcs_at(
+                root,
+                self.git_backend_preference,
+                self.diff_whitespace_mode.clone(),
+            ),
+            None => detect_vcs(
+                self.git_backend_preference,
+                self.diff_whitespace_mode.clone(),
+            ),
         }
     }
 }
@@ -2296,15 +2342,22 @@ pub struct AppStartupOptions<'a> {
     /// `ForgeRepository`. When `Some`, the canonical resolver short-circuits
     /// the `gh api` parent lookup and uses this value directly.
     pub repo_url_override: Option<ForgeRepository>,
+    /// Open the repository containing this directory instead of the one
+    /// around the process's working directory (the repo switcher). Ignored
+    /// by `--file`, `--all-files` and `pr`, which do not open a repository
+    /// this way.
+    pub repo_root: Option<&'a Path>,
 }
 
 impl AppStartupOptions<'_> {
     /// The subset `detect_vcs` needs, so an `App` can reopen a backend later
-    /// without holding on to the whole options struct.
+    /// without holding on to the whole options struct. The root is filled in
+    /// from the backend once it is open (`with_vcs_open_options`).
     fn vcs_open_options(&self) -> VcsOpenOptions {
         VcsOpenOptions {
             git_backend_preference: self.git_backend_preference,
             diff_whitespace_mode: self.diff_whitespace_mode.clone(),
+            root: None,
         }
     }
 }
@@ -2323,12 +2376,14 @@ mod compare;
 mod console;
 mod diff_load;
 mod editor_target;
+mod fetch_all;
 mod file_filter;
 mod find;
 mod gaps;
 mod git_ops;
 mod history;
 mod init;
+mod launch;
 mod layout;
 mod local_changes;
 mod local_edits;
@@ -2339,6 +2394,7 @@ mod palette;
 mod pr;
 mod rebase_editor;
 mod remote;
+mod repos;
 mod reviewed;
 mod search;
 mod session;

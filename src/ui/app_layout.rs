@@ -14,7 +14,8 @@ use crate::ui::log_pane::render_log_pane;
 use crate::ui::selector::render_commit_select;
 use crate::ui::{
     branch_picker, comment_panel, console, find_results, help_popup, merge_conflict, palette,
-    rebase_editor, stash_picker, status_bar, styles, submit_modals, summary_popup, theme_picker,
+    rebase_editor, repo_picker, stash_picker, status_bar, styles, submit_modals, summary_popup,
+    theme_picker,
 };
 
 const FILE_LIST_MIN_HEIGHT: u16 = 4;
@@ -50,6 +51,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 .branch_picker
                 .as_ref()
                 .is_some_and(|p| p.return_mode == InputMode::CommitSelect))
+        || (app.input_mode == InputMode::RepoPicker
+            && app
+                .repo_picker
+                .as_ref()
+                .is_some_and(|p| p.return_mode == InputMode::CommitSelect))
         || (app.input_mode == InputMode::Confirm
             && app
                 .pending_history
@@ -83,6 +89,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         }
         if app.input_mode == InputMode::BranchPicker {
             branch_picker::render_branch_picker(frame, app);
+        }
+        if app.input_mode == InputMode::RepoPicker {
+            repo_picker::render_repo_picker(frame, app);
         }
         if app.input_mode == InputMode::Palette {
             palette::render_palette(frame, app);
@@ -130,6 +139,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     if app.input_mode == InputMode::BranchPicker {
         branch_picker::render_branch_picker(frame, app);
+    }
+    if app.input_mode == InputMode::RepoPicker {
+        repo_picker::render_repo_picker(frame, app);
     }
     if app.input_mode == InputMode::Palette {
         palette::render_palette(frame, app);

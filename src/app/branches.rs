@@ -4,7 +4,6 @@
 //! the header, the log, and the review's branch context see the new state.
 
 use super::{App, InputMode};
-use crate::vcs::detect_vcs;
 use crate::vcs::traits::{BranchInfo, CommitInfo, RefKind};
 
 /// What Enter does in the branch picker.
@@ -413,13 +412,7 @@ impl App {
     /// commit list on screen and the working-tree diff if that is what is
     /// being reviewed.
     pub(in crate::app) fn after_head_moved(&mut self) {
-        let preference = self.vcs_open_options.git_backend_preference;
-        let whitespace = self.vcs_open_options.diff_whitespace_mode.clone();
-        let reopened = match self.vcs_reopen_root.as_deref() {
-            Some(root) => crate::vcs::git::GitBackend::discover_from(root, preference, whitespace)
-                .map(|backend| Box::new(backend) as Box<dyn crate::vcs::VcsBackend>),
-            None => detect_vcs(preference, whitespace),
-        };
+        let reopened = self.vcs_open_options.open();
         match reopened {
             Ok(vcs) => {
                 self.vcs_info = vcs.info().clone();

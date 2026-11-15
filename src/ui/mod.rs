@@ -19,6 +19,7 @@ pub mod merge_conflict;
 pub mod palette;
 pub mod pr_info_panel;
 pub mod rebase_editor;
+pub mod repo_picker;
 pub mod row_height;
 pub mod selector;
 pub mod stash_picker;

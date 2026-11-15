@@ -570,6 +570,12 @@ fn render_target_selector_footer(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     let mode_span = Span::styled(" SELECT ", styles::mode_style(theme));
+    // A running fetch-all counts in the right-hand corner; the hints give
+    // it the room.
+    let fetch_all = app
+        .fetch_all_progress()
+        .map(|progress| status_bar::build_fetch_all_span(progress, theme));
+    let fetch_all_width = fetch_all.as_ref().map_or(0, |(_, width)| *width);
 
     let hints = if app.message.is_some() {
         String::new()
@@ -584,6 +590,7 @@ fn render_target_selector_footer(frame: &mut Frame, app: &App, area: Rect) {
                     // Every commit action, dropped from the end to fit; the
                     // palette lists whatever doesn't.
                     use status_bar::{hint, pinned};
+                    let leader = crate::input::catalog::display_leader(app.leader_key);
                     let hints = [
                         hint("j/k move"),
                         hint("space range"),
@@ -602,10 +609,11 @@ fn render_target_selector_footer(frame: &mut Frame, app: &App, area: Rect) {
                         hint("x reset"),
                         hint("t tag"),
                         hint("B branches"),
+                        hint(format!("{leader}r repos")),
                         pinned("^p actions"),
                         pinned(":q quit"),
                     ];
-                    let room = (area.width as usize).saturating_sub(14);
+                    let room = (area.width as usize).saturating_sub(14 + fetch_all_width);
                     format!("   {}", status_bar::fit_hints(&hints, room))
                 }
             },
@@ -636,6 +644,8 @@ fn render_target_selector_footer(frame: &mut Frame, app: &App, area: Rect) {
 
     let (right_span, right_width) = if app.message.is_some() {
         status_bar::build_message_span(app.message.as_ref(), theme)
+    } else if let Some(fetch_all) = fetch_all {
+        fetch_all
     } else if selected_count > 0 {
         let text = format!(" {selected_count} selected ");
         let width = text.len();

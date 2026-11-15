@@ -199,6 +199,7 @@ considers files that pass the active filters.
 | `<leader>t` | Go to the changes window (working tree status, in the file tree's place): opens it focused, focuses it, or hides it when it already has focus. `:changes` / `:status` do the same; `:set changes` / `:set nochanges` set visibility |
 | `<leader>+` / `<leader>-` | Grow / shrink the log pane (also `:set logheight N`) |
 | `<leader>b` | Open the branch picker (also `:branches`) |
+| `<leader>r` | Open the [repo switcher](#repo-switcher): jump to a repository tuicr was opened in before (also `:repos`). `<leader>r` `Enter` flips between the last two |
 | `<leader>F` | Find in files: opens the command line with `find ` from any pane (`f` does the same in the diff, file tree and changes window) |
 | `<leader>a` | Toggle the blame gutter (also `:blame`, `:set blame!`) |
 | `<leader>A` | Load the commit that last changed the cursor line as the review (also `:blame-commit`); works with the gutter off |
@@ -314,7 +315,10 @@ also saves.
 In command mode, `Tab` and `Shift-Tab` complete or cycle command names. After `:compare`,
 `:checkout`, or `:checkout!`, they (and `↓` / `↑`, `Ctrl-n` / `Ctrl-p`) complete the branch name
 being typed: prefix matches first, then names containing the text, local branches before
-remote-tracking ones. `:compare ma`, `↓`, `↓`, `Enter` picks the second match.
+remote-tracking ones. `:compare ma`, `↓`, `↓`, `Enter` picks the second match. After
+`:repo ` they complete directories instead: `:repo ~/So`, `Tab` offers `~/Software/`,
+`~/Sources/`, and a further `Tab` descends. Hidden directories are offered once the name
+being typed starts with a dot.
 
 | Command | Action |
 |---------|--------|
@@ -365,6 +369,8 @@ remote-tracking ones. `:compare ma`, `↓`, `↓`, `Enter` picks the second matc
 | `:set logheight N` | Set the log pane height to N rows (borders included) |
 | `:branches` / `:branch` | Open the branch picker |
 | `:branch <name>` | Create `<name>` and switch to it (at the commit `n` was pressed on, else HEAD) |
+| `:repos` / `:repo` | Open the [repo switcher](#repo-switcher) |
+| `:repo <path>` | Switch to the repository containing `<path>` (`~` is expanded, a relative path is taken from tuicr's working directory, which follows each switch). This is how a repository that was never opened gets onto the switcher's list without leaving tuicr |
 | `:checkout <target>` | Check out a branch or commit. Uncommitted changes come along; if some are in the way it asks what to do with those files (see [Local changes](#local-changes-on-a-switch-reset-or-rebase)) |
 | `:checkout! <target>` | The same, stashing whatever is in the way and putting it back without asking |
 | `:abort` | Abort the in-progress merge / cherry-pick / rebase / revert |
@@ -373,6 +379,7 @@ remote-tracking ones. `:compare ma`, `↓`, `↓`, `Enter` picks the second matc
 | `:undo` | Right after a reset or a history rewrite (rebase, drop, fixup, reword, squash): put the branch back where it was; `:undo` again reverses that. Otherwise undo the last commit, keeping its changes staged (`reset --soft HEAD~1`) |
 | `:tag <name> [commit]` | Lightweight tag at the commit (default: the one `t` was pressed on, else HEAD) |
 | `:fetch` | Fetch every remote one by one (pruning, no submodules, never prompting) in the background; the status bar sums up what moved (`origin/main +3`) and names any remote that failed, such as one that wants credentials |
+| `:fetchall` | Fetch every remote of every repository on the repo switcher's list, in the background, four repositories at a time. The status bar counts (`Fetching 3/12`), then sums up; see [Fetch all](#fetch-all) |
 | `:pull` / `:pull!` | Pull the upstream: fast-forward only, or rebase onto it with `!` (uncommitted changes are autostashed around the rebase) |
 | `:push` | Show the commits that would be pushed and where, then push on `y` (the upstream, set on `origin` when missing). Refuses when the branch is behind its upstream. Never prompts for credentials |
 | `:push!` | Force-push with `--force-with-lease` after the same preview, for history you rewrote (reword, drop, fixup); the lease refuses if the remote moved since your last fetch |
@@ -621,6 +628,82 @@ rebase, cherry-pick, or revert in progress.
 | `Backspace` / `Ctrl-u` | Edit / clear the filter |
 | `Esc` | Clear the filter, then close |
 
+## Repo switcher
+
+`<leader>r` or `:repos` lists the repositories tuicr has been opened in, most recently
+opened first: name, path (`~` for home), and how long ago. It works from the review and
+from the fullscreen selector. The current repository is marked `*`, and the cursor starts
+on the most recent *other* one, so `<leader>r` `Enter` flips between the last two.
+
+| Key | Action |
+|-----|--------|
+| any printable key | Filter by name or path. Words may come in any order and each must match; a word matches as a substring or, failing that, as letters in order (`tcr` finds `tuicr`). Name matches rank above path matches, and equal matches keep most-recent-first order |
+| `↑` / `↓`, `Ctrl-p` / `Ctrl-n` | Move the cursor (wraps) |
+| `PageUp` / `PageDown` | Move ten rows |
+| `Enter` | Switch to the highlighted repository |
+| `Ctrl-x` | Remove the highlighted repository from the list. The repository itself is not touched, and opening it again puts it back |
+| `Ctrl-f` | [Fetch all](#fetch-all): every remote of every listed repository, in the background |
+| `Backspace` / `Ctrl-u` | Edit / clear the filter |
+| `Esc` | Clear the filter, then close |
+
+Switching behaves like quitting tuicr and starting it in the other repository with no
+arguments: you land in its review target selector, with your config, theme and terminal
+as they were. A review with unsaved changes is saved first (if that fails, the switch is
+called off), and nothing of the old repository comes along: not its pull request, its
+log filter, its selections, nor the result of a fetch, pull or push still running there
+(the message after the switch says when one was left running). If the other repository
+cannot be opened (not a repository any more, nothing to review in it), tuicr stays where
+it was with a warning.
+
+A linked worktree is a repository of its own on the list. A path that no longer exists
+is shown dimmed with `(missing)`, and choosing it drops it from the list. Jujutsu and
+Mercurial repositories are listed and switched to like Git ones.
+
+The list holds up to 200 repositories and lives in `recent_repos.json` in tuicr's data
+directory, beside the `reviews` folder (`~/.local/share/tuicr/` on Linux,
+`~/Library/Application Support/tuicr/` on macOS). A repository
+goes onto it when tuicr is started in it (not by `--file`, `--all-files` or `tuicr pr`
+launches), when you switch to it, and when you open it with `:repo <path>`.
+
+Under `--stdout` the switcher opens but will not switch: the caller is waiting for the
+review of the repository tuicr was started in.
+
+### Fetch all
+
+`:fetchall`, or `Ctrl-f` in the repo switcher, fetches every remote of every repository on
+the list, as `:fetch` does for the current one: pruning, without submodules, and never
+prompting for credentials. Four repositories are fetched at a time and tuicr stays usable
+meanwhile, including switching repositories. The status bar counts them off
+(`Fetching 3/12`), and one line sums up at the end:
+
+- `Fetched 12 repositories: 3 updated · 2 skipped` when all went well.
+- `Fetched 12 repositories: 3 updated, 2 failed (api, web). Reasons: :console` when some
+  did not. This one stays on screen. Each failed fetch is in the git console (`:console`)
+  as `git -C <repository> fetch …` with git's own error under it.
+
+While the run is going, each row of the switcher also says how its repository is
+faring. The results stay on the rows after the run until the switcher is closed (a
+switcher first opened more than ten minutes after the run no longer shows them):
+
+| State | Meaning |
+|-------|---------|
+| `queued` / `fetching…` | Waiting for a free slot / in progress |
+| `updated` | A remote-tracking branch moved, appeared, or was pruned |
+| `up to date` | Nothing new |
+| `skipped: …` | Not fetched, and not a failure: `missing` (the path is gone), `no remotes`, `jj repository` / `hg repository` (only Git repositories are fetched), `not a Git repository` |
+| `failed: …` | A remote could not be reached or refused, with the first line of git's error |
+
+When the repository on screen is among those updated, its log, branch picker and header
+refresh as they do after `:fetch`. A repository and its linked worktrees share one set of
+remote-tracking branches, so they are fetched once and all show the one result. A remote
+that does not answer is given up on: an ssh connection not made within 15 seconds (unless
+you have your own `GIT_SSH_COMMAND` or `core.sshCommand`, which is used as it is), an
+https transfer that carries next to nothing for 30 seconds.
+
+One run at a time: a second `:fetchall` is refused while one is going, and so is a
+`:fetchall` while a `:fetch` / `:pull` / `:push` is in flight. Those three are in turn
+refused in the current repository until fetch-all is done with it.
+
 ## Local changes on a switch, reset or rebase
 
 Uncommitted changes never stop these, and none of them throws work away.
@@ -728,6 +811,7 @@ first, with children always above their parents so the graph stays coherent.
 | `n` | New branch at the cursor commit: opens `:branch ` for the name |
 | `a` | Abort the in-progress merge / cherry-pick / rebase / revert |
 | `B` | Open the branch picker |
+| `<leader>r` / `<leader>b` / `<leader>p` | Open the [repo switcher](#repo-switcher) / branch picker / command palette over the selector. These are the only leader chords the selector takes: its single keys mean other things here, so any other key after the leader is ignored |
 | `v` / `R` / `D` / `f` / `x` / `t` / `y` | Revert / reword / drop / fixup / reset to / tag / copy hash of the cursor commit (as in the log pane) |
 | `F` | Local tab: fetch every remote (as `:fetch`) and refresh the list |
 | `S` | Local tab: show one branch, picked from the branch list (as in the log pane) |
@@ -806,8 +890,8 @@ commit an approval covered, so no commits are preselected there.
 
 A paste from the terminal (bracketed paste, e.g. `Ctrl-Shift-v` or `Cmd-v`) goes into
 whichever text input is open: a comment, the `:` command line, `/` search, the log
-filter, the file-tree prompts, the branch and theme pickers, the command palette, or a
-reword in the rebase editor. With no input open it is dropped, so pasted text never runs
+filter, the file-tree prompts, the branch, repo and theme pickers, the command palette, or
+a reword in the rebase editor. With no input open it is dropped, so pasted text never runs
 as keys. `Ctrl-v` itself is not bound: it used to start a visual selection, which is on
 `v` / `V` only.
 

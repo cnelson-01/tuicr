@@ -303,6 +303,16 @@ pub enum Action {
     /// Make the current branch track the highlighted remote branch (Ctrl-t).
     BranchPickerTrack,
 
+    // Repo switcher
+    RepoPickerDown,
+    RepoPickerUp,
+    /// Switch to the highlighted repository (Enter).
+    RepoPickerConfirm,
+    /// Take the highlighted repository off the list (Ctrl-x).
+    RepoPickerRemove,
+    /// Fetch every recent repository in the background (Ctrl-f).
+    RepoPickerFetchAll,
+
     /// Open the command palette (`Ctrl-p`).
     OpenPalette,
 
@@ -348,13 +358,14 @@ pub fn map_key_to_action_with_q_quits(
         },
         InputMode::Summary => map_summary_mode(key),
         InputMode::Confirm => map_confirm_mode(key),
-        InputMode::CommitSelect => map_commit_select_mode_with_q_quits(key, q_quits),
+        InputMode::CommitSelect => map_commit_select_mode_with_q_quits(key, leader_key, q_quits),
         InputMode::VisualSelect => map_visual_mode_with_q_quits(key, q_quits),
         InputMode::MergeConflict => map_merge_conflict_mode(key),
         InputMode::SubmitResolver => map_submit_resolver_mode(key),
         InputMode::SubmitConfirm => map_submit_confirm_mode(key),
         InputMode::SubmitActionPicker => map_submit_action_picker_mode_with_q_quits(key, q_quits),
         InputMode::BranchPicker => map_branch_picker_mode(key),
+        InputMode::RepoPicker => map_repo_picker_mode(key),
         InputMode::StashPicker => map_stash_picker_mode(key),
         InputMode::FindResults => map_find_results_mode(key),
         InputMode::Palette => map_palette_mode(key),
@@ -788,6 +799,29 @@ fn map_branch_picker_mode(key: KeyEvent) -> Action {
     }
 }
 
+/// Repo switcher: printable keys filter, arrows (or Ctrl-n / Ctrl-p) move,
+/// Enter switches, Ctrl-x takes the repository off the list, Ctrl-f fetches
+/// every repository on it.
+fn map_repo_picker_mode(key: KeyEvent) -> Action {
+    match (key.code, key.modifiers) {
+        (KeyCode::Down, _) => Action::RepoPickerDown,
+        (KeyCode::Up, _) => Action::RepoPickerUp,
+        (KeyCode::Char('n'), KeyModifiers::CONTROL) => Action::RepoPickerDown,
+        (KeyCode::Char('p'), KeyModifiers::CONTROL) => Action::RepoPickerUp,
+        (KeyCode::PageDown, _) => Action::PageDown,
+        (KeyCode::PageUp, _) => Action::PageUp,
+        (KeyCode::Char('x'), KeyModifiers::CONTROL) => Action::RepoPickerRemove,
+        (KeyCode::Char('f'), KeyModifiers::CONTROL) => Action::RepoPickerFetchAll,
+        (KeyCode::Char('u'), KeyModifiers::CONTROL) => Action::ClearLine,
+        (KeyCode::Enter, _) => Action::RepoPickerConfirm,
+        (KeyCode::Esc, _) => Action::ExitMode,
+        (KeyCode::Backspace, _) => Action::DeleteChar,
+        (KeyCode::Char(c), mods) if is_altgr_text(mods) => Action::InsertChar(c),
+        (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => Action::InsertChar(c),
+        _ => Action::None,
+    }
+}
+
 #[cfg(test)]
 fn map_submit_action_picker_mode(key: KeyEvent) -> Action {
     map_submit_action_picker_mode_with_q_quits(key, false)
@@ -806,10 +840,10 @@ fn map_submit_action_picker_mode_with_q_quits(key: KeyEvent, q_quits: bool) -> A
 
 #[cfg(test)]
 fn map_commit_select_mode(key: KeyEvent) -> Action {
-    map_commit_select_mode_with_q_quits(key, false)
+    map_commit_select_mode_with_q_quits(key, crate::config::DEFAULT_LEADER_KEY, false)
 }
 
-fn map_commit_select_mode_with_q_quits(key: KeyEvent, q_quits: bool) -> Action {
+fn map_commit_select_mode_with_q_quits(key: KeyEvent, leader_key: char, q_quits: bool) -> Action {
     match (key.code, key.modifiers) {
         (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => Action::CommitSelectDown,
         (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => Action::CommitSelectUp,
@@ -844,6 +878,10 @@ fn map_commit_select_mode_with_q_quits(key: KeyEvent, q_quits: bool) -> Action {
         // ignore it in their dispatch. That tab reads `a` (abort above) as
         // "show empty reviews".
         (KeyCode::Char('d'), KeyModifiers::NONE) => Action::PendingDCommand,
+        // The leader works here for the pickers that open over the selector
+        // (`main.rs` decides which second keys act). Last, so a leader that
+        // is also one of the selector's own keys (Space) keeps that meaning.
+        (KeyCode::Char(c), KeyModifiers::NONE) if c == leader_key => Action::PendingLeaderCommand,
         _ => Action::None,
     }
 }
@@ -1488,6 +1526,7 @@ mod tests {
             Action::None
         );
         assert_eq!(map_branch_picker_mode(ctrl_l), Action::None);
+        assert_eq!(map_repo_picker_mode(ctrl_l), Action::None);
         assert_eq!(map_stash_picker_mode(ctrl_l), Action::None);
         assert_eq!(map_find_results_mode(ctrl_l), Action::None);
         assert_eq!(map_merge_conflict_mode(ctrl_l), Action::None);
@@ -1657,6 +1696,117 @@ mod tests {
     }
 
     #[test]
+    fn should_map_the_repo_picker_keys() {
+        let ctrl = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+        // moving
+        assert_eq!(
+            map_repo_picker_mode(key(KeyCode::Down)),
+            Action::RepoPickerDown
+        );
+        assert_eq!(map_repo_picker_mode(key(KeyCode::Up)), Action::RepoPickerUp);
+        assert_eq!(map_repo_picker_mode(ctrl('n')), Action::RepoPickerDown);
+        assert_eq!(map_repo_picker_mode(ctrl('p')), Action::RepoPickerUp);
+        assert_eq!(
+            map_repo_picker_mode(key(KeyCode::PageDown)),
+            Action::PageDown
+        );
+        assert_eq!(map_repo_picker_mode(key(KeyCode::PageUp)), Action::PageUp);
+        // acting on the row
+        assert_eq!(
+            map_repo_picker_mode(key(KeyCode::Enter)),
+            Action::RepoPickerConfirm
+        );
+        assert_eq!(map_repo_picker_mode(ctrl('x')), Action::RepoPickerRemove);
+        assert_eq!(map_repo_picker_mode(ctrl('f')), Action::RepoPickerFetchAll);
+        // the filter
+        assert_eq!(
+            map_repo_picker_mode(key(KeyCode::Char('t'))),
+            Action::InsertChar('t')
+        );
+        assert_eq!(
+            map_repo_picker_mode(key_shift('T')),
+            Action::InsertChar('T')
+        );
+        assert_eq!(
+            map_repo_picker_mode(key(KeyCode::Backspace)),
+            Action::DeleteChar
+        );
+        assert_eq!(map_repo_picker_mode(ctrl('u')), Action::ClearLine);
+        assert_eq!(map_repo_picker_mode(key(KeyCode::Esc)), Action::ExitMode);
+        // through the mode table too
+        assert_eq!(
+            map_key_to_action(
+                key(KeyCode::Enter),
+                InputMode::RepoPicker,
+                DEFAULT_LEADER_KEY
+            ),
+            Action::RepoPickerConfirm
+        );
+    }
+
+    #[test]
+    fn should_type_every_plain_character_into_the_repo_picker_filter() {
+        // The selector's and the diff's single keys must not act here: `j`,
+        // `k`, `q`, `:` and the leader are all text for the filter.
+        for c in ['j', 'k', 'q', ':', '/', ' ', DEFAULT_LEADER_KEY] {
+            assert_eq!(
+                map_repo_picker_mode(key(KeyCode::Char(c))),
+                Action::InsertChar(c),
+                "{c:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn should_leave_other_ctrl_chords_unbound_in_the_repo_picker() {
+        // A chord the picker does not know must not type its letter into
+        // the filter.
+        for c in ['d', 's', 'r', 'g', 'b', 't', 'o'] {
+            assert_eq!(
+                map_repo_picker_mode(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)),
+                Action::None,
+                "ctrl-{c}"
+            );
+        }
+    }
+
+    #[test]
+    fn should_take_the_leader_in_commit_select_mode() {
+        // given / when
+        let action = map_commit_select_mode(key(KeyCode::Char(DEFAULT_LEADER_KEY)));
+        // then
+        assert_eq!(action, Action::PendingLeaderCommand);
+        assert_eq!(
+            map_key_to_action(key(KeyCode::Char(',')), InputMode::CommitSelect, ','),
+            Action::PendingLeaderCommand,
+            "a configured leader works the same"
+        );
+        assert_eq!(
+            map_key_to_action(
+                key(KeyCode::Char(DEFAULT_LEADER_KEY)),
+                InputMode::CommitSelect,
+                ','
+            ),
+            Action::None,
+            "the default leader means nothing once another is configured"
+        );
+    }
+
+    #[test]
+    fn should_keep_the_selector_keys_when_the_leader_is_one_of_them() {
+        // A Space leader still toggles the selection, and a leader on any
+        // other selector key keeps that key's own meaning.
+        assert_eq!(
+            map_key_to_action(key(KeyCode::Char(' ')), InputMode::CommitSelect, ' '),
+            Action::ToggleCommitSelect
+        );
+        assert_eq!(
+            map_key_to_action(key(KeyCode::Char('r')), InputMode::CommitSelect, 'r'),
+            Action::TogglePrReviewRequestedFilter
+        );
+    }
+
+    #[test]
     fn should_map_r_to_review_requested_filter_in_commit_select_mode() {
         // given / when
         let action = map_commit_select_mode(key(KeyCode::Char('r')));
@@ -1767,7 +1917,11 @@ mod tests {
             Action::Quit
         );
         assert_eq!(
-            map_commit_select_mode_with_q_quits(key(KeyCode::Char('q')), true),
+            map_commit_select_mode_with_q_quits(
+                key(KeyCode::Char('q')),
+                crate::config::DEFAULT_LEADER_KEY,
+                true
+            ),
             Action::Quit
         );
         assert_eq!(

@@ -355,6 +355,39 @@ pub fn detect_vcs(
     Err(TuicrError::NotARepository)
 }
 
+/// [`detect_vcs`] for the repository containing `dir`, whatever the
+/// process's working directory is. Same order: Jujutsu, Git, Mercurial.
+///
+/// `jj` and `hg` are only asked when a `.jj` / `.hg` directory exists in
+/// `dir` or above it, so opening a Git repository costs no extra process.
+pub fn detect_vcs_at(
+    dir: &Path,
+    git_backend_preference: GitBackendPreference,
+    whitespace_mode: DiffWhitespaceMode,
+) -> Result<Box<dyn VcsBackend>> {
+    let has_marker = |name: &str| dir.ancestors().any(|d| d.join(name).exists());
+
+    if has_marker(".jj")
+        && let Ok(backend) = JjBackend::discover_from(dir, whitespace_mode.clone())
+    {
+        return Ok(Box::new(backend));
+    }
+
+    if let Ok(backend) =
+        GitBackend::discover_from(dir, git_backend_preference, whitespace_mode.clone())
+    {
+        return Ok(Box::new(backend));
+    }
+
+    if has_marker(".hg")
+        && let Ok(backend) = HgBackend::discover_from(dir, whitespace_mode)
+    {
+        return Ok(Box::new(backend));
+    }
+
+    Err(TuicrError::NotARepository)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -415,6 +448,63 @@ mod tests {
                 panic!("Unexpected error: {e:?}");
             }
         }
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .expect("run git");
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn should_find_a_git_repository_from_a_directory_inside_it() {
+        // given
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().canonicalize().expect("canonical root");
+        git(&root, &["init", "-q", "-b", "main"]);
+        git(&root, &["config", "user.name", "tester"]);
+        git(&root, &["config", "user.email", "tester@example.com"]);
+        git(&root, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(root.join("a.txt"), "a\n").expect("write");
+        git(&root, &["add", "-A"]);
+        git(&root, &["commit", "-q", "-m", "first"]);
+        let nested = root.join("src").join("deep");
+        std::fs::create_dir_all(&nested).expect("nested dir");
+
+        // when
+        let backend = detect_vcs_at(
+            &nested,
+            GitBackendPreference::Libgit2,
+            DiffWhitespaceMode::Normal,
+        )
+        .expect("the repository above the nested directory");
+
+        // then: the fixture, not the checkout the tests run in
+        assert_eq!(backend.info().root_path, root);
+        assert_eq!(backend.info().vcs_type, VcsType::Git);
+    }
+
+    #[test]
+    fn should_report_a_plain_directory_as_not_a_repository() {
+        // given
+        let temp = tempfile::tempdir().expect("tempdir");
+
+        // when
+        let result = detect_vcs_at(
+            temp.path(),
+            GitBackendPreference::Libgit2,
+            DiffWhitespaceMode::Normal,
+        );
+
+        // then
+        assert!(matches!(result, Err(TuicrError::NotARepository)));
     }
 
     #[test]

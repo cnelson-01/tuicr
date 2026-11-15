@@ -50,10 +50,24 @@ pub struct JjBackend {
 impl JjBackend {
     /// Discover a Jujutsu repository from the current directory
     pub fn discover(whitespace_mode: DiffWhitespaceMode) -> Result<Self> {
+        Self::discover_in(None, whitespace_mode)
+    }
+
+    /// Discover the Jujutsu repository containing `dir`, whatever the
+    /// process's working directory is.
+    pub(crate) fn discover_from(dir: &Path, whitespace_mode: DiffWhitespaceMode) -> Result<Self> {
+        Self::discover_in(Some(dir), whitespace_mode)
+    }
+
+    fn discover_in(dir: Option<&Path>, whitespace_mode: DiffWhitespaceMode) -> Result<Self> {
         // Use `jj root` to find the repository root
         // This handles being called from subdirectories
-        let root_output = Command::new("jj")
-            .args(["root", "--color=never"])
+        let mut command = Command::new("jj");
+        command.args(["root", "--color=never"]);
+        if let Some(dir) = dir {
+            command.current_dir(dir);
+        }
+        let root_output = command
             .output()
             .map_err(|e| TuicrError::VcsCommand(format!("Failed to run jj: {}", e)))?;
 

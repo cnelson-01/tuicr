@@ -9,7 +9,7 @@ use crossterm::{
     terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate},
 };
 
-use tuicr::app::{self, App, AppStartupOptions, FocusedPanel, InputMode};
+use tuicr::app::{self, App, AppStartupOptions, FocusedPanel, InputMode, LaunchSettings};
 use tuicr::busy::BusyIndicator;
 use tuicr::cli::parse_cli_args;
 use tuicr::config::IgnoreWhitespaceConfig;
@@ -20,8 +20,8 @@ use tuicr::handler::{
     handle_commit_selector_action, handle_confirm_action, handle_console_action,
     handle_diff_action, handle_file_list_action, handle_find_results_action, handle_help_action,
     handle_merge_conflict_action, handle_mouse_event, handle_palette_action,
-    handle_rebase_editor_action, handle_search_action, handle_stash_picker_action,
-    handle_submit_action_picker_action, handle_submit_confirm_action,
+    handle_rebase_editor_action, handle_repo_picker_action, handle_search_action,
+    handle_stash_picker_action, handle_submit_action_picker_action, handle_submit_confirm_action,
     handle_submit_resolver_action, handle_summary_action, handle_theme_picker_action,
     handle_visual_action,
 };
@@ -38,8 +38,6 @@ use tuicr::{config, handler, profile, ui, update};
 
 /// Timeout for the "press Ctrl+C again to exit" feature
 const CTRL_C_EXIT_TIMEOUT: Duration = Duration::from_secs(2);
-/// Hide the file list by default on narrow terminals.
-const MIN_WIDTH_FOR_FILE_LIST: u16 = 100;
 
 /// Upper bound on events consumed between two repaints. High enough that a whole
 /// trackpad gesture collapses into one frame, low enough that held-key
@@ -73,6 +71,11 @@ fn panic_log_path() -> Option<std::path::PathBuf> {
 
 fn should_probe_keyboard_enhancement(output_to_stdout: bool, stdin_is_terminal: bool) -> bool {
     !output_to_stdout && stdin_is_terminal
+}
+
+/// The terminal's width in columns, when it can be told.
+fn terminal_width() -> Option<u16> {
+    crossterm::terminal::size().ok().map(|(width, _)| width)
 }
 
 fn main() -> anyhow::Result<()> {
@@ -260,64 +263,48 @@ fn main() -> anyhow::Result<()> {
         _ => None,
     };
 
+    let mouse_enabled = config_outcome
+        .config
+        .as_ref()
+        .and_then(|cfg| cfg.mouse)
+        .unwrap_or(true);
+    // Everything a fresh `App` is given that does not depend on the
+    // repository: the repo switcher builds its apps from the same settings.
+    let settings = LaunchSettings {
+        config: config_outcome.config,
+        output_to_stdout: cli_args.output_to_stdout,
+        keyboard_enhancement_supported,
+        mouse_enabled,
+        git_backend_preference,
+        diff_whitespace_mode,
+        commit_order,
+        commit_selection,
+        pr_comments_visibility,
+        recent_repos_path: tuicr::persistence::recent_repos::default_path(),
+        // The loop below polls the worker, so the selector need not wait
+        // on `git status` to open.
+        background_status_probe: true,
+    };
+
     let mut app = match profile::time("startup.app_init", || {
         App::new(
             theme,
-            config_outcome
-                .config
-                .as_ref()
-                .and_then(|cfg| cfg.comment_types.clone()),
-            cli_args.output_to_stdout,
+            settings.comment_types(),
+            settings.output_to_stdout,
             AppStartupOptions {
                 revisions: cli_args.revisions.as_deref(),
                 working_tree: cli_args.working_tree,
                 path_filter: cli_args.path_filter.as_deref(),
                 file_path: cli_args.file_path.as_deref(),
                 all_files: cli_args.all_files,
-                show_pr_checks: config_outcome
-                    .config
-                    .as_ref()
-                    .and_then(|cfg| cfg.show_pr_checks)
-                    .unwrap_or(false),
-                show_pr_comments: config_outcome
-                    .config
-                    .as_ref()
-                    .and_then(|cfg| cfg.show_pr_comments)
-                    .unwrap_or(true),
-                pr_comments_visibility,
-                git_backend_preference,
-                diff_whitespace_mode,
-                commit_selection,
                 pr_target: cli_args.pr_target.as_deref(),
                 repo_url_override,
+                ..settings.startup_options(None)
             },
         )
     }) {
         Ok(mut app) => {
-            app.supports_keyboard_enhancement = keyboard_enhancement_supported;
-            startup_warnings.extend(app.vcs.startup_warnings());
-            if let Some(cfg) = config_outcome.config.as_ref() {
-                if let Some(forge_cfg) = cfg.forge.clone() {
-                    app.forge_config = forge_cfg;
-                }
-                if let Some(leader) = cfg.leader {
-                    app.leader_key = leader;
-                }
-                app.comment_vim_enabled = cfg.comment_vim.unwrap_or(false);
-                app.q_quits = cfg.q_quits.unwrap_or(false);
-                app.editor_override = cfg.editor.clone();
-                if let Some(w) = cfg.comment_tab_width {
-                    app.comment_tab_width = w;
-                }
-                if let Some(username) = cfg
-                    .username
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                {
-                    app.username = username.to_string();
-                }
-            }
+            startup_warnings.extend(app.finish_launch(&settings, terminal_width()));
             app
         }
         Err(e) => {
@@ -341,16 +328,7 @@ fn main() -> anyhow::Result<()> {
         }
     };
 
-    // Commit selector presentation/behavior prefs. `initial_commit_selection`
-    // also fed `App::new` for the initial `-r`/PR range; keep it on the app so
-    // re-selections during the session (target selector, PR reload) honor it.
-    app.commit_order = commit_order;
-    app.commit_selection_start = commit_selection;
     app.pending_start_line = cli_args.start_line;
-
-    if let Err(e) = app.ensure_ephemeral_session_file() {
-        startup_warnings.push(format!("Failed to initialize review session file: {e}"));
-    }
 
     // Announce the slug for the active session so agents and wrapper scripts
     // can discover it without parsing the markdown export. This is emitted to
@@ -366,121 +344,20 @@ fn main() -> anyhow::Result<()> {
     } else {
         Box::new(io::stdout())
     };
-    let mouse_enabled = config_outcome
-        .config
-        .as_ref()
-        .and_then(|cfg| cfg.mouse)
-        .unwrap_or(true);
     let mut terminal = TerminalFeatures::new()
-        .mouse_enabled(mouse_enabled)
-        .keyboard_enhancements_supported(keyboard_enhancement_supported)
+        .mouse_enabled(settings.mouse_enabled)
+        .keyboard_enhancements_supported(settings.keyboard_enhancement_supported)
         .enter(tty_output)?;
-    app.mouse_enabled = mouse_enabled;
-    // This loop polls the worker, so the selector need not wait on
-    // `git status` to open.
-    app.background_status_probe = true;
     // Paints "working" over the bottom row when a handler blocks the loop.
     // It needs its own handle on the terminal the TUI is on.
     let busy = busy_indicator_writer(cli_args.output_to_stdout).map(BusyIndicator::start);
 
-    // Apply config-driven defaults
-    if let Some(ref cfg) = config_outcome.config {
-        app.show_pr_checks = cfg.show_pr_checks.unwrap_or(false);
-        app.show_pr_comments = cfg.show_pr_comments.unwrap_or(true);
-        app.initial_comments_visibility = pr_comments_visibility;
-        app.set_compact_folders(cfg.compact_folders.unwrap_or(false));
-        if cfg.show_file_list == Some(false) {
-            app.show_file_list = false;
-            app.focused_panel = FocusedPanel::Diff;
-        }
-        // Start with the commit selector pane hidden. `(` / `)` still cycle the
-        // selected commit while hidden; `<leader>s` / `:set commits!` reveal it.
-        if cfg.show_commits == Some(false) {
-            app.show_commit_selector = false;
-            if app.focused_panel == FocusedPanel::CommitSelector {
-                app.focused_panel = FocusedPanel::Diff;
-            }
-        }
-        // Start with files already marked reviewed hidden. `init_` rather than
-        // `set_` so startup leaves no status message behind; `H` /
-        // `:set reviewed!` toggle from here.
-        if let Some(show) = cfg.show_log {
-            app.log_pane_wanted = show;
-        }
-        if let Some(show) = cfg.show_changes {
-            app.changes_pane_wanted = show;
-        }
-        if let Some(rows) = cfg.log_height {
-            app.log_pane_height = Some(
-                u16::try_from(rows)
-                    .unwrap_or(u16::MAX)
-                    .max(app::MIN_LOG_PANE_HEIGHT),
-            );
-        }
-        if cfg.show_reviewed == Some(false) {
-            app.init_show_reviewed(false);
-        }
-        // Pristine mode has no diff, so side-by-side would render two
-        // identical panes. Honor the config for every other mode.
-        if cfg.diff_view.as_deref() == Some("side-by-side") && !app.is_pristine_mode {
-            app.diff_view_mode = app::DiffViewMode::SideBySide;
-        }
-        if let Some(wrap) = cfg.wrap {
-            app.diff_state.wrap_lines = wrap;
-        }
-        if let Some(pct) = cfg.split {
-            app.sbs_split_pct =
-                (pct.min(100) as u16).clamp(app::MIN_SBS_SPLIT_PCT, app::MAX_SBS_SPLIT_PCT);
-        }
-        if let Some(pct) = cfg.tree_width {
-            app.file_list_pct =
-                (pct.min(100) as u16).clamp(app::MIN_FILE_LIST_PCT, app::MAX_FILE_LIST_PCT);
-        }
-        match cfg.wrap_style.as_deref() {
-            Some("flow") => app.wrap_style = app::WrapStyle::Flow,
-            Some("gutter") => app.wrap_style = app::WrapStyle::Gutter,
-            _ => {}
-        }
-        app.relative_line_numbers = cfg.relative_line_numbers.unwrap_or(false);
-        app.ide_change_colors = cfg.ide_colors.unwrap_or(true);
-        // Open in single-file view when the user opts in. Pristine
-        // `--all-files` already turned it on inside `App::new`, so we
-        // only toggle if it's still off.
-        if cfg.single_file_view == Some(true) && !app.is_single_file_view {
-            app.toggle_single_file_view();
-        }
-        app.export = cfg.resolved_export();
-        if cfg.cursor_line == Some(false) {
-            app.cursor_line_highlight = false;
-        }
-        if cfg.search_highlight == Some(false) {
-            app.search_highlight_enabled = false;
-        }
-        if let Some(scroll_offset) = cfg.scroll_offset {
-            app.scroll_offset = scroll_offset;
-        }
-        if let Some(lines) = cfg.mouse_scroll_lines {
-            app.mouse_scroll_lines = lines;
-        }
-        if let Some(interval_ms) = cfg.review_watch_interval_ms {
-            app.set_review_watch_interval_ms(interval_ms as u64);
-        }
-        if let Some(interval_ms) = cfg.diff_watch_interval_ms {
-            app.set_diff_watch_interval_ms(interval_ms as u64);
-        }
-    }
-
-    // On narrow terminals, start with only the diff panel visible.
-    if let Ok((width, _)) = crossterm::terminal::size()
-        && width < MIN_WIDTH_FOR_FILE_LIST
-    {
-        app.show_file_list = false;
-        app.focused_panel = FocusedPanel::Diff;
-    }
-
     if let Some(message) = preferred_startup_warning(&startup_warnings) {
         app.set_warning(message);
     }
+
+    // This launch goes to the front of the repo switcher's list.
+    app.record_current_repo();
 
     // Prefix keys (`z`, `Z`, `d`, `<leader>`) waiting for their second key
     // live in `app.pending_prefix` so the which-key popup can list what
@@ -490,9 +367,6 @@ fn main() -> anyhow::Result<()> {
     // Only re-render when state actually changed; the diff renderer rebuilds
     // every line on each draw, so idle redraws are expensive on large diffs.
     let mut needs_redraw = true;
-
-    // Upstream divergence and any operation in progress, for the header.
-    app.refresh_repo_status();
 
     // Main loop
     loop {
@@ -546,6 +420,7 @@ fn main() -> anyhow::Result<()> {
         needs_redraw |= app.poll_changes_pane_autoshow();
         needs_redraw |= app.poll_blame();
         needs_redraw |= app.poll_remote_op();
+        needs_redraw |= app.poll_fetch_all();
         needs_redraw |= app.poll_status_probe();
         needs_redraw |= pr_pending;
 
@@ -595,7 +470,10 @@ fn main() -> anyhow::Result<()> {
         // terminal presents frames, and the intermediate frames are never seen.
         // `drained` caps a burst so continuous input still repaints.
         let mut drained = 0;
+        // A repository switch waits for the end of the burst: the keys
+        // typed behind it are meant for the repository being opened.
         while !app.should_quit
+            && !app.repo_switch_pending()
             && let Some(timeout) = event_drain_timeout(drained)
         {
             // Waiting for input is not work: stand the indicator down
@@ -793,6 +671,19 @@ fn main() -> anyhow::Result<()> {
                     // Handle pending leader command for panel focus, file list toggle, and review comments.
                     if app.pending_prefix == Some(Prefix::Leader) {
                         app.pending_prefix = None;
+                        // The fullscreen selector takes the leader for the
+                        // pickers that work over it and nothing else: its
+                        // single keys mean other things there, so any other
+                        // second key is dropped rather than run as one.
+                        if app.input_mode == InputMode::CommitSelect {
+                            match key.code {
+                                crossterm::event::KeyCode::Char('r') => app.open_repo_picker(),
+                                crossterm::event::KeyCode::Char('b') => app.open_branch_picker(),
+                                crossterm::event::KeyCode::Char('p') => app.open_palette(),
+                                _ => {}
+                            }
+                            continue;
+                        }
                         match key.code {
                             crossterm::event::KeyCode::Char('e') => {
                                 app.toggle_file_list();
@@ -860,6 +751,11 @@ fn main() -> anyhow::Result<()> {
                             // `<leader>b` opens the branch picker.
                             crossterm::event::KeyCode::Char('b') => {
                                 app.open_branch_picker();
+                                continue;
+                            }
+                            // `<leader>r` opens the repo switcher.
+                            crossterm::event::KeyCode::Char('r') => {
+                                app.open_repo_picker();
                                 continue;
                             }
                             // `<leader>F` prompts a find-in-files search.
@@ -1176,6 +1072,23 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
+        // The repo switcher asked for another repository. Done here, between
+        // events, so no handler goes on running against a replaced `App`.
+        // The indicator is still running from the event that asked, so a
+        // slow open shows the spinner; `switch_repo` itself never draws.
+        if let Some(target) = app.take_pending_repo_switch() {
+            if app.switch_repo(&target, &settings, terminal_width()) {
+                pending_ctrl_c = None;
+                // The one place tuicr changes its working directory: `$EDITOR`,
+                // the forge CLIs and relative `:repo` paths then behave as
+                // they would after a relaunch in the new repository.
+                if let Some(root) = app.current_repo_root() {
+                    let _ = std::env::set_current_dir(root);
+                }
+            }
+            needs_redraw = true;
+        }
+
         if app.should_quit {
             break;
         }
@@ -1232,6 +1145,7 @@ fn dispatch_action(app: &mut App, action: Action) {
         InputMode::SubmitConfirm => handle_submit_confirm_action(app, action),
         InputMode::SubmitActionPicker => handle_submit_action_picker_action(app, action),
         InputMode::BranchPicker => handle_branch_picker_action(app, action),
+        InputMode::RepoPicker => handle_repo_picker_action(app, action),
         InputMode::StashPicker => handle_stash_picker_action(app, action),
         InputMode::FindResults => handle_find_results_action(app, action),
         InputMode::Palette => handle_palette_action(app, action),
