@@ -118,6 +118,13 @@ impl App {
     /// reopening starts clean, then quit. Reviewed markers are persisted
     /// eagerly, so the on-disk file is removed too.
     pub fn discard_session_and_quit(&mut self) {
+        // Nothing is thrown away for a quit that is about to be refused,
+        // or that waits for the editor to finish writing: that one comes
+        // back here when it is carried out.
+        if self.quit_blocked_by_editor() {
+            self.defer_session_discard();
+            return;
+        }
         let path = self
             .session_path
             .clone()

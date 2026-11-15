@@ -59,6 +59,18 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     CommandSpec::new(&["set idecolors"], CommandKind::SetIdeColors(Some(true))),
     CommandSpec::new(&["set noidecolors"], CommandKind::SetIdeColors(Some(false))),
     CommandSpec::new(&["set idecolors!"], CommandKind::SetIdeColors(None)),
+    CommandSpec::new(
+        &["set embedded_editor"],
+        CommandKind::SetEmbeddedEditor(Some(true)),
+    ),
+    CommandSpec::new(
+        &["set noembedded_editor"],
+        CommandKind::SetEmbeddedEditor(Some(false)),
+    ),
+    CommandSpec::new(
+        &["set embedded_editor!"],
+        CommandKind::SetEmbeddedEditor(None),
+    ),
     CommandSpec::new(&["vim", "set vim!"], CommandKind::ToggleVim),
     CommandSpec::new(&["set vim"], CommandKind::SetVim(true)),
     CommandSpec::new(&["novim", "set novim"], CommandKind::SetVim(false)),
@@ -230,6 +242,9 @@ enum CommandKind {
     /// `:set idecolors` / `noidecolors` / `idecolors!` (`None` toggles):
     /// side-by-side change colours by kind of change or by side.
     SetIdeColors(Option<bool>),
+    /// `:set embedded_editor` / `noembedded_editor` / `embedded_editor!`
+    /// (`None` toggles): open files inside tuicr or in `$EDITOR`.
+    SetEmbeddedEditor(Option<bool>),
     ToggleVim,
     SetVim(bool),
     SetCommitsVisible(bool),
@@ -1146,7 +1161,7 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
             CommandAfterDispatch::ExitCommandMode
         }
         CommandKind::ForceQuit => {
-            app.should_quit = true;
+            app.force_quit();
             CommandAfterDispatch::ExitCommandMode
         }
         CommandKind::Write => {
@@ -1253,6 +1268,10 @@ fn dispatch_command(app: &mut App, kind: CommandKind) -> CommandAfterDispatch {
             } else {
                 "Side-by-side colours: by side (removed / added)"
             });
+            CommandAfterDispatch::ExitCommandMode
+        }
+        CommandKind::SetEmbeddedEditor(enabled) => {
+            app.set_embedded_editor(enabled);
             CommandAfterDispatch::ExitCommandMode
         }
         CommandKind::ToggleVim => {

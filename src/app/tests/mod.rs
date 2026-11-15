@@ -10,6 +10,7 @@ mod diff_reload_tests;
 mod diff_search_tests;
 mod diff_source_tests;
 mod diff_watch_tests;
+mod editor_pane_tests;
 mod expand_gap_tests;
 mod fetch_all_tests;
 mod file_filter_tests;

@@ -240,6 +240,10 @@ pub struct AppConfig {
     pub comment_tab_width: Option<usize>,
     pub leader: Option<char>,
     pub editor: Option<String>,
+    /// Open files inside tuicr, in the embedded editor, instead of
+    /// suspending to `$EDITOR`. Defaults to true; `$EDITOR` is still used
+    /// whenever the embedded editor cannot be.
+    pub embedded_editor: Option<bool>,
     pub transparent_background: Option<bool>,
     pub scroll_offset: Option<usize>,
     pub review_watch_interval_ms: Option<usize>,
@@ -318,6 +322,7 @@ const KNOWN_KEYS: &[&str] = &[
     "comment_tab_width",
     "leader",
     "editor",
+    "embedded_editor",
     "transparent_background",
     "scroll_offset",
     "review_watch_interval_ms",
@@ -689,6 +694,7 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
         comment_tab_width: read_usize(table, "comment_tab_width", &mut warnings),
         leader: read_leader(table, &mut warnings),
         editor: read_string(table, "editor", &mut warnings),
+        embedded_editor: read_bool(table, "embedded_editor", &mut warnings),
         transparent_background: read_bool(table, "transparent_background", &mut warnings),
         scroll_offset: read_usize(table, "scroll_offset", &mut warnings),
         review_watch_interval_ms: read_usize(table, "review_watch_interval_ms", &mut warnings),
@@ -1944,6 +1950,48 @@ mod tests {
         assert_eq!(
             outcome.warnings[0],
             "Warning: Config key 'editor' must be a string; ignoring value"
+        );
+    }
+
+    // embedded_editor
+
+    #[test]
+    fn should_parse_embedded_editor_off_and_on() {
+        for (text, expected) in [
+            ("embedded_editor = false\n", Some(false)),
+            ("embedded_editor = true\n", Some(true)),
+        ] {
+            let outcome = parse_config(text);
+            assert_eq!(
+                outcome.config.as_ref().and_then(|cfg| cfg.embedded_editor),
+                expected
+            );
+            assert!(outcome.warnings.is_empty(), "a known key: {text}");
+        }
+    }
+
+    #[test]
+    fn should_leave_embedded_editor_unset_when_absent() {
+        // Unset means the default, which is on; the reader of the config
+        // decides that, not the parser.
+        let outcome = parse_config("editor = \"hx\"\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.embedded_editor),
+            None
+        );
+    }
+
+    #[test]
+    fn should_warn_and_ignore_embedded_editor_with_invalid_type() {
+        let outcome = parse_config("embedded_editor = \"helix\"\n");
+        assert_eq!(
+            outcome.config.as_ref().and_then(|cfg| cfg.embedded_editor),
+            None
+        );
+        assert_eq!(outcome.warnings.len(), 1);
+        assert_eq!(
+            outcome.warnings[0],
+            "Warning: Config key 'embedded_editor' must be a boolean; ignoring value"
         );
     }
 

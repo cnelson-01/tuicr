@@ -42,6 +42,9 @@ pub struct CliArgs {
     pub update_command: bool,
     /// Exact version requested by `tuicr update`, if any.
     pub update_version: Option<semver::Version>,
+    /// Install the embedded editor's runtime files and grammars, and exit.
+    #[cfg(feature = "helix")]
+    pub helix_setup: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -53,6 +56,13 @@ pub struct CliArgs {
     disable_help_subcommand = true
 )]
 struct Cli {
+    /// Install what the embedded editor needs, then exit: copy Helix's
+    /// queries and themes into tuicr's data directory and fetch and build
+    /// the tree-sitter grammars there (needs git and a C compiler).
+    #[cfg(feature = "helix")]
+    #[arg(long = "helix-setup", action = ArgAction::SetTrue)]
+    helix_setup: bool,
+
     #[command(flatten)]
     tui_options: TuiOptions,
 
@@ -338,6 +348,8 @@ pub enum LineSideArg {
 
 impl From<Cli> for CliArgs {
     fn from(cli: Cli) -> Self {
+        #[cfg(feature = "helix")]
+        let helix_setup = cli.helix_setup;
         let (options, pr_target, review_command, update_version, update_command) = match cli.command
         {
             Some(Subcmd::Tui(command)) => match command.command {
@@ -386,6 +398,8 @@ impl From<Cli> for CliArgs {
             review_command,
             update_command,
             update_version,
+            #[cfg(feature = "helix")]
+            helix_setup,
         }
     }
 }
@@ -426,6 +440,15 @@ impl TuiOptions {
 
 impl Cli {
     fn try_into_args(self) -> std::result::Result<CliArgs, clap::Error> {
+        // It opens no review, so nothing that describes one goes with it.
+        #[cfg(feature = "helix")]
+        if self.helix_setup && (self.tui_options.has_any_explicit_value() || self.command.is_some())
+        {
+            return Err(clap::Error::raw(
+                clap::error::ErrorKind::ArgumentConflict,
+                "--helix-setup cannot be combined with other options or commands\n",
+            ));
+        }
         match (
             self.tui_options.has_any_explicit_value(),
             self.non_tui_command_name(),
@@ -859,6 +882,42 @@ mod tests {
     fn should_parse_no_update_check_flag() {
         let parsed = parse_for_test(&["tuicr", "--no-update-check"]).expect("parse should succeed");
         assert!(parsed.no_update_check);
+    }
+
+    #[cfg(feature = "helix")]
+    #[test]
+    fn should_parse_helix_setup_by_itself() {
+        let parsed = parse_for_test(&["tuicr", "--helix-setup"]).expect("parse should succeed");
+        assert!(parsed.helix_setup);
+        assert!(!parsed.update_command);
+        assert_eq!(parsed.review_command, None);
+
+        let plain = parse_for_test(&["tuicr"]).expect("parse should succeed");
+        assert!(!plain.helix_setup);
+    }
+
+    #[cfg(feature = "helix")]
+    #[test]
+    fn should_reject_helix_setup_with_anything_that_describes_a_review() {
+        for args in [
+            &["tuicr", "--helix-setup", "-w"][..],
+            &["tuicr", "--helix-setup", "--theme", "dark"],
+            &["tuicr", "--helix-setup", "pr", "12"],
+            &["tuicr", "--helix-setup", "update"],
+            &["tuicr", "--helix-setup", "review", "list"],
+            &["tuicr", "--helix-setup", "tui"],
+        ] {
+            let err = parse_for_test(args).expect_err("parse should fail");
+            assert_eq!(err.kind(), ErrorKind::ArgumentConflict, "{args:?}");
+            assert!(err.to_string().contains("--helix-setup"), "{err}");
+        }
+    }
+
+    #[cfg(not(feature = "helix"))]
+    #[test]
+    fn should_not_know_helix_setup_without_the_embedded_editor() {
+        let err = parse_for_test(&["tuicr", "--helix-setup"]).expect_err("parse should fail");
+        assert_eq!(err.kind(), ErrorKind::UnknownArgument);
     }
 
     #[test]

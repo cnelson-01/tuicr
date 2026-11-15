@@ -550,6 +550,7 @@ impl App {
             pending_editor_target: None,
             editor_override: None,
             editor_launches: Vec::new(),
+            editor_pane: EditorPaneHost::default(),
             local_edits: LocalEdits::default(),
             input_mode,
             focused_panel: FocusedPanel::Diff,

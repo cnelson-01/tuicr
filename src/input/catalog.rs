@@ -28,6 +28,8 @@ pub enum Scope {
     Merge,
     /// The changes window (working tree status).
     Changes,
+    /// Inside the embedded editor (`InputMode::Editor`).
+    Editor,
 }
 
 impl Scope {
@@ -42,6 +44,7 @@ impl Scope {
             Scope::Stashes => "stashes",
             Scope::Merge => "merge",
             Scope::Changes => "changes",
+            Scope::Editor => "editor",
         }
     }
 }
@@ -85,7 +88,7 @@ const fn e(
 }
 
 use Run::{Command as Cmd, Keys, Prompt};
-use Scope::{Branches, Changes, Diff, Global, Log, Merge, Repos, Stashes, Tree};
+use Scope::{Branches, Changes, Diff, Editor, Global, Log, Merge, Repos, Stashes, Tree};
 
 #[rustfmt::skip]
 pub const ENTRIES: &[Entry] = &[
@@ -170,7 +173,12 @@ pub const ENTRIES: &[Entry] = &[
     e(Global, "Review", ":clearc", "Delete every comment (prefills; Enter runs)", Prompt("clearc")),
     e(Global, "Review", ":clear", "Delete every comment and reviewed mark (prefills)", Prompt("clear")),
     e(Diff, "Review", "V then s", "Suggest a change for the selected lines", Keys("V")),
-    e(Diff, "Edit", "e", "Open the file in $EDITOR at this line", Keys("e")),
+    e(Diff, "Edit", "e", "Open the file in the editor at this line", Keys("e")),
+    e(Global, "Edit", ":edit", "Open the focused file in the editor", Cmd("edit")),
+    e(Editor, "Edit", "Ctrl-g", "Back to the review; the embedded editor keeps its buffers", Cmd("edit")),
+    e(Global, "Edit", ":set embedded_editor", "Open files inside tuicr, in the embedded editor", Cmd("set embedded_editor")),
+    e(Global, "Edit", ":set noembedded_editor", "Open files in $EDITOR, not the embedded editor", Cmd("set noembedded_editor")),
+    e(Global, "Edit", ":set embedded_editor!", "Switch between the embedded editor and $EDITOR", Cmd("set embedded_editor!")),
     e(Global, "Edit", ":e", "Reload the diff", Cmd("e")),
     e(Global, "Edit", ":local", "Compare the commit range with local; again goes back", Cmd("local")),
     e(Global, "Edit", ":clearedits", "Forget lines edited in $EDITOR (drops their tint)", Cmd("clearedits")),
@@ -412,6 +420,15 @@ pub fn parse_keys(notation: &str, leader: char) -> Vec<KeyEvent> {
     out
 }
 
+/// Whether `entry` is about the embedded editor: the way back from it, and
+/// the `:set embedded_editor` forms. The palette lists these only in a
+/// tuicr that has an embedded editor; elsewhere they would offer a switch
+/// that answers "not usable".
+pub fn needs_embedded_editor(entry: &Entry) -> bool {
+    entry.scope == Scope::Editor
+        || matches!(entry.run, Run::Command(command) if command.contains("embedded_editor"))
+}
+
 /// Score `haystack` against a space-separated query: every word must occur
 /// (case-insensitive); earlier and word-start hits score higher. `None` when
 /// a word is missing.
@@ -532,6 +549,58 @@ mod tests {
         let repos: Vec<_> = next.iter().filter(|(key, _)| key == "r").collect();
         assert_eq!(repos.len(), 1, "{repos:?}");
         assert_eq!(repos[0].1, "Switch repository (recently opened)");
+    }
+
+    #[test]
+    fn embedded_editor_commands_and_return_chord_are_listed() {
+        for form in [
+            "set embedded_editor",
+            "set noembedded_editor",
+            "set embedded_editor!",
+        ] {
+            assert!(command_description(form).is_some(), "no row for :{form}");
+        }
+        assert_eq!(
+            command_description("edit"),
+            Some("Open the focused file in the editor"),
+            "the Ctrl-g row runs :edit too, and must not describe it"
+        );
+        let chord = ENTRIES
+            .iter()
+            .find(|entry| entry.keys == "Ctrl-g" && entry.scope == Editor)
+            .expect("the way back from the editor is listed");
+        assert_eq!(chord.scope.label(), "editor");
+    }
+
+    #[test]
+    fn only_the_embedded_editor_s_own_rows_need_one() {
+        let needing: Vec<&str> = ENTRIES
+            .iter()
+            .filter(|entry| needs_embedded_editor(entry))
+            .map(|entry| entry.keys)
+            .collect();
+
+        assert_eq!(
+            needing,
+            [
+                "Ctrl-g",
+                ":set embedded_editor",
+                ":set noembedded_editor",
+                ":set embedded_editor!",
+            ]
+        );
+    }
+
+    #[test]
+    fn opening_a_file_does_not_promise_which_editor() {
+        // `e` opens the embedded editor where there is one and `$EDITOR`
+        // where there is not: one row has to be true of both.
+        let open = ENTRIES
+            .iter()
+            .find(|entry| entry.keys == "e" && entry.scope == Diff && entry.group == "Edit")
+            .expect("the e row");
+
+        assert_eq!(open.desc, "Open the file in the editor at this line");
     }
 
     #[test]

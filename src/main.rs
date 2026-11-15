@@ -1,6 +1,6 @@
 use std::fs::File;
 use std::io::{self, IsTerminal, Write};
-use std::sync::mpsc;
+use std::sync::{Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use crossterm::{
@@ -9,11 +9,15 @@ use crossterm::{
     terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate},
 };
 
-use tuicr::app::{self, App, AppStartupOptions, FocusedPanel, InputMode, LaunchSettings};
+use ratatui::layout::Size;
+
+use tuicr::app::{
+    self, App, AppStartupOptions, EditorRoute, FocusedPanel, InputMode, LaunchSettings,
+};
 use tuicr::busy::BusyIndicator;
 use tuicr::cli::parse_cli_args;
 use tuicr::config::IgnoreWhitespaceConfig;
-use tuicr::editor::{EditorCommand, EditorError, EditorLaunch, EditorSurface, EditorTarget};
+use tuicr::editor::{EditorCommand, EditorError, EditorLaunch, EditorSurface};
 use tuicr::handler::{
     handle_branch_picker_action, handle_changes_pane_action, handle_command_action,
     handle_comment_action, handle_comment_navigator_action, handle_commit_select_action,
@@ -52,11 +56,18 @@ fn preferred_startup_warning(warnings: &[String]) -> Option<&str> {
         .map(String::as_str)
 }
 
+/// First-poll timeout while the embedded editor has focus: its background
+/// work (language servers, timers) is pumped once per pass of the loop, so a
+/// shorter wait is what keeps completions and diagnostics prompt.
+const EDITOR_FIRST_POLL: Duration = Duration::from_millis(10);
+
 /// How long the loop may wait for the next event after already consuming
 /// `drained` of them: the first blocks so an idle TUI costs nothing, later ones
-/// are only taken if already queued. `None` ends the burst.
-fn event_drain_timeout(drained: usize) -> Option<Duration> {
+/// are only taken if already queued. `None` ends the burst. `editor_focused`
+/// shortens the first wait only (see [`EDITOR_FIRST_POLL`]).
+fn event_drain_timeout(drained: usize, editor_focused: bool) -> Option<Duration> {
     match drained {
+        0 if editor_focused => Some(EDITOR_FIRST_POLL),
         0 => Some(Duration::from_millis(50)),
         n if n < EVENT_DRAIN_LIMIT => Some(Duration::ZERO),
         _ => None,
@@ -67,6 +78,70 @@ fn event_drain_timeout(drained: usize) -> Option<Duration> {
 /// on Unix), since the on-screen message is often unreadable.
 fn panic_log_path() -> Option<std::path::PathBuf> {
     directories::ProjectDirs::from("", "", "tuicr").map(|dirs| dirs.data_dir().join("panic.log"))
+}
+
+/// Whether a panic on the current thread takes tuicr down, so the terminal
+/// has to be given back: only one on the thread that runs the event loop.
+fn panic_ends_the_tui(main_thread: std::thread::ThreadId) -> bool {
+    std::thread::current().id() == main_thread
+}
+
+/// What the panic hook does with a panic besides logging it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PanicCourse {
+    /// Inside a call into the embedded editor, which the pane slot
+    /// catches: the editor is closed and the review goes on, so the
+    /// terminal stays the TUI's and nothing is printed. The slot keeps the
+    /// account of it for the status line.
+    Contained,
+    /// On the thread that runs the event loop: tuicr is going down. The
+    /// terminal is given back and the panic is printed.
+    EndsTheTui,
+    /// On a worker thread while a TUI session has the terminal: the loop
+    /// goes on drawing, so nothing may be printed over its frame. The loop
+    /// reports the panic in the status line.
+    ToldToTheLoop,
+    /// On a worker thread with no TUI on the terminal (`tuicr review`,
+    /// `tuicr update`, startup, the way out): printed like any panic.
+    Printed,
+}
+
+fn panic_course(contained: bool, ends_the_tui: bool, tui_open: bool) -> PanicCourse {
+    match (contained, ends_the_tui, tui_open) {
+        (true, _, _) => PanicCourse::Contained,
+        (false, true, _) => PanicCourse::EndsTheTui,
+        (false, false, true) => PanicCourse::ToldToTheLoop,
+        (false, false, false) => PanicCourse::Printed,
+    }
+}
+
+/// A panic on one line, as the status line shows it.
+fn panic_on_one_line(panic: &str) -> String {
+    panic.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The last panic on a worker thread that the event loop has not reported
+/// yet, as one line.
+static BACKGROUND_PANIC: Mutex<Option<String>> = Mutex::new(None);
+
+/// Called from the panic hook on a worker thread, so it must not block or
+/// panic itself: a summary that cannot be stored is only in the log.
+fn note_background_panic(panic: &str) {
+    if let Ok(mut slot) = BACKGROUND_PANIC.try_lock() {
+        *slot = Some(panic_on_one_line(panic));
+    }
+}
+
+/// The status-line text for a worker-thread panic, once per panic.
+fn take_background_panic() -> Option<String> {
+    let panic = BACKGROUND_PANIC.try_lock().ok()?.take()?;
+    Some(match panic_log_path() {
+        Some(path) => format!(
+            "A background task {panic}; details logged to {}",
+            path.display()
+        ),
+        None => format!("A background task {panic}"),
+    })
 }
 
 fn should_probe_keyboard_enhancement(output_to_stdout: bool, stdin_is_terminal: bool) -> bool {
@@ -85,9 +160,30 @@ fn main() -> anyhow::Result<()> {
     // panic to a log file: a panic mid-draw can be invisible in the
     // terminal (alternate screen teardown races the message), and the log
     // is then the only evidence of what happened.
+    //
+    // Only a panic on this thread ends tuicr. One on a worker thread (the
+    // embedded editor's runtime, which catches it and carries on; a fetch)
+    // leaves the event loop drawing, so the terminal stays the TUI's: it is
+    // logged, and the loop reports it in the status line. With no TUI on
+    // the terminal there is no frame to keep clean and no loop to report
+    // it, so a worker's panic is printed as it always was.
+    //
+    // A panic on this thread inside a call into the embedded editor does
+    // not end tuicr either: the pane slot catches it and closes the
+    // editor. The hook runs before the unwinding gets there, so it asks.
     let original_hook = std::panic::take_hook();
+    let main_thread = std::thread::current().id();
     std::panic::set_hook(Box::new(move |panic_info| {
-        tuicr::terminal_state::restore_stdio_best_effort();
+        let contained =
+            tuicr::helix::note_contained_panic(|| panic_on_one_line(&panic_info.to_string()));
+        let course = panic_course(
+            contained,
+            panic_ends_the_tui(main_thread),
+            tuicr::terminal_state::session_open(),
+        );
+        if course == PanicCourse::EndsTheTui {
+            tuicr::terminal_state::restore_stdio_best_effort();
+        }
         let backtrace = std::backtrace::Backtrace::force_capture();
         if let Some(path) = panic_log_path() {
             let _ = std::fs::create_dir_all(path.parent().unwrap_or(&path));
@@ -103,9 +199,17 @@ fn main() -> anyhow::Result<()> {
                     env!("CARGO_PKG_VERSION")
                 );
             }
-            eprintln!("tuicr panicked; details logged to {}", path.display());
+            if matches!(course, PanicCourse::EndsTheTui | PanicCourse::Printed) {
+                eprintln!("tuicr panicked; details logged to {}", path.display());
+            }
         }
-        original_hook(panic_info);
+        match course {
+            // The pane slot has the account of it.
+            PanicCourse::Contained => {}
+            // The default hook would print over the frame on screen.
+            PanicCourse::ToldToTheLoop => note_background_panic(&panic_info.to_string()),
+            PanicCourse::EndsTheTui | PanicCourse::Printed => original_hook(panic_info),
+        }
     }));
 
     // Parse CLI arguments and resolve theme
@@ -122,6 +226,10 @@ fn main() -> anyhow::Result<()> {
     if let Some(review_command) = cli_args.review_command.take() {
         tuicr::review_cli::run(review_command)?;
         return Ok(());
+    }
+    #[cfg(feature = "helix")]
+    if cli_args.helix_setup {
+        return helix_setup();
     }
 
     // Check keyboard enhancement support before enabling raw mode.
@@ -176,6 +284,13 @@ fn main() -> anyhow::Result<()> {
         std::process::exit(2);
     });
     startup_warnings.extend(theme_warnings);
+
+    // What the embedded editor is told about the terminal is what tuicr's
+    // own theme says about it: whether its background is dark (read here,
+    // before a transparent background takes the colour away), and whether
+    // the frame is painted in 24-bit colour.
+    #[cfg(feature = "helix")]
+    let editor_terminal = (theme.paints_true_color(), theme.dark_background());
 
     let transparent = config_outcome
         .config
@@ -328,6 +443,20 @@ fn main() -> anyhow::Result<()> {
         }
     };
 
+    // The embedded editor: `e` opens files in a Helix pane inside tuicr.
+    // Only how to build it is said here; Helix itself starts when a file is
+    // first opened, and `route_editor_target` still sends a file to
+    // `$EDITOR` where the pane does not fit (`--stdout`, a read-only PR
+    // copy, a windowed `$EDITOR`, `embedded_editor = false`). The repo
+    // switcher hands the pane on to the app it opens
+    // (`carry_process_state_from`), so this is said once.
+    #[cfg(feature = "helix")]
+    if let Some(options) =
+        tuicr::helix::HelixPaneOptions::for_user(editor_terminal.0, editor_terminal.1)
+    {
+        app.install_editor_pane_factory(tuicr::helix::pane_factory(options));
+    }
+
     app.pending_start_line = cli_args.start_line;
 
     // Announce the slug for the active session so agents and wrapper scripts
@@ -392,6 +521,18 @@ fn main() -> anyhow::Result<()> {
 
         needs_redraw |= app.clear_expired_message();
 
+        // A worker thread panicked and the hook left the screen alone: say
+        // so, and repaint in case anything was printed over the frame. It
+        // waits while the editor pane covers the status line, and is then
+        // said after the pane's "Opened ..." line, not under it.
+        if !app.editor_pane_focused()
+            && let Some(message) = take_background_panic()
+        {
+            app.set_error(message);
+            app.request_full_redraw();
+            needs_redraw = true;
+        }
+
         // Installing what a worker sent back (a fetch, a reload) can take a
         // while too, so the polls count as work.
         if let Some(busy) = &busy {
@@ -431,10 +572,21 @@ fn main() -> anyhow::Result<()> {
             needs_redraw = true;
         }
 
+        // The embedded editor's background work. Pumped with the indicator
+        // down, like its input below, so the watchdog never paints over it.
+        needs_redraw |= app.poll_editor_pane();
+        // If that closed the editor, or finished a save the editor started
+        // before it was left, the review catches up with the disk.
+        needs_redraw |= app.finish_editor_pane_return();
+
         // `:set mouse!` flipped capture: tell the terminal.
         if app.mouse_enabled != terminal.mouse_enabled() {
             terminal.set_mouse_enabled(app.mouse_enabled)?;
         }
+        // Alternate keys are reported only while the editor pane has the
+        // keyboard: its keymap is written in them, tuicr's own is not. The
+        // call does nothing when there is nothing to change.
+        terminal.set_alternate_keys(app.editor_pane_focused())?;
 
         if needs_redraw {
             // Bracket the frame in a synchronized-output pair (CSI ?2026h/l)
@@ -461,6 +613,11 @@ fn main() -> anyhow::Result<()> {
                     ui::render(frame, &mut app);
                 })?;
             }
+            // ratatui places the cursor; its shape (the editor pane's
+            // block / bar / underline) is ours to write.
+            if let Some(style) = app.take_cursor_style_change() {
+                terminal.set_cursor_style(style)?;
+            }
             execute!(terminal.backend_mut(), EndSynchronizedUpdate)?;
             needs_redraw = false;
         }
@@ -474,7 +631,7 @@ fn main() -> anyhow::Result<()> {
         // typed behind it are meant for the repository being opened.
         while !app.should_quit
             && !app.repo_switch_pending()
-            && let Some(timeout) = event_drain_timeout(drained)
+            && let Some(timeout) = event_drain_timeout(drained, app.editor_pane_focused())
         {
             // Waiting for input is not work: stand the indicator down
             // before the poll, and start the clock once an event is in hand.
@@ -490,10 +647,30 @@ fn main() -> anyhow::Result<()> {
             } else {
                 break;
             };
+            // The embedded editor takes its input here, ahead of everything
+            // tuicr does with a key (Ctrl-C, Ctrl-l, the pending prefixes):
+            // only Ctrl-g stays tuicr's, and it leads back to the review.
+            // The indicator was stood down above and is not started for
+            // these, so the watchdog never paints over the editor.
+            if app.editor_pane_takes(&event) {
+                drained += 1;
+                needs_redraw |= app.editor_pane_event(event);
+                // Ctrl-g, or a key that closed the editor's last view: the
+                // review is refreshed from disk before it sees a key.
+                needs_redraw |= app.finish_editor_pane_return();
+                continue;
+            }
             if let Some(busy) = &busy {
                 busy.begin();
             }
             drained += 1;
+            // A quit that is waiting for the embedded editor to finish
+            // writing is off once the user does anything else.
+            if matches!(&event, Event::Key(key) if key.kind != KeyEventKind::Release)
+                || matches!(event, Event::Paste(_))
+            {
+                app.cancel_deferred_quit();
+            }
             // Set before reading so the many `continue` paths below (leader
             // keys, zz/ZZ, dd, {count}G, …) still schedule a redraw on the
             // next iteration even though they short-circuit past the match.
@@ -960,85 +1137,57 @@ fn main() -> anyhow::Result<()> {
                         break;
                     }
                     if let Some(target) = app.take_pending_editor_target() {
-                        // The editor owns the terminal from here; the full
-                        // repaint on resume covers anything already painted.
-                        if let Some(busy) = &busy {
-                            busy.end();
-                        }
+                        // An editor has the screen from here: the embedded
+                        // one, or `$EDITOR` with the terminal handed over.
+                        let painted = busy.as_ref().is_some_and(BusyIndicator::end);
                         app.snapshot_local_edit_baseline(&target);
-                        match run_editor_from_tui(
-                            &mut terminal,
-                            &target,
-                            app.editor_override.as_deref(),
-                            app.output_to_stdout,
-                        ) {
-                            // The editor is still open, so there is nothing to
-                            // pick up yet; the user reloads once they are done.
-                            Ok(Ok(EditorOutcome::Detached(launch))) => {
-                                app.track_editor_launch(launch);
-                                let hint = if app.diff_source.includes_worktree_changes() {
-                                    " (:e to reload)"
-                                } else {
-                                    ""
-                                };
-                                app.set_message(format!("Opened {}{hint}", target.label));
-                            }
-                            Ok(Ok(EditorOutcome::Finished)) => {
-                                app.local_edit_editor_returned(&target);
-                                if app.input_mode == InputMode::MergeConflict {
-                                    // Merge-view edit: re-parse the file so
-                                    // hand-resolved markers disappear and
-                                    // remaining ones become conflicts again.
-                                    app.merge_reload_current_file();
-                                } else if app.diff_source.includes_worktree_changes() {
-                                    match app.reload_diff_files() {
-                                        Ok((count, invalidated)) => {
-                                            let invalidated_suffix = if invalidated > 0 {
-                                                format!(", {invalidated} changed since last review")
-                                            } else {
-                                                String::new()
-                                            };
-                                            let edits_suffix = app
-                                                .local_edit_summary(&target)
-                                                .map(|summary| format!(" \u{00b7} {summary}"))
-                                                .unwrap_or_default();
-                                            app.set_message(format!(
-                                                "Opened {} and reloaded {count} files{invalidated_suffix}{edits_suffix}",
-                                                target.label
-                                            ));
-                                        }
-                                        Err(err) => {
-                                            app.set_error(format!(
-                                                "Reload after editor failed: {err}"
-                                            ));
-                                        }
-                                    }
-                                } else {
-                                    // Nothing reloads here, so recompute the
-                                    // edited lines for the message by hand.
-                                    app.refresh_local_edits();
-                                    let message = match app.local_edit_summary(&target) {
-                                        Some(summary)
-                                            if matches!(
-                                                app.diff_source,
-                                                app::DiffSource::CommitRange(_)
-                                            ) =>
-                                        {
-                                            format!(
-                                                "Opened {} \u{00b7} {summary}; :local compares the review with your working tree",
-                                                target.label
-                                            )
-                                        }
-                                        Some(summary) => {
-                                            format!("Opened {} \u{00b7} {summary}", target.label)
-                                        }
-                                        None => format!("Opened {}", target.label),
-                                    };
-                                    app.set_message(message);
+                        let command =
+                            EditorCommand::from_env(app.editor_override.as_deref(), &target);
+                        match app.route_editor_target(&target, &command, editor_pane_screen()) {
+                            // The pane draws from the next frame on, and the
+                            // review is refreshed when it gives the screen
+                            // back (`finish_editor_pane_return`).
+                            EditorRoute::Embedded => {
+                                if painted {
+                                    app.request_full_redraw();
                                 }
                             }
-                            Ok(Err(err)) => app.set_error(err.to_string()),
-                            Err(err) => app.set_error(format!("Failed to restore terminal: {err}")),
+                            EditorRoute::External { reason } => {
+                                // The full repaint on resume covers anything
+                                // the indicator painted. The pane's cursor
+                                // shape is not `$EDITOR`'s to inherit.
+                                if let Some(style) = app.restore_cursor_style() {
+                                    terminal.set_cursor_style(style)?;
+                                }
+                                match run_editor_from_tui(
+                                    &mut terminal,
+                                    &command,
+                                    app.output_to_stdout,
+                                ) {
+                                    // The editor is still open, so there is
+                                    // nothing to pick up yet; the user
+                                    // reloads once they are done.
+                                    Ok(Ok(EditorOutcome::Detached(launch))) => {
+                                        app.track_editor_launch(launch);
+                                        let hint = if app.diff_source.includes_worktree_changes() {
+                                            " (:e to reload)"
+                                        } else {
+                                            ""
+                                        };
+                                        app.set_message(format!("Opened {}{hint}", target.label));
+                                    }
+                                    Ok(Ok(EditorOutcome::Finished)) => {
+                                        app.after_editor_returned(&target);
+                                    }
+                                    Ok(Err(err)) => app.set_error(err.to_string()),
+                                    Err(err) => {
+                                        app.set_error(format!("Failed to restore terminal: {err}"));
+                                    }
+                                }
+                                if let Some(reason) = reason {
+                                    app.note_editor_fallback(&reason);
+                                }
+                            }
                         }
                     }
                 }
@@ -1082,19 +1231,47 @@ fn main() -> anyhow::Result<()> {
                 // The one place tuicr changes its working directory: `$EDITOR`,
                 // the forge CLIs and relative `:repo` paths then behave as
                 // they would after a relaunch in the new repository.
-                if let Some(root) = app.current_repo_root() {
-                    let _ = std::env::set_current_dir(root);
+                if let Some(root) = app.current_repo_root().map(|root| root.to_path_buf()) {
+                    let _ = std::env::set_current_dir(&root);
+                    // The embedded editor keeps its own record of the
+                    // working directory, and came along with its buffers.
+                    app.editor_pane_working_dir_changed(&root);
                 }
             }
             needs_redraw = true;
         }
 
         if app.should_quit {
-            break;
+            // Unsaved buffers in the embedded editor hold a quit back, and
+            // the status line says how many; `:q!` is not asked. A refusal
+            // also stops the Ctrl-C timer, which would clear it from the
+            // status line two seconds later.
+            if app.quit_goes_ahead(&mut pending_ctrl_c) {
+                break;
+            }
+            needs_redraw = true;
         }
     }
 
-    terminal.restore()?;
+    // Flush the embedded editor's pending writes and stop its language
+    // servers before anything else on the way out can fail. A no-op when it
+    // was never opened. The indicator may show while this runs, and is
+    // stood down before the screen is given back.
+    let editor_errors = app.shutdown_editor_pane();
+    if let Some(busy) = &busy {
+        busy.end();
+    }
+    // The editor pane's cursor shape must not outlive the TUI. The session
+    // takes it back on any way out; this keeps the app's record in step.
+    if let Some(style) = app.restore_cursor_style() {
+        let _ = terminal.set_cursor_style(style);
+    }
+    // Reported once the screen is back, and even if giving it back failed.
+    let restored = terminal.restore();
+    for err in editor_errors {
+        eprintln!("Warning: embedded editor: {err:#}");
+    }
+    restored?;
 
     if let Err(e) = app.cleanup_empty_ephemeral_sessions() {
         eprintln!("Warning: failed to clean up empty review session: {e}");
@@ -1117,6 +1294,24 @@ fn main() -> anyhow::Result<()> {
         print!("{output}");
     }
 
+    Ok(())
+}
+
+/// `tuicr --helix-setup`: install the embedded editor's runtime files and
+/// build its grammars, then exit. Runs before any TUI; progress goes to
+/// stdout.
+#[cfg(feature = "helix")]
+fn helix_setup() -> anyhow::Result<()> {
+    use anyhow::Context as _;
+
+    let dirs = tuicr::helix::setup::RuntimeDirs::for_user()
+        .context("no data directory to install into: the home directory is not known")?;
+    let started = Instant::now();
+    tuicr::helix::setup::run_setup(&dirs, &mut io::stdout())?;
+    println!(
+        "Done in {:.1}s. `e` in a review now opens files in the embedded editor.",
+        started.elapsed().as_secs_f64()
+    );
     Ok(())
 }
 
@@ -1152,6 +1347,8 @@ fn dispatch_action(app: &mut App, action: Action) {
         InputMode::Console => handle_console_action(app, action),
         InputMode::RebaseEditor => handle_rebase_editor_action(app, action),
         InputMode::ThemePicker => handle_theme_picker_action(app, action),
+        // The editor pane takes its input before any action is mapped.
+        InputMode::Editor => {}
         InputMode::Normal => match app.focused_panel {
             FocusedPanel::FileList => handle_file_list_action(app, action),
             FocusedPanel::Comments => handle_comment_navigator_action(app, action),
@@ -1248,17 +1445,23 @@ enum EditorOutcome {
     Detached(EditorLaunch),
 }
 
+/// The terminal's size, for building the editor pane before it has been
+/// drawn. The pane fits itself to whatever it is drawn in, so a wrong guess
+/// costs one relayout.
+fn editor_pane_screen() -> Size {
+    let (width, height) = crossterm::terminal::size().unwrap_or((80, 24));
+    Size::new(width, height)
+}
+
 fn run_editor_from_tui<W: Write>(
     terminal: &mut TerminalSession<W>,
-    target: &EditorTarget,
-    editor_override: Option<&str>,
+    command: &EditorCommand,
     output_to_stdout: bool,
 ) -> anyhow::Result<Result<EditorOutcome, EditorError>> {
-    let command = EditorCommand::from_env(editor_override, target);
     // Windowed editors never draw on our terminal, so suspending would only
     // blank the TUI for as long as the editor takes to come up.
     if command.surface() == EditorSurface::Gui {
-        return Ok(tuicr::editor::launch_editor(&command).map(EditorOutcome::Detached));
+        return Ok(tuicr::editor::launch_editor(command).map(EditorOutcome::Detached));
     }
     let suspension = terminal.suspend()?;
     // When tuicr was launched with `--stdout`, its own stdout is a file or
@@ -1267,9 +1470,9 @@ fn run_editor_from_tui<W: Write>(
     // terminal`). Re-attach the editor's stdio to `/dev/tty` — the same
     // device tuicr already renders the TUI on in this mode.
     let editor_result = if output_to_stdout {
-        tuicr::editor::run_editor_on_tty(&command)
+        tuicr::editor::run_editor_on_tty(command)
     } else {
-        tuicr::editor::run_editor(&command)
+        tuicr::editor::run_editor(command)
     };
     suspension.resume()?;
     Ok(editor_result.map(|()| EditorOutcome::Finished))
@@ -1295,20 +1498,94 @@ mod tests {
     #[test]
     fn drain_blocks_once_then_takes_only_queued_events() {
         assert_eq!(
-            event_drain_timeout(0),
+            event_drain_timeout(0, false),
             Some(Duration::from_millis(50)),
             "the first poll must block, or an idle TUI spins"
         );
-        assert_eq!(event_drain_timeout(1), Some(Duration::ZERO));
+        assert_eq!(event_drain_timeout(1, false), Some(Duration::ZERO));
         assert_eq!(
-            event_drain_timeout(EVENT_DRAIN_LIMIT - 1),
+            event_drain_timeout(EVENT_DRAIN_LIMIT - 1, false),
             Some(Duration::ZERO)
         );
         assert_eq!(
-            event_drain_timeout(EVENT_DRAIN_LIMIT),
+            event_drain_timeout(EVENT_DRAIN_LIMIT, false),
             None,
             "a capped burst must repaint instead of draining forever"
         );
+    }
+
+    #[test]
+    fn drain_waits_less_only_for_the_first_event_while_the_editor_has_focus() {
+        assert_eq!(
+            event_drain_timeout(0, true),
+            Some(Duration::from_millis(10)),
+            "the editor's background work is pumped once per pass"
+        );
+        assert_eq!(
+            event_drain_timeout(1, true),
+            event_drain_timeout(1, false),
+            "queued events drain the same way in every mode"
+        );
+        assert_eq!(event_drain_timeout(EVENT_DRAIN_LIMIT, true), None);
+    }
+
+    #[test]
+    fn only_a_panic_on_the_event_loop_thread_gives_the_terminal_back() {
+        // The embedded editor runs worker threads whose panics its runtime
+        // catches: restoring the terminal for one would leave tuicr drawing
+        // on the shell's screen with raw mode off.
+        let main_thread = std::thread::current().id();
+
+        assert!(panic_ends_the_tui(main_thread));
+        let on_worker = std::thread::spawn(move || panic_ends_the_tui(main_thread))
+            .join()
+            .expect("worker");
+        assert!(!on_worker);
+    }
+
+    #[test]
+    fn a_worker_panic_is_kept_off_the_screen_only_while_a_tui_has_it() {
+        assert_eq!(panic_course(false, false, true), PanicCourse::ToldToTheLoop);
+        // `tuicr review`, `tuicr update`, startup, the way out: there is no
+        // frame to keep clean and no loop to report it, so it is printed.
+        assert_eq!(panic_course(false, false, false), PanicCourse::Printed);
+        // The loop's own thread takes tuicr down, with or without a TUI.
+        assert_eq!(panic_course(false, true, true), PanicCourse::EndsTheTui);
+        assert_eq!(panic_course(false, true, false), PanicCourse::EndsTheTui);
+    }
+
+    #[test]
+    fn a_panic_the_editor_pane_contains_leaves_the_terminal_to_the_tui() {
+        // The pane slot catches it and the loop goes on drawing: nothing
+        // is printed and the terminal is not given back, whichever thread
+        // it is on (it is the loop's own) and whether or not a TUI is up.
+        for ends_the_tui in [true, false] {
+            for tui_open in [true, false] {
+                assert_eq!(
+                    panic_course(true, ends_the_tui, tui_open),
+                    PanicCourse::Contained
+                );
+            }
+        }
+        assert_eq!(
+            panic_on_one_line("panicked at src/pane.rs:1:1:\nattempt to add\n  with overflow"),
+            "panicked at src/pane.rs:1:1: attempt to add with overflow"
+        );
+    }
+
+    #[test]
+    fn a_worker_panic_is_reported_once_on_one_line() {
+        assert_eq!(take_background_panic(), None);
+
+        note_background_panic("panicked at src/lsp.rs:12:5:\nindex out of bounds");
+
+        let message = take_background_panic().expect("reported");
+        assert!(
+            message
+                .starts_with("A background task panicked at src/lsp.rs:12:5: index out of bounds"),
+            "{message}"
+        );
+        assert_eq!(take_background_panic(), None, "once");
     }
 
     #[test]

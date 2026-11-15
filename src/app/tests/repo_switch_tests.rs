@@ -10,6 +10,8 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use crate::app::*;
+use crate::editor::EditorTarget;
+use crate::helix::fake::{FakePane, PaneCall};
 use crate::persistence::recent_repos;
 use crate::persistence::storage;
 use crate::update::UpdateInfo;
@@ -1260,4 +1262,79 @@ fn should_reach_the_switcher_from_the_command_palette() {
     // and inside the picker the palette ranks the picker's own rows first
     app.open_repo_picker();
     assert_eq!(app.current_scope(), Scope::Repos);
+}
+
+// ── The embedded editor ──────────────────────────────────────────────────
+
+fn editor_target(path: &std::path::Path) -> EditorTarget {
+    EditorTarget {
+        path: path.to_path_buf(),
+        line: None,
+        label: path.display().to_string(),
+    }
+}
+
+#[test]
+fn should_hand_the_embedded_editor_on_to_the_repository_switched_to() {
+    // given: an editor that was used in alpha and holds an unsaved buffer
+    let screen = ratatui::layout::Size::new(80, 24);
+    let sandbox = Sandbox::new();
+    let alpha = Repo::new("alpha", "commit in alpha");
+    let beta = Repo::new("beta", "commit in beta");
+    let settings = sandbox.settings();
+    let mut app = launch(&alpha, &sandbox);
+    let (factory, pane) = FakePane::factory();
+    assert!(app.install_editor_pane_factory(factory));
+    let in_alpha = alpha.root().join("file.txt");
+    app.open_editor_pane(&editor_target(&in_alpha), screen)
+        .expect("the fake pane opens anything");
+    app.leave_editor_mode();
+    pane.borrow_mut().state.modified = vec![in_alpha.clone()];
+
+    // when
+    assert!(app.switch_repo(&beta.root(), &settings, None));
+
+    // then: the editor was not ended with the app that was replaced
+    assert!(!pane.borrow().calls.contains(&PaneCall::Shutdown));
+    assert!(app.editor_pane_installed());
+    assert!(app.editor_pane_available());
+    assert_eq!(app.input_mode, InputMode::CommitSelect);
+
+    // and it is the same editor that opens the new repository's files
+    let in_beta = beta.root().join("file.txt");
+    app.open_editor_pane(&editor_target(&in_beta), screen)
+        .expect("the pane that came along opens the file");
+    assert_eq!(app.input_mode, InputMode::Editor);
+    assert_eq!(pane.borrow().created_at.len(), 1, "built once, not twice");
+    assert!(pane.borrow().calls.contains(&PaneCall::Open {
+        path: in_beta,
+        line: None,
+    }));
+
+    // and what it has not saved, from alpha, still holds a quit back
+    app.leave_editor_mode();
+    assert!(app.quit_blocked_by_editor());
+}
+
+#[test]
+fn should_leave_the_editor_alone_when_the_switch_does_not_happen() {
+    // given
+    let screen = ratatui::layout::Size::new(80, 24);
+    let sandbox = Sandbox::new();
+    let alpha = Repo::new("alpha", "commit in alpha");
+    let settings = sandbox.settings();
+    let mut app = launch(&alpha, &sandbox);
+    let (factory, pane) = FakePane::factory();
+    assert!(app.install_editor_pane_factory(factory));
+    app.open_editor_pane(&editor_target(&alpha.root().join("file.txt")), screen)
+        .expect("the fake pane opens anything");
+    app.leave_editor_mode();
+    let not_a_repository = tempfile::tempdir().expect("tempdir");
+
+    // when: the app built for the target is dropped unused
+    assert!(!app.switch_repo(not_a_repository.path(), &settings, None));
+
+    // then
+    assert!(!pane.borrow().calls.contains(&PaneCall::Shutdown));
+    assert!(app.editor_pane_available());
 }

@@ -53,6 +53,7 @@ take the last one given and boolean flags stay on once set, so
 | `--no-update-check` | | | Skip the startup update check (same as `no_update_check` in the config) |
 | `--repo-url` | | `URL` | Override the forge repo for PR operations |
 | `--remote` | | `NAME` | Use a named VCS remote's fetch/pull URL for PR operations; conflicts with `--repo-url` |
+| `--helix-setup` | | | Install what the embedded editor needs, then exit. Not a TUI flag: it stands alone. See [Embedded editor setup](#embedded-editor-setup) |
 | `--version` | `-V` | | Print the version and exit |
 | `--help` | `-h` | | Print help and exit |
 
@@ -117,6 +118,51 @@ Editors and viewers can use it to hand off the line the user is looking at.
 `--revisions` accepts leading hyphens, so revsets like `-r -3` reach the VCS
 rather than being read as another flag.
 
+### Embedded editor setup
+
+`e` opens files in an embedded [Helix](https://helix-editor.com) (see
+[KEYBINDINGS.md](KEYBINDINGS.md#embedded-editor)). Helix reads its syntax queries,
+themes and compiled tree-sitter grammars from a runtime directory, and the
+embedded editor has one of its own inside tuicr's data directory:
+
+| Platform | Runtime directory |
+|---|---|
+| Linux | `~/.local/share/tuicr/helix-runtime` (or under `$XDG_DATA_HOME`) |
+| macOS | `~/Library/Application Support/tuicr/helix-runtime` |
+
+```bash
+tuicr --helix-setup
+```
+
+does three things and exits, printing its progress to stdout:
+
+1. Copies `queries/`, `themes/` and `tutor` there from the Helix source tree this
+   tuicr was built from, replacing what an older build left.
+2. Writes the Helix version it copied from to `tuicr-helix-rev` in that directory.
+3. Fetches the grammar sources with `git` and compiles them into `grammars/`
+   (`.so` on Linux, `.dylib` on macOS). Which grammars is your choice:
+   `use-grammars` in Helix's `~/.config/helix/languages.toml`. Without one it is
+   every grammar Helix knows, which takes a while.
+
+It needs `git`, a C/C++ compiler and the network, and nothing else: no Helix has
+to be installed, and `~/.config/helix` is only read. A grammar that cannot be
+fetched or built makes the command exit with status `1`, after every other one
+was fetched and built: one repository that is gone or blocked does not cost the
+rest their highlighting. What was done is kept, so running it again does only
+what is left.
+
+`--helix-setup` takes no other flag and no subcommand. Run it again after
+changing `use-grammars`. Steps 1 and 2 also happen by themselves the first time
+a file is opened in the editor after a tuicr built against another Helix, so an
+upgrade needs the command only to pick up changed grammars. Without any setup
+the editor still works: files open without syntax highlighting, the editor's
+status line says which command to run, and tuicr's repeats it on the way back
+to the review.
+
+The editor's log is `helix.log` in tuicr's data directory, beside the runtime
+directory. A tuicr built without the editor (`cargo build --no-default-features`)
+does not know the flag.
+
 TUI flags cannot be mixed with `review` or `update`, which do not open a TUI:
 
 ```bash
@@ -132,7 +178,8 @@ out to.
 
 | Variable | Effect |
 |---|---|
-| `EDITOR` | Editor used by `e` and `:edit`. The config `editor` setting wins; `vi` is the last resort |
+| `EDITOR` | Editor used by `e` and `:edit` when the embedded editor is not (it is turned off, tuicr runs with `--stdout`, the file is a read-only PR copy, or tuicr was built without it). The config `editor` setting wins; `vi` is the last resort |
+| `COLORTERM` | Read by the embedded editor: `truecolor` or `24bit` turns its 24-bit colour on. tuicr also turns it on when its own theme paints in 24-bit colour |
 | `XDG_CONFIG_HOME`, `HOME`, `APPDATA` | Locate the config directory. See [CONFIG.md](CONFIG.md) |
 | `TUICR_PROFILE` | Write a startup/render profile log. See below |
 | `TUICR_PROFILE_FILE` | Path for that log, overriding the default location |
@@ -190,8 +237,8 @@ up to date, or completed through an external package manager.
 | Code | Meaning |
 |---|---|
 | `0` | Success, including `--help` and `--version` |
-| `1` | Startup failure (not a repository, forge auth, missing PR, bad `--file` path) or a failed `review` / `update` command |
-| `2` | Usage error (unknown flag, conflicting flags, invalid `--appearance` value) or a theme that could not be resolved |
+| `1` | Startup failure (not a repository, forge auth, missing PR, bad `--file` path) or a failed `review` / `update` / `--helix-setup` command |
+| `2` | Usage error (unknown flag, conflicting flags, `--helix-setup` with anything else, invalid `--appearance` value) or a theme that could not be resolved |
 
 ## Not provided
 

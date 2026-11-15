@@ -9,6 +9,7 @@ pub mod forge;
 pub mod git_console;
 pub mod handler;
 pub mod hash;
+pub mod helix;
 pub mod input;
 pub mod model;
 pub mod output;

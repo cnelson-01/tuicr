@@ -6,7 +6,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::{App, FocusedPanel, InputMode};
-use crate::input::catalog::{self, ENTRIES, Run, Scope};
+use crate::input::catalog::{self, ENTRIES, Entry, Run, Scope};
 
 #[derive(Debug, Clone)]
 pub struct Palette {
@@ -40,6 +40,12 @@ impl App {
         }
     }
 
+    /// Whether the palette lists `entry` in this tuicr. Everything, except
+    /// that the embedded editor's own rows need an embedded editor.
+    pub fn palette_offers(&self, entry: &Entry) -> bool {
+        self.editor_pane_installed() || !catalog::needs_embedded_editor(entry)
+    }
+
     pub fn open_palette(&mut self) {
         let mut palette = Palette {
             query: String::new(),
@@ -48,7 +54,12 @@ impl App {
             scope: self.current_scope(),
             return_mode: self.input_mode,
         };
-        palette.matches = rank(&palette.query, palette.scope, self.leader_key);
+        palette.matches = rank(
+            &palette.query,
+            palette.scope,
+            self.leader_key,
+            self.editor_pane_installed(),
+        );
         self.palette = Some(palette);
         self.input_mode = InputMode::Palette;
     }
@@ -61,8 +72,9 @@ impl App {
 
     fn refilter_palette(&mut self) {
         let leader = self.leader_key;
+        let embedded_editor = self.editor_pane_installed();
         if let Some(palette) = self.palette.as_mut() {
-            palette.matches = rank(&palette.query, palette.scope, leader);
+            palette.matches = rank(&palette.query, palette.scope, leader, embedded_editor);
             palette.cursor = 0;
         }
     }
@@ -162,14 +174,21 @@ impl App {
                     self.focused_panel = FocusedPanel::Changes;
                 }
             }
-            Scope::Global | Scope::Branches | Scope::Repos | Scope::Stashes | Scope::Merge => {}
+            Scope::Global
+            | Scope::Branches
+            | Scope::Repos
+            | Scope::Stashes
+            | Scope::Merge
+            | Scope::Editor => {}
         }
     }
 }
 
 /// Catalog indices matching `query`, best first. With an empty query every
 /// entry is listed: the focused scope, then global actions, then the rest.
-fn rank(query: &str, scope: Scope, leader: char) -> Vec<usize> {
+/// Without an `embedded_editor` its own rows are left out (see
+/// [`App::palette_offers`]).
+fn rank(query: &str, scope: Scope, leader: char, embedded_editor: bool) -> Vec<usize> {
     let scope_bonus = |s: Scope| {
         if s == scope {
             60
@@ -182,6 +201,7 @@ fn rank(query: &str, scope: Scope, leader: char) -> Vec<usize> {
     let mut scored: Vec<(i32, usize)> = ENTRIES
         .iter()
         .enumerate()
+        .filter(|(_, entry)| embedded_editor || !catalog::needs_embedded_editor(entry))
         .filter_map(|(i, entry)| {
             let haystack = format!(
                 "{} {} {} {}",

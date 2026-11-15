@@ -31,14 +31,23 @@ pub(in crate::app) fn short_sha(sha: &str) -> &str {
 /// the same PR — never collide.
 pub(in crate::app) fn snapshot_root(key: &PrSessionKey) -> PathBuf {
     let slug = sanitize_component(&key.repository.slug());
-    std::env::temp_dir()
-        .join("tuicr")
-        .join("snapshots")
-        .join(format!(
-            "{slug}-pr{}-{}",
-            key.number,
-            short_sha(&key.head_sha)
-        ))
+    snapshots_dir().join(format!(
+        "{slug}-pr{}-{}",
+        key.number,
+        short_sha(&key.head_sha)
+    ))
+}
+
+/// Directory every revision's snapshots live under.
+fn snapshots_dir() -> PathBuf {
+    std::env::temp_dir().join("tuicr").join("snapshots")
+}
+
+/// Whether `path` is a snapshot written here and not a file of the user's
+/// checkout. Snapshots are read-only copies: whatever opens one must not
+/// offer to edit it.
+pub(in crate::app) fn is_snapshot(path: &Path) -> bool {
+    path.starts_with(snapshots_dir())
 }
 
 /// Fold a repository slug into one path-safe directory-name component.
@@ -124,6 +133,18 @@ mod tests {
         let name = root.file_name().expect("dir name").to_string_lossy();
         assert_eq!(name, "agavra-tuicr-pr624-1a2b3c4");
         assert!(root.starts_with(std::env::temp_dir().join("tuicr").join("snapshots")));
+    }
+
+    #[test]
+    fn is_snapshot_tells_snapshots_from_checkout_files() {
+        let snapshot =
+            snapshot_path(&snapshot_root(&key()), Path::new("src/main.rs")).expect("snapshot path");
+
+        assert!(is_snapshot(&snapshot));
+        assert!(!is_snapshot(Path::new("/repo/src/main.rs")));
+        assert!(!is_snapshot(
+            &std::env::temp_dir().join("checkout/src/main.rs")
+        ));
     }
 
     #[test]

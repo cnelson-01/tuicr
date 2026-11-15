@@ -1331,7 +1331,7 @@ fn extract_hunk_patch(
             "hunk @@ -{old_start} +{new_start} @@ not found in {path} (untracked files can only be staged whole; if the file changed, `:e` and retry)"
         )));
     }
-    Ok(header + &target)
+    Ok(header + target.as_str())
 }
 
 /// Cut a one-hunk patch down to the picked lines. Applied forward (stage),

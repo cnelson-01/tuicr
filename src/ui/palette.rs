@@ -25,7 +25,10 @@ pub(super) fn render_palette(frame: &mut Frame, app: &App) {
     let title = format!(
         " Actions \u{00b7} {} of {} ",
         palette.matches.len(),
-        ENTRIES.len()
+        ENTRIES
+            .iter()
+            .filter(|entry| app.palette_offers(entry))
+            .count()
     );
     let block = Block::default()
         .title(title)

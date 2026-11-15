@@ -154,6 +154,39 @@ fn start_here_lines(leader: char) -> Vec<Line<'static>> {
     ]
 }
 
+/// The embedded editor's own keys and commands, listed under `:edit` in a
+/// tuicr that has an embedded editor. In one without they would describe
+/// an editor the binary lacks, as the palette's rows would
+/// (`App::palette_offers`).
+fn embedded_editor_lines() -> Vec<Line<'static>> {
+    let bold = Style::default().add_modifier(Modifier::BOLD);
+    let row = |keys: &'static str, desc: &'static str| {
+        Line::from(vec![Span::styled(keys, bold), Span::raw(desc)])
+    };
+    vec![
+        Line::from(Span::raw(
+            "  e and :edit open the file inside tuicr, in the embedded editor (Helix):",
+        )),
+        row(
+            "  Ctrl-g    ",
+            "Leave the editor for the review; it keeps its buffers (so does :q there)",
+        ),
+        row(
+            "  tuicr --helix-setup",
+            "  In a shell, once: install its themes and syntax grammars",
+        ),
+        row(
+            "  :set embedded_editor[!]",
+            "  Open files in the embedded editor / toggle",
+        ),
+        row("  :set noembedded_editor", "  Open files in $EDITOR"),
+        row(
+            "  :q!       ",
+            "Quit even with unsaved buffers in the embedded editor",
+        ),
+    ]
+}
+
 pub fn render_help(frame: &mut Frame, app: &mut App) {
     let theme = &app.theme;
     let leader = leader_display(app.leader_key);
@@ -1245,6 +1278,11 @@ pub fn render_help(frame: &mut Frame, app: &mut App) {
             ),
             Span::raw("Open focused file in editor config / $EDITOR"),
         ]),
+    ]);
+    if app.editor_pane_installed() {
+        help_text.extend(embedded_editor_lines());
+    }
+    help_text.extend(vec![
         Line::from(vec![
             Span::styled(
                 "  :local    ",

@@ -180,6 +180,11 @@ impl App {
         let Ok(rel) = target.path.strip_prefix(&self.vcs_info.root_path) else {
             return;
         };
+        // The first baseline wins, so a file that has one is not read again
+        // (the embedded editor asks for every file it holds on each visit).
+        if self.local_edits.get(rel).is_some() {
+            return;
+        }
         let baseline = match std::fs::read(&target.path) {
             Ok(content) => content,
             Err(err) if err.kind() == io::ErrorKind::NotFound => Vec::new(),

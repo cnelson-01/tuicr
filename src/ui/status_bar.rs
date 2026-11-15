@@ -466,6 +466,7 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             InputMode::Console => " CONSOLE ".to_string(),
             InputMode::RebaseEditor => " REBASE ".to_string(),
             InputMode::ThemePicker => " THEME ".to_string(),
+            InputMode::Editor => " EDITOR ".to_string(),
         };
 
         let mode_width = mode_str.width();
@@ -727,6 +728,8 @@ pub(crate) fn mode_hints(app: &App) -> Vec<Hint> {
             pinned("\u{21b5} apply"),
             pinned("esc cancel"),
         ],
+        // Fullscreen: this bar is not drawn while the editor has the screen.
+        InputMode::Editor => vec![pinned("^g review")],
     }
 }
 

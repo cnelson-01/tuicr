@@ -715,6 +715,9 @@ pub enum InputMode {
     /// a live preview immediately; `/` opens a filter draft the same way the
     /// file tree's `i`/`e`/`/` prompts work.
     ThemePicker,
+    /// Fullscreen embedded editor (`app/editor_pane.rs`). Every key goes to
+    /// the editor pane except `Ctrl-g`, which returns to the review.
+    Editor,
 }
 
 pub use blame::{BLAME_WIDTH, BlameState, overlay_label};
@@ -725,6 +728,7 @@ pub use branch_moves::{
 pub use branches::{BranchPicker, BranchPickerPurpose};
 pub use changes_pane::{ChangesPane, ChangesRow};
 pub use console::ConsoleView;
+pub use editor_pane::{EditorPaneFiles, EditorPaneHost, EditorRoute};
 pub use fetch_all::{FetchAllJob, FetchAllRow, RepoFetchState};
 pub use find::{FIND_MAX_HITS, FindHit, FindState};
 pub use git_ops::{GitThen, PendingGit, RepoStatus};
@@ -1456,6 +1460,9 @@ pub struct App {
     /// Windowed editors that have not exited yet; polled by
     /// `poll_editor_launches`.
     pub(crate) editor_launches: Vec<EditorLaunch>,
+    /// The embedded editor pane and what ties it to the review; driven
+    /// through the `App` methods in `app/editor_pane.rs`.
+    pub(crate) editor_pane: EditorPaneHost,
     /// Pre-editor baselines of files opened in `$EDITOR`, for the edited-line
     /// highlight.
     pub local_edits: LocalEdits,
@@ -2375,6 +2382,7 @@ mod commits;
 mod compare;
 mod console;
 mod diff_load;
+mod editor_pane;
 mod editor_target;
 mod fetch_all;
 mod file_filter;

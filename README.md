@@ -28,6 +28,9 @@
   into the resolution view.
 - Repo switcher (`;r`): fuzzy-jump to any repository you opened before without leaving
   tuicr, and `:fetchall` fetches every one of them in the background.
+- An editor inside the review: `e` opens the file at the cursor in an embedded
+  [Helix](https://helix-editor.com), with your own Helix config and language servers.
+  `Ctrl-g` goes back to the review, which reloads the diff and tints what you changed.
 - Works with git, jj, and mercurial. Reviews uncommitted changes, commit ranges, or any GitHub PR,
   GitLab MR, Gitea PR, Bitbucket PR, Azure DevOps PR, or Gerrit change.
 
@@ -275,6 +278,24 @@ store.add_comment(
 )?;
 ```
 
+## Embedded editor
+
+`e` and `:edit` open the file in [Helix](https://helix-editor.com), running inside tuicr and
+drawn in its window. It is Helix itself: your `~/.config/helix` config and theme, tree-sitter
+highlighting, language servers, pickers, splits. Only Helix's own git gutter is left out; the
+review is where changes show. It stays loaded while you review, so going back and forth is
+instant.
+
+- `Ctrl-g` returns to the review. So does closing the editor's last view (`:q`, `:wq`).
+- Run `tuicr --helix-setup` once. It copies Helix's queries and themes into tuicr's data
+  directory and fetches and builds the tree-sitter grammars there (needs `git` and a C
+  compiler). The grammars are what gives the editor syntax highlighting.
+- Building tuicr with the editor needs rustc 1.90 or newer.
+- To keep `$EDITOR` instead: `:set noembedded_editor` for the session, `embedded_editor = false`
+  in `config.toml`, or build without it (`cargo build --no-default-features`).
+
+Details and limits: [docs/KEYBINDINGS.md](docs/KEYBINDINGS.md#embedded-editor).
+
 ## Configuration
 
 Path: `~/.config/tuicr/config.toml` on Linux/macOS, `%APPDATA%\tuicr\config.toml` on Windows.
@@ -287,6 +308,7 @@ appearance = "system"        # or "dark" / "light"
 mouse = true
 leader = ";"                  # configurable prefix for leader shortcuts
 editor = "nvim"               # editor for `e` / `:edit`; overrides $EDITOR
+embedded_editor = true        # `e` opens the file in Helix inside tuicr; false: always $EDITOR
 comment_vim = false           # vim modal editing in the review comment box
 relative_line_numbers = false # show rendered-row distances in the diff gutter
 
@@ -337,11 +359,14 @@ and its keys, or `?` for the full reference.
 | `s` (visual mode) | Suggest changes to the selected code lines |
 | `r` | Toggle file reviewed |
 | `R` | Toggle hunk reviewed |
-| `e` | Open focused file in `$EDITOR` (in PR review: the PR's revision, as a read-only copy when the checkout differs) |
+| `e` | Open focused file in the embedded editor, or in `$EDITOR` when that is off (in PR review: the PR's revision, in `$EDITOR` as a read-only copy when the checkout differs) |
+| `Ctrl-g` (embedded editor) | Back to the review; the editor keeps its buffers |
 | `y` | Copy review to clipboard |
-| `:edit` | Open focused file in `$EDITOR` |
-| `:local` | Compare a commit-range review with your working tree (again goes back); lines edited in `$EDITOR` are tinted blue |
-| `:clearedits` | Forget the lines edited in `$EDITOR` (drops the tint) |
+| `:edit` | Open focused file in the embedded editor or `$EDITOR` |
+| `:set embedded_editor!` | Switch `e` between the embedded editor and `$EDITOR` for the session |
+| `:q!` | Quit even with unsaved buffers in the embedded editor |
+| `:local` | Compare a commit-range review with your working tree (again goes back); lines edited in the editor are tinted blue |
+| `:clearedits` | Forget the lines edited in the editor (drops the tint) |
 | `:submit` | Push review to GitHub, GitLab, Gitea, Bitbucket, Azure DevOps, or Gerrit |
 | `:theme` | Open a live-preview theme picker (`/` to filter); `:theme <name>` applies directly. Session-only; set `theme` in `config.toml` to keep it |
 | `Tab` in `:` prompt | Complete or cycle commands |

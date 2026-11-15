@@ -10,6 +10,12 @@ readme = "README.md"
 keywords = ["tui", "git", "code-review", "diff", "cli"]
 categories = ["command-line-utilities", "development-tools"]
 
+[features]
+default = ["helix"]
+# The embedded Helix editor. Without it (`--no-default-features`) files open
+# in `$EDITOR` only, as they did before there was an embedded editor.
+helix = ["dep:helix-embed"]
+
 [dependencies]
 # TUI framework
 # `unstable-rendered-line-info` exposes `Paragraph::line_count`, which we use to
@@ -76,6 +82,16 @@ two-face = { version = "0.5", default-features = false, features = ["syntect-def
 terminal-colorsaurus = "1"
 pulldown-cmark = { version = "0.13.4", default-features = false }
 
+# The embedded editor (`e` opens the file inside tuicr): the Helix editor as a
+# library, behind the `helix` feature. helix-embed is a facade in our Helix
+# fork that owns its own tokio runtime, so nothing else here names a Helix
+# crate or tokio. It needs rustc 1.90 or newer.
+#
+# Pinned by tag: the branch is `tuicr-embed` of the fork, and a change there
+# reaches tuicr with a new tag named here. To work on both at once, point
+# this at a checkout (`path = "../helix/helix-embed"`) and do not commit that.
+helix-embed = { git = "https://github.com/cnelson-01/helix", tag = "tuicr-embed-1", optional = true }
+
 # Bounded wait on /dev/tty for the startup keyboard protocol probe.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -92,3 +108,24 @@ git2 = { version = "0.20", default-features = false, features = ["zlib-ng-compat
 # Underflow wrapping in render math turns into invisible hangs (huge
 # repeat counts) instead of crashes; a checked panic is logged and safe.
 overflow-checks = true
+
+# Not for the embedded editor's crates. Helix is written for, tested with and
+# released as builds that wrap: its arithmetic has wraps that are harmless
+# there (a row counter running past a viewport that has no rows) and that
+# overflow checks turn into panics, each of which closes the editor with
+# whatever it had not saved. They are built the way `hx` is.
+[profile.release.package]
+helix-core = { overflow-checks = false }
+helix-dap = { overflow-checks = false }
+helix-dap-types = { overflow-checks = false }
+helix-embed = { overflow-checks = false }
+helix-event = { overflow-checks = false }
+helix-loader = { overflow-checks = false }
+helix-lsp = { overflow-checks = false }
+helix-lsp-types = { overflow-checks = false }
+helix-parsec = { overflow-checks = false }
+helix-stdx = { overflow-checks = false }
+helix-term = { overflow-checks = false }
+helix-tui = { overflow-checks = false }
+helix-vcs = { overflow-checks = false }
+helix-view = { overflow-checks = false }

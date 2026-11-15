@@ -372,6 +372,8 @@ pub fn map_key_to_action_with_q_quits(
         InputMode::Console => map_console_mode(key),
         InputMode::RebaseEditor => map_rebase_editor_mode(key),
         InputMode::ThemePicker => map_theme_picker_mode(key),
+        // The editor pane takes its keys raw, before any map is consulted.
+        InputMode::Editor => Action::None,
     }
 }
 

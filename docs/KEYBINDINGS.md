@@ -234,11 +234,13 @@ Shown below the file tree when local comments or visible remote PR threads exist
 | `dd` | Delete comment at cursor |
 | `i` | Edit comment at cursor (vim: text cursor at start) |
 | `A` | Edit comment at cursor with text cursor at end (vim mode only) |
-| `e` | Open focused file in `$EDITOR` |
+| `e` | Open focused file in the embedded editor, or in `$EDITOR` when that is off |
 | `y` | Copy review to clipboard |
 | `Y` | Copy the comment at cursor to clipboard |
 
-`e` opens the file at the cursor's line. Terminal editors (`vim`, `nvim`, `nano`, …)
+`e` opens the file at the cursor's line, in the [embedded editor](#embedded-editor)
+unless that is turned off or does not apply. `$EDITOR` gets the file then: terminal
+editors (`vim`, `nvim`, `nano`, …)
 take over the screen and tuicr reloads the diff once they exit. Windowed editors
 (`code`, `cursor`, `zed`, `subl`, …) open in their own window while tuicr stays on
 screen; reload with `:e` after editing. Adding `--wait` to the editor command opts a
@@ -264,6 +266,97 @@ to a temp directory and opens that, so the text and the line the cursor sits on
 match the diff. The status bar names which one you got, e.g.
 `Opened src/main.rs @ 1a2b3c4 (read-only PR copy)`. Binary files are only opened
 from the checkout, never copied.
+
+### Embedded editor
+
+`e` and `:edit` open the file in [Helix](https://helix-editor.com), running inside
+tuicr and drawn over the whole window. It is Helix itself, not a look-alike:
+it reads your own Helix `config.toml`, `languages.toml` and themes from
+`~/.config/helix`, highlights with tree-sitter, starts language servers, and has its
+pickers, splits and `:` commands. One part of `hx` is left out of the build: its git
+integration. The change markers in the gutter, `]g` / `[g`, the changed-file picker
+and the branch name in Helix's status line are not there; the review around it is
+where changes show. Everything you type goes to the editor, `Ctrl-C` and `Ctrl-l`
+included. Two things lead back to the review:
+
+| Key | Action |
+|-----|--------|
+| `Ctrl-g` | Back to the review. The editor keeps its buffers, views and language servers |
+| `:q`, `:wq`, `Ctrl-w q` on the last view | Back to the review, as closing the last view of `hx` ends it. `:q` refuses while a buffer is unsaved; `:q!` discards the unsaved buffers |
+
+On the way back tuicr waits for saves still being written, then reloads the diff and
+tints the lines you changed, exactly as after `$EDITOR`. A save that lands later (a
+language server formatting on save can take a moment) refreshes the review when it
+arrives; the status line then starts with `Saved`. The editor stays loaded for the
+rest of the session, so the next `e` is instant and finds the buffers, cursor
+positions and undo history where you left them.
+
+What to know:
+
+- **Set it up once**: `tuicr --helix-setup` installs Helix's queries and themes and
+  builds the tree-sitter grammars into tuicr's data directory (see
+  [CLI.md](CLI.md#embedded-editor-setup)). The grammars are what gives the editor
+  syntax highlighting. While none is built, the editor's status line says which
+  command to run every time a file is opened, and tuicr's says it again when you
+  come back to the review.
+- **Files that change under it.** The review, git or an agent can rewrite a file while
+  the editor is hidden. Each `e` first reads every such file again, as long as its
+  buffer has no unsaved changes. A buffer that does is kept as it is, the editor's
+  status line says the file changed on disk, and Helix refuses a plain `:w` over it:
+  `:reload` takes the file's text, `:w!` overwrites the file. (A file put back with
+  an older modification time, as `mv backup file` or `cp -p` do, counts as changed
+  too, but there Helix lets a plain `:w` through.)
+- **Quitting tuicr** with unsaved buffers is refused, every time, with their names
+  in the status line, until they are saved or the quit is forced. `e` goes back to
+  them; `:q!` quits and discards them. A buffer whose `:w` is still being written
+  (a formatter can take a second or two) is not unsaved: the quit waits for the
+  write and is carried out when it has landed. Any key cancels that wait.
+- **`:cd` in the editor** moves Helix (its file picker, relative paths, the
+  language servers it starts from then on) and with it the working directory of the
+  whole tuicr process. The review does not follow: it stays with the repository
+  it is showing, and every git command it runs names that repository.
+- **Switching repositories** (`<leader>r`, `:repo`) keeps the editor: its buffers
+  stay open, unsaved ones included, and those still hold a quit back. The editor
+  follows to the new repository, as if `:cd` had been typed in it, so its file
+  picker and the language servers it starts from then on look there. Buffers from
+  the repository that was left stay in the buffer list (`Space b`).
+- **If the editor crashes** (a panic inside Helix), tuicr closes it, goes back to
+  the review and says so in the status line. What the editor had not saved is lost,
+  as when `hx` crashes; the review and its comments are not. Files open in
+  `$EDITOR` from then on, until tuicr is restarted. The panic is logged to
+  `panic.log` in tuicr's data directory.
+- **`$EDITOR` still gets the file** when tuicr runs with `--stdout`, for a read-only
+  PR copy, when `$EDITOR` is a windowed editor (tuicr stays on screen beside it
+  anyway), and when the embedded editor cannot start; the status line says why in the
+  last case. A Helix `config.toml` that does not parse is such a case: fix it and
+  press `e` again.
+- **Language servers** are started from tuicr's working directory, as `hx` does:
+  the repository tuicr was started in or last switched to, so run tuicr inside the
+  project. Where Helix asks whether to trust a
+  workspace (by default one with its own `.helix/` config), the prompt is a menu:
+  `Enter`, `Tab` and the arrows act on it, and any other key closes it without a
+  decision.
+- **Under zellij**, `Ctrl-g` is zellij's own lock key by default and never reaches
+  tuicr. Rebind or unbind it in zellij, or leave the editor by closing its last view
+  (`:q`).
+- **Non-Latin keyboard layouts**: in a terminal with kitty key reporting, `Ctrl-g` is
+  seen only while a layout that has `g` on that key is active. `:q` works either way.
+- **Small windows**: below 20 columns by 6 rows the editor is not drawn; a notice
+  says so until the window grows. Splits need more: two rows for each view stacked
+  on another plus the command line, and four columns, a column apart, for each view
+  beside another. In a window too small for the splits the notice says what they
+  need; the editor still takes keys behind it, so `Ctrl-w o` (keep one view) brings
+  it back, as does a larger window.
+- **Symbolic links**: the editor names files by their resolved paths, as git names
+  the repository, also when tuicr was started in a directory reached through a
+  link.
+- **Mouse** clicks, drags and the wheel go to the editor while it is on screen. A
+  bracketed paste is inserted as one edit.
+
+Turn it off with `:set noembedded_editor` for the session or `embedded_editor = false`
+in `config.toml`; `e` then always uses `$EDITOR`. A tuicr built with
+`cargo build --no-default-features` has no embedded editor at all, and does not need
+rustc 1.90, which building Helix does.
 
 ## Visual mode
 
@@ -326,9 +419,11 @@ being typed starts with a dot.
 | `:o{N}` | Jump to old-side line N in current file (matches deletions) |
 | `:w` (`:write`) | Save session |
 | `:e` (`:reload`) | Reload diff files |
-| `:edit` | Open focused file in `$EDITOR` |
-| `:local` | Compare the commit-range review with local: the same commits plus the working tree, so `$EDITOR` edits show; again goes back |
-| `:clearedits` | Forget the lines edited in `$EDITOR` this session (drops their highlight) |
+| `:edit` | Open focused file in the [embedded editor](#embedded-editor), or in `$EDITOR` when that is off |
+| `:set embedded_editor` / `:set noembedded_editor` | Open files in the embedded editor / in `$EDITOR`, for this session. Config `embedded_editor` sets the start-up value |
+| `:set embedded_editor!` | Toggle between the two |
+| `:local` | Compare the commit-range review with local: the same commits plus the working tree, so edits made in the editor show; again goes back |
+| `:clearedits` | Forget the lines edited in the editor this session (drops their highlight) |
 | `:clip` (`:export`) | Copy review to clipboard |
 | `:copy-url` | Copy the open PR URL to clipboard (PR mode) |
 | `:summary` | Show all pending local-draft comments; `j`/`k` select, `dd` deletes, and `Enter` jumps |
@@ -414,8 +509,8 @@ being typed starts with a dot.
 | `:messages` | Open full details for the current error |
 | `:version` | Show tuicr version |
 | `:update` | Check for updates |
-| `:q` (`:quit`) | Quit (warns on unsaved comments; discards review-only state) |
-| `:q!` (`:quit!`) | Force quit |
+| `:q` (`:quit`) | Quit (warns on unsaved comments; discards review-only state). Refused while the embedded editor holds unsaved buffers |
+| `:q!` (`:quit!`) | Force quit, discarding unsaved buffers in the embedded editor |
 | `:x` / `:wq` | Save and quit (prompts to copy if comments exist) |
 | `ZZ` | Save and quit |
 | `ZQ` | Quit without saving |
@@ -479,8 +574,8 @@ literally, case-insensitively unless it contains an uppercase letter. Hits repla
 | Key | Action |
 |-----|--------|
 | `j` / `k`, `g` / `G`, `Ctrl-d` / `Ctrl-u` | Move the selection |
-| `Enter` | Jump to the hit when its file is in the loaded diff, otherwise open `$EDITOR` there |
-| `e` | Open `$EDITOR` at the hit regardless |
+| `Enter` | Jump to the hit when its file is in the loaded diff, otherwise open the editor there (embedded, or `$EDITOR`) |
+| `e` | Open the editor at the hit regardless |
 | `/` | Start a new search |
 | `Esc` / `q` | Back to the diff; `:find` brings the results back |
 
@@ -535,7 +630,7 @@ walked.
 | `h` / `l` | Fold / unfold the heading or submodule under the cursor; `h` on a plain entry jumps to its heading or submodule row |
 | `o` / `O` | Unfold / fold every group |
 | `r` | Re-read the status (it also refreshes after every operation, history change and diff-watch tick) |
-| `e` | Open the entry's file in `$EDITOR` |
+| `e` | Open the entry's file in the editor (embedded, or `$EDITOR`) |
 | `Esc` | Return focus to the diff; `<leader>t` again hides the window |
 | Click / wheel | Move the cursor (and open the entry) / scroll |
 
@@ -854,7 +949,7 @@ unresolved conflicts are written back with their original markers.
 | `t` | Take theirs |
 | `b` | Take both (ours first) |
 | `u` | Reset the focused conflict to unresolved |
-| `e` | Write current picks, then open the file in `$EDITOR` at the focused conflict; on exit the view re-parses the file |
+| `e` | Write current picks, then open the file in the editor (embedded, or `$EDITOR`) at the focused conflict; on return the view re-parses the file. The embedded editor shows the file as just written, also when it had it open before |
 | `w` | Write the file; stages it once fully resolved |
 | `a` | Abort the operation and restore the pre-merge state |
 | `Esc` | Back (press twice to discard unsaved picks) |
@@ -892,7 +987,8 @@ A paste from the terminal (bracketed paste, e.g. `Ctrl-Shift-v` or `Cmd-v`) goes
 whichever text input is open: a comment, the `:` command line, `/` search, the log
 filter, the file-tree prompts, the branch, repo and theme pickers, the command palette, or
 a reword in the rebase editor. With no input open it is dropped, so pasted text never runs
-as keys. `Ctrl-v` itself is not bound: it used to start a visual selection, which is on
+as keys. While the embedded editor is on screen the paste goes to it, as one edit.
+`Ctrl-v` itself is not bound: it used to start a visual selection, which is on
 `v` / `V` only.
 
 While git or a large reload keeps tuicr busy for more than a quarter of a second, the
@@ -904,7 +1000,8 @@ taken. It clears when the operation returns.
 Mouse support is on by default. Disable with `mouse = false` in config, or for the
 running session with `:set nomouse` (`:set mouse!` toggles). With it off the terminal
 keeps the mouse: a drag selects text across the whole screen, and none of the actions
-below apply.
+below apply. While the [embedded editor](#embedded-editor) is on screen, clicks, drags
+and the wheel are the editor's.
 
 | Action | Effect |
 |--------|--------|

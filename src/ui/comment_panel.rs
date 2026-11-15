@@ -335,7 +335,7 @@ pub fn format_comment_input_lines(
 
     // Bottom border — "    ╰" = 5 chars, fill to width
     result.push(Line::from(vec![Span::styled(
-        "    ╰".to_string() + &"─".repeat(width.saturating_sub(5)),
+        "    ╰".to_string() + "─".repeat(width.saturating_sub(5)).as_str(),
         border_style,
     )]));
 
@@ -427,7 +427,7 @@ pub fn format_remote_thread_lines(
     }
 
     result.push(Line::from(vec![Span::styled(
-        "    ╰".to_string() + &"─".repeat(39),
+        "    ╰".to_string() + "─".repeat(39).as_str(),
         border_style,
     )]));
 
@@ -478,7 +478,7 @@ pub fn format_remote_review_summary_lines(
     }
 
     result.push(Line::from(vec![Span::styled(
-        "    ╰".to_string() + &"─".repeat(39),
+        "    ╰".to_string() + "─".repeat(39).as_str(),
         border_style,
     )]));
 
@@ -594,7 +594,7 @@ pub fn format_comment_lines(
 
     // Bottom border — "    ╰" = 5 chars, fill to width
     result.push(Line::from(vec![Span::styled(
-        "    ╰".to_string() + &"─".repeat(width.saturating_sub(5)),
+        "    ╰".to_string() + "─".repeat(width.saturating_sub(5)).as_str(),
         border_style,
     )]));
 

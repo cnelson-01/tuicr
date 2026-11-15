@@ -173,6 +173,35 @@ impl Default for Theme {
 }
 
 impl Theme {
+    /// Whether this theme is drawn on a dark background: `None` when its
+    /// background is not a colour of its own (a palette theme, or one that
+    /// leaves the terminal's showing), so nothing can be read from it.
+    ///
+    /// The theme is what tuicr knows about the terminal's background: it
+    /// was chosen by the user, or picked for the background the terminal
+    /// reported. Ask before `panel_bg` is reset for a transparent
+    /// background.
+    pub fn dark_background(&self) -> Option<bool> {
+        matches!(self.panel_bg, Color::Rgb(..)).then(|| is_dark_color(self.panel_bg))
+    }
+
+    /// Whether this theme paints in 24-bit colour. tuicr does not probe the
+    /// terminal's colour depth: a theme of RGB colours is drawn as it is,
+    /// so with one, 24-bit colour is what the frame already relies on.
+    pub fn paints_true_color(&self) -> bool {
+        [
+            self.panel_bg,
+            self.bg_highlight,
+            self.fg_primary,
+            self.fg_secondary,
+            self.fg_dim,
+            self.diff_add_bg,
+            self.diff_del_bg,
+        ]
+        .iter()
+        .any(|color| matches!(color, Color::Rgb(..)))
+    }
+
     /// Background for the changed tokens inside a modified line: the line's
     /// own add/del background pushed toward its add/del accent, so the edit
     /// stands out from the rest of the line in any theme. `syntax` picks the
@@ -2789,6 +2818,41 @@ fn shift_lightness(c: Color, amount: i32) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn should_say_whether_a_theme_s_background_is_dark() {
+        assert_eq!(Theme::dark().dark_background(), Some(true));
+        assert_eq!(Theme::light().dark_background(), Some(false));
+        assert_eq!(Theme::catppuccin_latte().dark_background(), Some(false));
+        assert_eq!(Theme::gruvbox_dark().dark_background(), Some(true));
+
+        // A transparent background shows the terminal's own, which the
+        // theme knows nothing about: ask before it is reset.
+        let mut transparent = Theme::light();
+        transparent.panel_bg = Color::Reset;
+        assert_eq!(transparent.dark_background(), None);
+    }
+
+    #[test]
+    fn should_say_a_theme_of_rgb_colours_paints_in_24_bit_colour() {
+        assert!(Theme::dark().paints_true_color());
+        assert!(Theme::light().paints_true_color());
+
+        let mut transparent = Theme::dark();
+        transparent.panel_bg = Color::Reset;
+        assert!(transparent.paints_true_color(), "the text is still RGB");
+
+        // A theme written in the terminal's own sixteen colours.
+        let mut palette = Theme::dark();
+        palette.panel_bg = Color::Reset;
+        palette.bg_highlight = Color::DarkGray;
+        palette.fg_primary = Color::White;
+        palette.fg_secondary = Color::Gray;
+        palette.fg_dim = Color::DarkGray;
+        palette.diff_add_bg = Color::Green;
+        palette.diff_del_bg = Color::Red;
+        assert!(!palette.paints_true_color());
+    }
     use std::{
         collections::HashSet,
         fs,

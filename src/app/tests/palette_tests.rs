@@ -2,7 +2,8 @@ use crossterm::event::{KeyCode, KeyModifiers};
 
 use super::log_pane_tests::build_review_app;
 use crate::app::{FocusedPanel, InputMode};
-use crate::input::catalog::{ENTRIES, Run, Scope};
+use crate::helix::fake::FakePane;
+use crate::input::catalog::{ENTRIES, Run, Scope, needs_embedded_editor};
 
 fn typed(app: &mut crate::app::App, text: &str) {
     for c in text.chars() {
@@ -20,10 +21,61 @@ fn opens_over_the_current_mode_and_restores_it() {
     let mut app = build_review_app(&["a"]);
     app.open_palette();
     assert_eq!(app.input_mode, InputMode::Palette);
-    assert_eq!(app.palette.as_ref().unwrap().matches.len(), ENTRIES.len());
+    let listed = ENTRIES
+        .iter()
+        .filter(|entry| !needs_embedded_editor(entry))
+        .count();
+    assert_eq!(app.palette.as_ref().unwrap().matches.len(), listed);
     app.close_palette();
     assert_eq!(app.input_mode, InputMode::Normal);
     assert!(app.palette.is_none());
+}
+
+#[test]
+fn leaves_the_embedded_editor_s_actions_out_where_there_is_none() {
+    // A tuicr built without the embedded editor: `:set embedded_editor`
+    // could only answer "not usable", so the palette does not offer it.
+    let mut app = build_review_app(&["a"]);
+    app.open_palette();
+    typed(&mut app, "embedded editor");
+
+    assert!(app.palette.as_ref().unwrap().matches.is_empty());
+    app.palette_clear();
+    let palette = app.palette.as_ref().unwrap();
+    assert!(
+        palette
+            .matches
+            .iter()
+            .all(|&idx| !needs_embedded_editor(&ENTRIES[idx]))
+    );
+}
+
+#[test]
+fn lists_the_embedded_editor_s_actions_where_there_is_one() {
+    let mut app = build_review_app(&["a"]);
+    let (factory, _pane) = FakePane::factory();
+    assert!(app.install_editor_pane_factory(factory));
+    app.open_palette();
+    assert_eq!(app.palette.as_ref().unwrap().matches.len(), ENTRIES.len());
+
+    typed(&mut app, "embedded editor");
+
+    let listed: Vec<&str> = app
+        .palette
+        .as_ref()
+        .unwrap()
+        .matches
+        .iter()
+        .map(|&idx| ENTRIES[idx].keys)
+        .collect();
+    for keys in [
+        "Ctrl-g",
+        ":set embedded_editor",
+        ":set noembedded_editor",
+        ":set embedded_editor!",
+    ] {
+        assert!(listed.contains(&keys), "{keys} missing from {listed:?}");
+    }
 }
 
 #[test]

@@ -13,9 +13,9 @@ use crate::ui::inline_commit_selector::render_inline_commit_selector;
 use crate::ui::log_pane::render_log_pane;
 use crate::ui::selector::render_commit_select;
 use crate::ui::{
-    branch_picker, comment_panel, console, find_results, help_popup, merge_conflict, palette,
-    rebase_editor, repo_picker, stash_picker, status_bar, styles, submit_modals, summary_popup,
-    theme_picker,
+    branch_picker, comment_panel, console, editor_pane, find_results, help_popup, merge_conflict,
+    palette, rebase_editor, repo_picker, stash_picker, status_bar, styles, submit_modals,
+    summary_popup, theme_picker,
 };
 
 const FILE_LIST_MIN_HEIGHT: u16 = 4;
@@ -97,6 +97,13 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             palette::render_palette(frame, app);
         }
         render_active_confirm(frame, app);
+        return;
+    }
+
+    // The embedded editor takes the whole screen and draws its own status
+    // line; nothing of tuicr's is drawn around or over it.
+    if app.input_mode == InputMode::Editor {
+        editor_pane::render_editor_pane(frame, app);
         return;
     }
 

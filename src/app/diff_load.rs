@@ -1266,7 +1266,7 @@ impl App {
     /// because `git2::Repository` is `Send` but not `Sync`. The options carry
     /// this app's repository root, so the worker opens this repository even
     /// if the repo switcher has since replaced the app and moved the
-    /// process's working directory.
+    /// process's working directory, or `:cd` in the embedded editor has.
     ///
     /// `review_commits` is cloned in here (rather than sent as part of
     /// `request`) because it only feeds `narrowed_fetch_source` on the worker

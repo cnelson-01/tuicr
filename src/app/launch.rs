@@ -120,6 +120,7 @@ impl App {
             self.comment_vim_enabled = cfg.comment_vim.unwrap_or(false);
             self.q_quits = cfg.q_quits.unwrap_or(false);
             self.editor_override = cfg.editor.clone();
+            self.init_embedded_editor(cfg.embedded_editor.unwrap_or(true));
             if let Some(w) = cfg.comment_tab_width {
                 self.comment_tab_width = w;
             }
@@ -390,6 +391,10 @@ impl App {
         // A fetch-all is about every recent repository, not the one being
         // left: it goes on, and reports to whichever app is on screen.
         self.fetch_all = old.fetch_all.take();
+        // The embedded editor exists once per process: its buffers, saved
+        // or not, and its language servers go with whichever app is on
+        // screen. `main.rs` tells it about the new directory.
+        self.editor_pane.carry_pane_from(&mut old.editor_pane);
     }
 }
 
@@ -434,6 +439,30 @@ mod tests {
         assert_eq!(app.commit_order, CommitOrder::Ascending);
         assert_eq!(app.recent_repos_path, None);
         assert!(!app.background_status_probe);
+    }
+
+    #[test]
+    fn should_take_the_embedded_editor_setting_from_the_config() {
+        // given
+        let off = LaunchSettings {
+            config: Some(AppConfig {
+                embedded_editor: Some(false),
+                ..AppConfig::default()
+            }),
+            ..LaunchSettings::default()
+        };
+        let unset = LaunchSettings {
+            config: Some(AppConfig::default()),
+            ..LaunchSettings::default()
+        };
+        let mut app = fresh_app();
+
+        // when / then: off when the config says so, on when it says nothing,
+        // also for an app that had it turned off before
+        app.apply_launch_settings(&off, None);
+        assert!(!app.embedded_editor_enabled());
+        app.apply_launch_settings(&unset, None);
+        assert!(app.embedded_editor_enabled());
     }
 
     #[test]
